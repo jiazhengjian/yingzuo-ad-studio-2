@@ -48,7 +48,8 @@ def test_content_draft_keeps_authored_data_without_invented_rationale_or_timing(
     checked = validate_content_draft(raw, strategy)
     assert checked.model_dump() == before == raw
     schema = content_draft_schema(strategy)
-    assert set(schema["properties"]) == {"beats"}
+    assert set(schema["properties"]) == {"beats", "key_line_options"}
+    assert schema["required"] == ["beats"]
     beat = schema["$defs"]["ContentBeat"]
     assert set(beat["required"]) == {"id", "narration", "visual_role", "evidence_ids"}
     assert beat["properties"]["narration"]["maxLength"] == 29

@@ -42,6 +42,8 @@ from app.progressive_planning import (MAX_PLAN_REFINEMENTS, PROGRESSIVE_REFINEME
                                      ProgressivePlanningError, progressive_plan, fixed_speech)
 from app.content_draft import (CONTENT_DRAFT_SYSTEM, CONTENT_DRAFT_VERSION,
                                content_draft_schema, validate_content_draft)
+from app.line_quality import (offending_lines, prepare_script_lines, prepare_speech_draft,
+                              rewrite_script_if_needed)
 from app.speech_draft import (SPEECH_DRAFT_SYSTEM, SPEECH_DRAFT_VERSION,
                               speech_draft_context, validate_speech_draft)
 from app.planning_session import PlanningSession, PlanningSessionError, fingerprint
@@ -933,6 +935,8 @@ class Gateway:
                     skill_stage = "content_draft"
                 if stage == "ad_script" and data.get("draft_format") == "speech_only":
                     skill_stage = "speech_draft"
+                if data.get("task_kind") == "line_jargon_rewrite":
+                    skill_stage = "line_rewrite"
                 if skill_stage == "storyboard" and not getattr(self.settings, "progressive_planning_enabled", False):
                     skill_stage = "legacy_storyboard"
                 from app.ad_form_playbook import (resolve_playbook_form, speech_profile,
@@ -1262,6 +1266,9 @@ class Gateway:
                 script_input.update(stage="ad_script", draft_format="speech_only",
                     speech_draft_version=SPEECH_DRAFT_VERSION)
                 raw_draft = await stage_call(SPEECH_DRAFT_SYSTEM, script_input, [], max_tokens=4500)
+                if isinstance(raw_draft, dict):
+                    raw_draft = prepare_speech_draft(raw_draft, strategy, duration,
+                                                     script_input["source_context"]["fixed_speech"])
                 draft = validate_speech_draft(raw_draft).model_dump()
             elif lean_enabled:
                 if on_progress:
@@ -1277,6 +1284,8 @@ class Gateway:
                     "merchant_request": merchant_request, "conversation": context["conversation"],
                     "fixed_speech": fixed_speech(initial_brief, context["conversation"], current_plan)}
                 raw_draft = await stage_call(CONTENT_DRAFT_SYSTEM, script_input, [], max_tokens=4500)
+                if isinstance(raw_draft, dict):
+                    raw_draft = prepare_script_lines(raw_draft, strategy, duration, script_input["fixed_speech"])
                 draft = validate_content_draft(raw_draft, strategy).model_dump()
             elif not joint_authoring:
                 # The callback checks cancellation/current revision before another request.
@@ -1284,7 +1293,7 @@ class Gateway:
                     on_progress("writing_script")
                 script_input = script_context(strategy, duration, generation_strategy=generation_strategy,
                     skill_stage="ad_script" if choice_enabled else None)
-                script_input.update(stage="ad_script", schema=script_stage_schema(max_beat_characters=speech.max_beat_characters) if choice_enabled else AdScript.model_json_schema(),
+                script_input.update(stage="ad_script", schema=script_stage_schema(max_beat_characters=speech.max_beat_characters, key_lines=True) if choice_enabled else AdScript.model_json_schema(),
                                     merchant_request=merchant_request, conversation=context["conversation"])
                 if choice_enabled:
                     script_input["fixed_speech"] = fixed_speech(initial_brief, context["conversation"], current_plan)
@@ -1292,7 +1301,9 @@ class Gateway:
                 draft_enum_issues = []
                 try:
                     draft = derive_script_evidence(raw_draft, strategy,
-                        server_skill_version=script_input["runtime_skill"]["version"]) if choice_enabled else raw_draft
+                        server_skill_version=script_input["runtime_skill"]["version"],
+                        duration_seconds=duration,
+                        locked_lines=script_input.get("fixed_speech") or ()) if choice_enabled else raw_draft
                     draft = validate_script(draft, strategy, duration, final=False, generation_strategy=generation_strategy,
                         require_selected_evidence=not choice_enabled)
                     validate_script_timing(draft, required=choice_enabled)
@@ -1324,6 +1335,7 @@ class Gateway:
                     "plan": plan, "planning_brief": strategy.brief.model_dump(), "skill_trace": skill_trace},
                     context={"require_shot_narration": True}).model_dump()
             script_feedback, failed_segments = None, None
+            jargon_rewrite_used = False
             # One semantic return budget for the whole plan. Either revise the
             # script for action capacity or the shots for a local issue, never both.
             for plan_attempt in range(2):
@@ -1356,7 +1368,9 @@ class Gateway:
                 if choice_enabled:
                     raw_review = copy.deepcopy(raw_review)
                     raw_review["script"] = derive_script_evidence(raw_review["script"], strategy,
-                        server_skill_version=review_input["runtime_skill"]["version"])
+                        server_skill_version=review_input["runtime_skill"]["version"],
+                        duration_seconds=duration,
+                        locked_lines=fixed_speech(initial_brief, context["conversation"], current_plan))
                 review = ScriptReview.model_validate(raw_review)
                 validate_script_execution(review, required=choice_enabled)
                 action_capacity_failed = bool(choice_enabled and not review.ready and review.execution_check is not None
@@ -1391,6 +1405,24 @@ class Gateway:
                         draft = ad_script
                         continue
                 ad_script = validate_script(ad_script, strategy, duration, generation_strategy=generation_strategy)
+                if choice_enabled and not jargon_rewrite_used:
+                    locked_copy = fixed_speech(initial_brief, context["conversation"], current_plan)
+                    if offending_lines(ad_script.model_dump(), locked_lines=locked_copy):
+                        if on_progress:
+                            on_progress("writing_script")
+                        called, revised = await rewrite_script_if_needed(
+                            stage_call, ad_script, strategy, duration, locked_copy)
+                        if called:
+                            jargon_rewrite_used = True
+                        if revised is not ad_script:
+                            try:
+                                rewritten = validate_script(revised, strategy, duration,
+                                                            generation_strategy=generation_strategy)
+                            except (ValueError, ValidationError):
+                                rewritten = None
+                            if rewritten is not None:
+                                ad_script = rewritten
+                                review = review.model_copy(update={"script": rewritten})
                 grouping = generation_groups(ad_script, duration, generation_strategy=generation_strategy,
                                             characters_per_tenth=speech.characters_per_tenth)
                 durations = grouping["durations"]

@@ -104,6 +104,10 @@ def progressive_gateway(settings, source, install_transport, tmp_path):
         if stage == state.empty_stage and state.empty_count == 0:
             state.empty_count += 1
             return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": ""}}]})
+        if stage == "ad_script" and context.get("task_kind") == "line_jargon_rewrite":
+            value = {"lines": [{"beat_id": item["beat_id"], "narration": "肩线这一圈，是它的脸。"}
+                               for item in context["lines"]]}
+            return chat_output(value)
         if stage == "ad_script":
             value = director_output(state.strategy)["ad_script"]
             if state.draft_mutation: state.draft_mutation(value)
@@ -761,6 +765,27 @@ def test_reviewable_draft_enum_issue_goes_directly_to_coordinator_without_old_re
     assert state.contexts[1]["draft_validation_issues"]
     assert state.contexts[1]["draft_script"]["beats"][0]["boundary_before"] == "ellipsis"
     assert plan["ad_script"]["beats"][0].get("boundary_before", "complete") == "complete"
+
+
+def test_planner_jargon_is_rewritten_once_before_review(progressive_gateway):
+    state = progressive_gateway
+    state.first_director_mutation = lambda value: value["ad_script"]["beats"][0].update(
+        narration="采用等离子技术，关注秀发护理。")
+    plan = state.run()
+    assert state.calls == ["ad_script", "storyboard", "ad_script", "plan_review"]
+    rewrite = state.contexts[2]
+    assert rewrite["task_kind"] == "line_jargon_rewrite"
+    assert rewrite["stage"] == "ad_script"
+    assert [item["id"] for item in rewrite["stage_skills"]["skills"]] == ["ads-video-dialogue-writing"]
+    assert rewrite["stage_skills"]["shared_references"] == []
+    assert "说出口的对照" in rewrite["stage_skills"]["skills"][0]["content"]
+    loaded = [trace for trace in state.traces if trace["stage"] == "line_rewrite"]
+    assert len(loaded) == 1
+    assert loaded[0]["loaded_sections"] == ["SKILL.md", "references/ad-dialogue-examples.md"]
+    assert loaded[0]["id"] == "ads-video-dialogue-writing"
+    assert "关注" not in plan["script"]
+    assert plan["ad_script"]["beats"][0]["narration"] == "肩线这一圈，是它的脸。"
+    assert plan["ad_script"]["beats"][1]["narration"] == "看桌角。"
 
 
 def test_fixed_line_is_also_protected_during_local_refinement(progressive_gateway):

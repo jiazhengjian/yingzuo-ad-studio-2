@@ -42,6 +42,7 @@
 | `ad_script` | Script Planning + Dialogue Writing 及其声音参考；`script-expression` 共用参考 | 同一次请求联合完成分类内容稿和台词 |
 | `content_draft`（试验内部资源分支，传输仍为 `ad_script`） | Script Planning 主入口 + `content-draft.md`；Dialogue 主文件/示例；共用表达方法 | 只写实际台词与画面内容，完整动作、状态和估时交既有分镜阶段 |
 | `speech_draft`（默认关闭的候选，传输仍为 `ad_script`） | 独立 Voiceover Draft 短方法；仅已选产品视觉展示与画外音 | 原始事实先写整段旁白；替换原起稿，导演仍拿完整策略，不添加模型请求。人工简报样本不等于自动路径已验证 |
+| `line_rewrite`（只在台词检查命中时发生，传输阶段仍是 `ad_script`） | Dialogue Writing 主文件与台词示例 | 只重写策划腔、绝对化或购买引导的句子；不加载整份脚本规划、时长参考或类型 playbook |
 | `storyboard` | Storyboard Direction + `coordinated-storyboard.md`、Dialogue Writing 主文件与台词示例；`script-expression` 一次共用参考 | 可直接联合起稿，或协调既有内容稿；时轴由程序派生 |
 | `plan_refinement` | Storyboard Direction + `coordinated-storyboard.md`；`script-expression` 共用参考 | 仅按实际失败稿与程序范围修正，不重写联合初稿 |
 | `plan_review` | Plan Review + `plan-review.md`；`script-expression` 共用参考 | 独立审查程序排时后的完整最终方案，只审不改 |
