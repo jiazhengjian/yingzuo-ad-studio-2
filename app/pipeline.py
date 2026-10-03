@@ -39,6 +39,19 @@ def video_submission_spec(plan, segment, assets=None):
     return spec
 
 
+_PLANNER_STREAM_LABELS = {
+    "strategy": "正在接收需求判断",
+    "direction_review": "正在接收方向检查",
+    "ad_script": "正在接收广告内容",
+    "script_review": "正在接收内容检查",
+    "storyboard": "正在接收画面安排",
+    "storyboard_repair": "正在接收画面校正",
+    "alignment_review": "正在接收声画检查",
+    "plan_review": "正在接收方案检查",
+    "plan_refinement": "正在接收方案调整",
+}
+
+
 class SubmissionUnknown(RuntimeError):
     pass
 
@@ -215,7 +228,22 @@ class Pipeline:
                 ("已载入共用参考 " if trace.get("execution_kind") == "shared_reference" else "已载入阶段指令 ")
                 + str(trace.get("display_name", {"product-evidence": "商品事实规则", "ad-form-contract": "广告表达规则"}.get(trace.get("id"), trace.get("id", "Ads Video"))))[:100]
                 + " · " + str(trace.get("version", ""))[:40])
-        callbacks = {"on_progress": planning_progress} if getattr(self.gateway, "supports_strategy_planning", False) else {}
+        planning_gateway = getattr(self.gateway, "supports_strategy_planning", False)
+        callbacks = {"on_progress": planning_progress} if planning_gateway else {}
+        stream_callbacks = {}
+        if planning_gateway:
+            def note_planner_stream(stage):
+                label = _PLANNER_STREAM_LABELS.get(stage)
+                if not label:
+                    return
+                self._guard(job["id"], require_current=True)
+                self.store.add_event(job["project_id"], job["id"], "step", label, "running")
+            stream_callbacks["on_planner_stream"] = note_planner_stream
+            payload = job["payload"]
+            cache = payload.get("stage_result_cache")
+            selected_id = (payload.get("selected_strategy") or {}).get("selected_direction_id")
+            if isinstance(cache, dict) and payload.get("stage_result_cache_direction_id") == selected_id:
+                stream_callbacks["stage_result_cache"] = cache
         if (not job["payload"].get("conversation") and getattr(self.gateway, "supports_direction_selection", False)
                 and getattr(self.settings, "direction_selection_enabled", False)):
             detail = self.store.project_detail(job["project_id"])
@@ -242,7 +270,8 @@ class Pipeline:
                 callbacks.update(planning_checkpoint=job["payload"].get("planning_checkpoint"),
                     on_checkpoint=save_checkpoint)
             raw = await self.gateway.decide(frozen["project"], frozen["assets"], frozen["messages"],
-                                            frozen["gates"], frozen["project"].get("plan"), **callbacks)
+                                            frozen["gates"], frozen["project"].get("plan"),
+                                            **callbacks, **stream_callbacks)
             self._guard(job["id"], require_current=True)
             try:
                 decision = AgentDecision.model_validate(raw).model_dump()
@@ -254,6 +283,9 @@ class Pipeline:
                 for option in decision["creative_options"]:
                     self._references(job["project_id"], {"segments": [option["segment"]]})
             self.store.finish_decision(job["id"], decision)
+            if decision["kind"] == "directions" and getattr(self.settings, "planner_speculate_recommended", False):
+                from app.speculative_plan import schedule_speculation
+                schedule_speculation(self.store, self.gateway, self.settings, job["id"])
             return
         self._phase(job["id"], "planning")
         self.store.set_project_status(job["project_id"], job["revision"], "planning")

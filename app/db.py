@@ -553,12 +553,15 @@ class Store:
             c.execute("UPDATE jobs SET cancel_requested=1,status=CASE WHEN status IN ('queued','awaiting_input') THEN 'canceled' ELSE 'cancel_requested' END,updated_at=? WHERE project_id=? AND status IN ('queued','running','awaiting_input')", (time.time(), project_id))
             c.execute("UPDATE gates SET status='superseded',answered_at=? WHERE project_id=? AND status='pending'", (time.time(), project_id))
             for j in affected:
+                self._abandon_speculative_plan(c, self._dict(j))
                 self._event(c, project_id, j["id"], "terminal" if j["status"] != "running" else "status", "任务已停止" if j["status"] != "running" else "已请求停止后续工作", "canceled" if j["status"] != "running" else "waiting")
             row = c.execute("SELECT 1 FROM jobs j JOIN projects p ON p.id=j.project_id WHERE j.project_id=? AND j.revision=p.revision AND j.status='cancel_requested'", (project_id,)).fetchone()
             canceled = c.execute("SELECT 1 FROM jobs j JOIN projects p ON p.id=j.project_id WHERE j.project_id=? AND j.revision=p.revision AND j.status='canceled'", (project_id,)).fetchone()
             if row or canceled:
                 c.execute("UPDATE projects SET status=?,updated_at=? WHERE id=?",
                           ("cancel_requested" if row else "canceled", time.time(), project_id))
+        from app.speculative_plan import cancel_speculation
+        cancel_speculation(project_id)
 
     def is_cancelled(self, job_id):
         j = self.get_job(job_id)
@@ -768,6 +771,55 @@ class Store:
             self._project(c, project_id)
             return self._event(c, project_id, job_id, kind, label, state)
 
+    def merge_speculative_plan(self, job_id, updates):
+        """Update only the speculative text-plan record inside one write transaction.
+
+        A job that has already left direction selection, or whose record was
+        abandoned, is left unchanged so a late writer cannot replace the
+        continuation pointer or the chosen direction's cache.
+        """
+        allowed = {"direction_id", "status", "entries"}
+        if not isinstance(updates, dict) or not updates or not set(updates).issubset(allowed):
+            raise ValueError("预生成记录无效")
+        if "status" in updates and updates["status"] not in ("running", "ready", "failed"):
+            raise ValueError("预生成记录无效")
+        if "entries" in updates and not isinstance(updates["entries"], dict):
+            raise ValueError("预生成记录无效")
+        with self._connection(True) as c:
+            job = self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
+            if not job:
+                raise KeyError("任务不存在")
+            payload = dict(job.get("payload") or {})
+            spec = dict(payload.get("speculative_plan") or {})
+            if (job["status"] != "awaiting_input" or job["phase"] != "awaiting_direction"
+                    or spec.get("abandoned") is True):
+                return job
+            if (spec.get("direction_id") and updates.get("direction_id")
+                    and spec["direction_id"] != updates["direction_id"]):
+                return job
+            spec.update(updates)
+            payload["speculative_plan"] = spec
+            c.execute("UPDATE jobs SET payload=?,updated_at=? WHERE id=?", (encoded(payload), time.time(), job_id))
+            return self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
+
+    def jobs_awaiting_direction(self):
+        with self._connection() as c:
+            return [self._dict(row) for row in c.execute(
+                "SELECT * FROM jobs WHERE status='awaiting_input' AND phase='awaiting_direction' ORDER BY created_at")]
+
+    def _abandon_speculative_plan(self, c, job):
+        payload = dict(job.get("payload") or {})
+        if not isinstance(payload.get("speculative_plan"), dict):
+            return payload
+        spec = dict(payload["speculative_plan"])
+        if spec.get("abandoned") is True:
+            return payload
+        spec["abandoned"] = True
+        payload["speculative_plan"] = spec
+        c.execute("UPDATE jobs SET payload=?,updated_at=? WHERE id=?", (encoded(payload), time.time(), job["id"]))
+        job["payload"] = payload
+        return payload
+
     def events_after(self, project_id, after=0, limit=200):
         with self._connection() as c:
             self._project(c, project_id)
@@ -856,6 +908,7 @@ class Store:
         from .ad_form import (AD_FORM_LABELS, answer_ad_form, explicit_ad_form,
                              rejects_current_ad_form, unresolved_ad_form_change)
         body = TurnInput.model_validate(body_dict).model_dump()
+        stop_speculation = False
         with self._connection(True) as c:
             prior = self._request_job(c, project_id, body["client_turn_id"], "turn")
             if prior:
@@ -921,6 +974,9 @@ class Store:
             elif pending:
                 if not content and chosen_form is None:
                     raise ValueError("请回答问题或补充你的需求")
+                if pending["kind"] == "direction" and pending_job:
+                    self._abandon_speculative_plan(c, pending_job)
+                    stop_speculation = True
                 c.execute("UPDATE gates SET status='superseded',answered_at=? WHERE id=?", (time.time(), pending["id"]))
                 c.execute("UPDATE jobs SET status='canceled',cancel_requested=1,lease_until=0,updated_at=? WHERE id=? AND status='awaiting_input'", (time.time(), pending["job_id"]))
                 self._event(c, project_id, pending["job_id"], "gate", "新的需求已替代这次选择", "canceled")
@@ -947,7 +1003,11 @@ class Store:
                 c.execute("UPDATE messages SET job_id=? WHERE id=?", (jid, message["id"]))
                 c.execute("UPDATE events SET job_id=? WHERE project_id=? AND kind='message' AND job_id IS NULL AND created_at>=?", (jid, project_id, message["created_at"]))
             c.execute("INSERT INTO turn_requests VALUES(?,?,?,?)", (project_id, body["client_turn_id"], "turn", jid))
-            return self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone())
+            created = self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone())
+        if stop_speculation:
+            from app.speculative_plan import cancel_speculation
+            cancel_speculation(project_id)
+        return created
 
     def finish_decision(self, job_id, decision_dict):
         from .schemas import AgentDecision
@@ -1077,17 +1137,29 @@ class Store:
             c.execute("UPDATE gates SET status='answered',selected_option_id=?,answered_at=? WHERE id=?", (selected.id, now, gate["id"]))
             c.execute("UPDATE projects SET context_version=context_version+1,updated_at=? WHERE id=?", (now, project_id))
             self._event(c, project_id, source["id"], "gate", "创意方向已选择", "done")
-            self._message(c, project_id, "user", "选择创意方向：" + selected.label, source["id"])
+            from app.speculative_plan import direction_selection_text
+            self._message(c, project_id, "user", direction_selection_text(selected.label), source["id"])
             p = self._project(c, project_id)
             trace = source["payload"].get("decision", {}).get("skill_trace")
-            jid = self._new_conversation_job(c, p, {"selected_strategy": strategy.model_dump(),
-                "direction_gate_id": gate["id"], "direction_selection_request": body,
-                "inherited_skill_trace": trace or []})
             source_payload = source["payload"]
+            spec = source_payload.get("speculative_plan") if isinstance(source_payload.get("speculative_plan"), dict) else None
+            extra = {"selected_strategy": strategy.model_dump(),
+                "direction_gate_id": gate["id"], "direction_selection_request": body,
+                "inherited_skill_trace": trace or []}
+            if (spec and spec.get("abandoned") is not True and spec.get("direction_id") == selected.id
+                    and isinstance(spec.get("entries"), dict) and spec["entries"]):
+                extra["stage_result_cache"] = copy.deepcopy(spec["entries"])
+                extra["stage_result_cache_direction_id"] = selected.id
+            jid = self._new_conversation_job(c, p, extra)
             source_payload["direction_continuation_job_id"] = jid
+            if spec is not None:
+                source_payload["speculative_plan"] = {**spec, "abandoned": True}
             c.execute("UPDATE jobs SET status='ready',phase='direction_selected',payload=?,lease_until=0,updated_at=? WHERE id=?", (encoded(source_payload), now, source["id"]))
             c.execute("INSERT INTO turn_requests VALUES(?,?,?,?)", (project_id, body["client_turn_id"], "direction_select", jid))
-            return self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone())
+            created = self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone())
+        from app.speculative_plan import cancel_speculation
+        cancel_speculation(project_id)
+        return created
 
     def create_creative_gate(self, job_id, options, message):
         from .schemas import CreativeOption

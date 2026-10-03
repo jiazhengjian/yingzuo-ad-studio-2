@@ -56,6 +56,9 @@ def create_app(settings=None, gateway=None, run_worker=True):
 
     async def worker():
         store.recover_jobs()
+        if getattr(settings, "planner_speculate_recommended", False):
+            from app.speculative_plan import kick_speculation
+            kick_speculation(store, gateway, settings)
         while True:
             for job in store.active_jobs():
                 if job["status"] == "queued":
@@ -143,13 +146,23 @@ def create_app(settings=None, gateway=None, run_worker=True):
             skill_registry = registry_metadata()
         except (OSError, ValueError):
             skill_registry = {"status": "unavailable"}
+        routes = getattr(settings, "planner_stage_routes", {}) or {}
+        route_labels = {stage: item["provider"] + ":" + item["model"] + ((":" + item["effort"]) if item.get("effort") else "")
+                        for stage, item in sorted(routes.items()) if isinstance(item, dict)}
         return {"ok": True, "configured": {"planner": bool(planner_api_key(settings)), "video": bool(settings.tudou_api_key)},
                 "skill_registry": skill_registry,
                 "active_jobs": len(store.active_jobs()), "providers": {"planner": planner_label(settings), "video": "土豆 API · Wan 3.0"},
                 "capabilities": {"planner_provider": planner_provider(settings), "planner_model": settings.planner_model,
                                  "video_model": settings.video_model, "max_video_submissions": settings.max_video_submissions,
                                  "max_image_submissions": 9, "duration_min_seconds": 10, "duration_max_seconds": 60,
-                                 "default_duration_seconds": 20},
+                                 "default_duration_seconds": 20,
+                                 "planner_stream": settings.planner_stream,
+                                 "planner_fallback": bool(settings.planner_fallback_on),
+                                 "planner_stage_routes": route_labels,
+                                 "planner_speculate_recommended": settings.planner_speculate_recommended,
+                                 "planner_max_refinements": settings.planner_max_refinements,
+                                 "planner_refinement_format": settings.planner_refinement_format,
+                                 "planner_request_deadline_seconds": settings.planner_request_deadline_seconds},
                 "limitations": ["支持10至60秒商品广告；独立主播入口暂未开放，商品广告可按方向安排角色说话", "原生声音、台词与口型需检查成片，暂不自动生成字幕", "商品使用上传原图；每方案一张场景图，有角色时每位一张组合四视图，一起确认后生成视频"]}
 
     @app.get("/api/projects")
