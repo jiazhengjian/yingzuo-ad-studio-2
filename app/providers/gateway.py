@@ -680,7 +680,13 @@ class Gateway:
 
     async def _planner_json(self, system, context, sources, max_tokens=7000, *, route=None,
                             on_first_token=None, allow_fallback=True):
-        route = route or stage_route(self.settings, context.get("stage"))
+        # Callers that tests replace keep the historical positional signature.
+        # The live stage caller stashes the route before that same call.
+        if route is None:
+            route = getattr(self, "_active_planner_route", None) or stage_route(
+                self.settings, context.get("stage"))
+        if on_first_token is None:
+            on_first_token = getattr(self, "_active_planner_first_token", None)
         stream_mode = getattr(self.settings, "planner_stream", "off")
         if stream_mode not in ("off", "on", "auto"):
             stream_mode = "off"
@@ -1009,8 +1015,13 @@ class Gateway:
                 def note_first_token():
                     if on_planner_stream:
                         on_planner_stream(data["stage"])
-                return await self._planner_json(system, data, originals, max_tokens=max_tokens,
-                    route=route, on_first_token=note_first_token)
+                self._active_planner_route = route
+                self._active_planner_first_token = note_first_token
+                try:
+                    return await self._planner_json(system, data, originals, max_tokens=max_tokens)
+                finally:
+                    self._active_planner_route = None
+                    self._active_planner_first_token = None
 
             result = await session.call(data["stage"], signature, perform,
                 on_start=starting, on_retry=retrying)
