@@ -63,7 +63,7 @@ def test_total_deadline_cancels_hanging_request_and_uses_safe_transient_error(se
         return client
     monkeypatch.setattr(httpx, "AsyncClient", tracked_client)
     timeout, _ = planner_request_timing(settings)
-    monkeypatch.setattr("app.providers.gateway.planner_request_timing", lambda _: (timeout, .01))
+    monkeypatch.setattr("app.providers.gateway.planner_request_timing", lambda *args, **kwargs: (timeout, .01))
     with caplog.at_level("INFO"), pytest.raises(PlannerRequestError) as caught:
         asyncio.run(Gateway(settings)._planner_json("DO_NOT_LOG_PROMPT", {"stage": "plan_review"}, []))
     assert cancelled == [True]
@@ -96,7 +96,7 @@ def test_timeouts_use_existing_two_transient_retries_and_persist_attempts(settin
         await asyncio.Event().wait()
     transport(fail)
     timeout, _ = planner_request_timing(settings)
-    monkeypatch.setattr("app.providers.gateway.planner_request_timing", lambda _: (timeout, .01))
+    monkeypatch.setattr("app.providers.gateway.planner_request_timing", lambda *args, **kwargs: (timeout, .01))
     saved = []
     session = PlanningSession(None, saved.append, {"synthetic_scope": True}, retry_delay=0)
     gateway = Gateway(settings)

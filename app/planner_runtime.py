@@ -268,21 +268,30 @@ def stage_request_options(stage: str, new_flow: bool) -> dict:
     return {}
 
 
-def safe_planner_metrics(stage: object, elapsed_seconds: object, usage: object = None) -> dict:
-    """Allowlist numeric usage and wall time; never retain prompts or reasoning.
+def _finite_milliseconds(seconds):
+    if type(seconds) not in (float, int):
+        return None
+    try:
+        if math.isfinite(seconds) and seconds >= 0:
+            milliseconds = seconds * 1000
+            if math.isfinite(milliseconds):
+                return round(milliseconds)
+    except OverflowError:
+        return None
+    return None
+
+
+def safe_planner_metrics(stage: object, elapsed_seconds: object, usage: object = None, *,
+                         first_token_seconds: object = None, stream: object = None,
+                         transport: object = None, stream_fallback: object = None) -> dict:
+    """Allowlist numeric usage, wall time and time-to-first-token.
 
     Callers can log this once per completed transport request, including empty
     or invalid responses. Missing provider usage remains absent, never zero.
+    Optional transport fields are omitted unless the caller measured them, so
+    older log readers keep the historical keys.
     """
-    elapsed_ms = None
-    if type(elapsed_seconds) in (float, int):
-        try:
-            if math.isfinite(elapsed_seconds) and elapsed_seconds >= 0:
-                milliseconds = elapsed_seconds * 1000
-                if math.isfinite(milliseconds):
-                    elapsed_ms = round(milliseconds)
-        except OverflowError:
-            pass
+    elapsed_ms = _finite_milliseconds(elapsed_seconds)
     safe_usage = {}
     if isinstance(usage, dict):
         for key in ("prompt_tokens", "completion_tokens", "total_tokens",
@@ -295,8 +304,18 @@ def safe_planner_metrics(stage: object, elapsed_seconds: object, usage: object =
             value = details.get("reasoning_tokens")
             if type(value) is int and value >= 0:
                 safe_usage["reasoning_tokens"] = value
-    return {"stage": stage if isinstance(stage, str) and stage in PLANNER_STAGES else "unknown",
-            "elapsed_ms": elapsed_ms, "usage": safe_usage}
+    result = {"stage": stage if isinstance(stage, str) and stage in PLANNER_STAGES else "unknown",
+              "elapsed_ms": elapsed_ms, "usage": safe_usage}
+    first_token_ms = _finite_milliseconds(first_token_seconds)
+    if first_token_seconds is not None and first_token_ms is not None:
+        result["first_token_ms"] = first_token_ms
+    if stream is True or stream is False:
+        result["stream"] = stream
+    if transport in ("primary", "fallback"):
+        result["transport"] = transport
+    if stream_fallback is True:
+        result["stream_fallback"] = True
+    return result
 
 
 def safe_planner_transport_failure(stage, elapsed_seconds, *, status_code=None, error_type=None):

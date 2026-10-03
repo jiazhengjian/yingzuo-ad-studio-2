@@ -33,16 +33,18 @@ from app.design import scene_design_request, character_design_request
 from app.production import (required_designs, validate_design_assets, production_authoring_schema,
                             derive_authored_production_metadata)
 from app.planner_runtime import PLANNER_STAGES, PLANNER_MODEL_CONTEXT_VERSION, planner_model_context, planner_wire_context, stage_request_options, safe_planner_metrics, safe_planner_transport_failure
-from app.planner_transport import (planner_api_key, planner_endpoint, planner_provider,
-                                   planner_request_timing, transport_options)
+from app.planner_transport import (apply_route_effort, fallback_eligible, fallback_route,
+                                   planner_api_key, planner_endpoint, planner_provider,
+                                   planner_request_timing, route_api_key, route_endpoint,
+                                   route_settings, stage_route, transport_options)
 from app.evidence_references import EVIDENCE_REFERENCE_VERSION, strategy_evidence_request, restore_merchant_references
-from app.progressive_planning import (PROGRESSIVE_REFINEMENT_POLICY_VERSION,
+from app.progressive_planning import (MAX_PLAN_REFINEMENTS, PROGRESSIVE_REFINEMENT_POLICY_VERSION,
                                      ProgressivePlanningError, progressive_plan, fixed_speech)
 from app.content_draft import (CONTENT_DRAFT_SYSTEM, CONTENT_DRAFT_VERSION,
                                content_draft_schema, validate_content_draft)
 from app.speech_draft import (SPEECH_DRAFT_SYSTEM, SPEECH_DRAFT_VERSION,
                               speech_draft_context, validate_speech_draft)
-from app.planning_session import PlanningSession, PlanningSessionError
+from app.planning_session import PlanningSession, PlanningSessionError, fingerprint
 from app.video_prompt import compiled_video_request, _reference_lines
 from app.directing import direction_context, storyboard_continuity_schema, derive_continuous_start_states
 from app.generation_policy import generation_groups
@@ -642,44 +644,153 @@ class Gateway:
     supports_direction_selection = True
     supports_planning_checkpoints = True
 
-    async def _planner_json(self, system, context, sources, max_tokens=7000):
+    def _text_fallback(self, route, *, status_code, timed_out):
+        """One explicit fast-model attempt. Never used for image or video submission."""
+        try:
+            policy = fallback_route(self.settings)
+        except ValueError:
+            return None
+        if policy is None:
+            return None
+        alternate, triggers = policy
+        if not fallback_eligible(triggers, status_code=status_code, timed_out=timed_out):
+            return None
+        if alternate.provider == route.provider and alternate.model == route.model:
+            return None
+        if not route_api_key(self.settings, alternate):
+            logger.warning("Planner fallback skipped: %s", json.dumps({
+                "reason": "missing_credential", "provider": alternate.provider}))
+            return None
+        return alternate
+
+    def _planner_payload(self, system, context, sources, max_tokens, route, *, stream):
         wire_context, evidence_aliases = strategy_evidence_request(planner_model_context(context))
         content = [{"type": "text", "text": json.dumps(wire_context, ensure_ascii=False)}]
         content += [{"type": "image_url", "image_url": {"url": data_url(a)}} for a in sources]
-        payload = {"model": self.settings.planner_model,
+        payload = {"model": route.model,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
             "response_format": {"type": "json_object"}, "thinking": {"type": "disabled"},
-            "max_tokens": max_tokens, "stream": False}
+            "max_tokens": max_tokens, "stream": stream}
         payload.update(stage_request_options(context.get("stage"), bool(context.get("stage_skills"))))
-        payload = transport_options(self.settings, payload, stage=context.get("stage"))
+        if route.effort:
+            payload["reasoning_effort"] = route.effort
+        payload = transport_options(route_settings(self.settings, route), payload, stage=context.get("stage"))
+        payload = apply_route_effort(payload, route)
+        return payload, evidence_aliases
+
+    async def _planner_json(self, system, context, sources, max_tokens=7000, *, route=None,
+                            on_first_token=None, allow_fallback=True):
+        route = route or stage_route(self.settings, context.get("stage"))
+        stream_mode = getattr(self.settings, "planner_stream", "off")
+        if stream_mode not in ("off", "on", "auto"):
+            stream_mode = "off"
+        # ``on`` and ``auto`` both try SSE, then one non-streaming request if the
+        # provider rejects the stream before any text. Tudou stream support is unverified.
+        attempts = ["stream", "json"] if stream_mode in ("on", "auto") else ["json"]
         started = time.monotonic()
-        request_timeout, request_deadline = planner_request_timing(self.settings)
+        first_token_at = None
+        used_stream = False
+        stream_fallback = False
+        response = None
+        for index, mode in enumerate(attempts):
+            payload, evidence_aliases = self._planner_payload(
+                system, context, sources, max_tokens, route, stream=mode == "stream")
+            request_timeout, request_deadline = planner_request_timing(self.settings, route)
+            mode_started = time.monotonic()
 
-        async def request_response():
-            async with httpx.AsyncClient(timeout=request_timeout, trust_env=False) as client:
-                return await client.post(planner_endpoint(self.settings),
-                    headers={"Authorization": f"Bearer {planner_api_key(self.settings)}"}, json=payload)
+            async def request_response(payload=payload, request_timeout=request_timeout, mode=mode):
+                nonlocal first_token_at, used_stream
+                async with httpx.AsyncClient(timeout=request_timeout, trust_env=False) as client:
+                    if payload.get("stream") is not True:
+                        return await client.post(route_endpoint(route.provider),
+                            headers={"Authorization": f"Bearer {route_api_key(self.settings, route)}"}, json=payload)
+                    async with client.stream("POST", route_endpoint(route.provider),
+                            headers={"Authorization": f"Bearer {route_api_key(self.settings, route)}"},
+                            json=payload) as streamed:
+                        if streamed.status_code >= 300:
+                            await streamed.aread()
+                            return httpx.Response(streamed.status_code, content=streamed.content,
+                                headers=streamed.headers)
+                        content_type = streamed.headers.get("content-type", "")
+                        if "text/event-stream" not in content_type:
+                            await streamed.aread()
+                            return httpx.Response(streamed.status_code, content=streamed.content,
+                                headers=streamed.headers)
+                        parts, finish, usage = [], None, None
+                        async for line in streamed.aiter_lines():
+                            if not line or line.startswith(":"):
+                                continue
+                            if not line.startswith("data:"):
+                                continue
+                            data = line[5:].strip()
+                            if data == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(data)
+                            except ValueError:
+                                raise PlannerInvalidResponse("策划回复未通过结构校验；已有成果仍保留，尚未开始图片或视频生成") from None
+                            if isinstance(chunk, dict) and isinstance(chunk.get("usage"), dict):
+                                usage = chunk["usage"]
+                            choices = chunk.get("choices") if isinstance(chunk, dict) else None
+                            choice = choices[0] if isinstance(choices, list) and choices else {}
+                            if not isinstance(choice, dict):
+                                continue
+                            if choice.get("finish_reason"):
+                                finish = choice["finish_reason"]
+                            delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+                            text = delta.get("content")
+                            if isinstance(text, str) and text:
+                                if first_token_at is None:
+                                    first_token_at = time.monotonic()
+                                    if on_first_token:
+                                        on_first_token()
+                                parts.append(text)
+                        used_stream = True
+                        body = {"choices": [{"finish_reason": finish or "stop",
+                            "message": {"content": "".join(parts)}}]}
+                        if usage is not None:
+                            body["usage"] = usage
+                        return httpx.Response(200, json=body)
 
-        try:
-            # wait_for retains the documented Python 3.10 compatibility.
-            response = await asyncio.wait_for(request_response(), timeout=request_deadline)
-        except (httpx.HTTPError, asyncio.TimeoutError) as exc:
-            logger.warning("Planner transport failure: %s", json.dumps(safe_planner_transport_failure(
-                context.get("stage"), time.monotonic() - started, error_type=type(exc).__name__)))
-            performance_logger.info("Planner request metrics: %s", json.dumps(
-                safe_planner_metrics(context.get("stage"), time.monotonic() - started)))
-            raise PlannerRequestError("策划服务连接暂时中断；已有成果仍保留。") from None
+            try:
+                # wait_for retains the documented Python 3.10 compatibility.
+                response = await asyncio.wait_for(request_response(), timeout=request_deadline)
+            except (httpx.HTTPError, asyncio.TimeoutError) as exc:
+                logger.warning("Planner transport failure: %s", json.dumps(safe_planner_transport_failure(
+                    context.get("stage"), time.monotonic() - started, error_type=type(exc).__name__)))
+                performance_logger.info("Planner request metrics: %s", json.dumps(safe_planner_metrics(
+                    context.get("stage"), time.monotonic() - started, first_token_seconds=(
+                        None if first_token_at is None else first_token_at - mode_started),
+                    stream=mode == "stream", transport="fallback" if not route.primary else "primary")))
+                alternate = self._text_fallback(route, status_code=None, timed_out=True) if allow_fallback else None
+                if alternate is not None:
+                    return await self._planner_json(system, context, sources, max_tokens, route=alternate,
+                        on_first_token=on_first_token, allow_fallback=False)
+                raise PlannerRequestError("策划服务连接暂时中断；已有成果仍保留。") from None
+            if mode == "stream" and not used_stream and response.status_code == 400 and index == 0 and len(attempts) > 1:
+                stream_fallback = True
+                continue
+            if mode == "stream" and not used_stream and response.status_code < 300:
+                stream_fallback = True
+            break
         try:
             response_body = response.json()
         except ValueError:
             response_body = None
         performance_logger.info("Planner request metrics: %s", json.dumps(safe_planner_metrics(
             context.get("stage"), time.monotonic() - started,
-            response_body.get("usage") if isinstance(response_body, dict) else None)))
+            response_body.get("usage") if isinstance(response_body, dict) else None,
+            first_token_seconds=None if first_token_at is None else first_token_at - started,
+            stream=used_stream, transport="fallback" if not route.primary else "primary",
+            stream_fallback=stream_fallback)))
         if response.status_code >= 300:
             logger.warning("Planner transport failure: %s", json.dumps(safe_planner_transport_failure(
                 context.get("stage"), time.monotonic() - started, status_code=response.status_code)))
             if response.status_code in (408, 429) or response.status_code >= 500:
+                alternate = self._text_fallback(route, status_code=response.status_code, timed_out=False) if allow_fallback else None
+                if alternate is not None:
+                    return await self._planner_json(system, context, sources, max_tokens, route=alternate,
+                        on_first_token=on_first_token, allow_fallback=False)
                 raise PlannerRequestError("策划服务暂时繁忙；已有成果仍保留。")
             if response.status_code in (401, 402, 403):
                 raise PlannerConfigurationError("策划服务的连接凭证、权限或余额需要检查；已有成果仍保留。")
@@ -736,15 +847,17 @@ class Gateway:
 
     async def decide(self, project, assets, messages, gates, current_plan, *, force_plan=False, on_progress=None,
                      selected_strategy=None, inherited_skill_trace=(), on_skill_trace=None,
-                     planning_checkpoint=None, on_checkpoint=None):
+                     planning_checkpoint=None, on_checkpoint=None, stage_result_cache=None,
+                     stage_cache_sink=None, abandon_check=None, on_planner_stream=None):
         """Resolve intent/choice, then draft -> direct -> independent plan review.
 
         Replies/clarifications cost one request; new choices include one review.
         Selected progressive plans use a joint draft and independent review when
         enabled, or three core requests otherwise; older adapters retain
         the reviewed-script contract below for compatibility.
-        Progressive plans allow two scoped corrections and, only when speech
-        naturalness is the sole remaining failure, one narration-only polish
+        Progressive plans allow the configured number of scoped corrections
+        (default two) and, only when speech naturalness is the sole remaining
+        failure, one narration-only polish
         followed by a complete review. Completed text
         calls are durably replayed; empty/transport retries share per-turn budgets.
         No media is generated here.
@@ -840,6 +953,7 @@ class Gateway:
                 if on_progress:
                     on_progress("retrying_planner" if kind == "empty" else "retrying_planner_request")
 
+            route = stage_route(self.settings, data["stage"])
             signature = {"system": system, "context": planner_wire_context(data),
                 "wire_context_version": PLANNER_MODEL_CONTEXT_VERSION,
                 "model": self.settings.planner_model, "max_tokens": max_tokens,
@@ -859,11 +973,49 @@ class Gateway:
                 signature["options"] = transport_options(self.settings, {
                     "thinking": {"type": "disabled"}, "max_tokens": max_tokens,
                     **stage_request_options(data["stage"], bool(data.get("stage_skills")))}, stage=data["stage"])
+            if not route.primary:
+                # A stage sent to another model must not replay the primary model's answer.
+                signature.update(model=route.model, provider=route.provider,
+                    endpoint=route_endpoint(route.provider),
+                    stage_route={"provider": route.provider, "model": route.model, "effort": route.effort})
+                routed = {"thinking": {"type": "disabled"}, "max_tokens": max_tokens,
+                    **stage_request_options(data["stage"], bool(data.get("stage_skills")))}
+                if route.effort:
+                    routed["reasoning_effort"] = route.effort
+                signature["options"] = apply_route_effort(transport_options(
+                    route_settings(self.settings, route), routed, stage=data["stage"]), route)
+            try:
+                fallback_policy = fallback_route(self.settings)
+            except ValueError:
+                fallback_policy = None
+            if fallback_policy is not None:
+                alternate, triggers = fallback_policy
+                signature["planner_fallback"] = {"provider": alternate.provider,
+                    "model": alternate.model, "on": list(triggers)}
             if data["stage"] == "strategy" and data.get("stage_skills") and data.get("evidence_sources"):
                 signature["evidence_reference_version"] = EVIDENCE_REFERENCE_VERSION
-            result = await session.call(data["stage"], signature,
-                lambda: self._planner_json(system, data, originals, max_tokens=max_tokens),
+            cached = None
+            if isinstance(stage_result_cache, dict):
+                cached_entry = stage_result_cache.get(fingerprint(signature))
+                if (isinstance(cached_entry, dict) and cached_entry.get("stage") == data["stage"]
+                        and isinstance(cached_entry.get("result"), dict)):
+                    cached = cached_entry["result"]
+
+            async def perform():
+                if abandon_check and abandon_check():
+                    raise RuntimeError("speculative plan abandoned")
+                if cached is not None:
+                    return copy.deepcopy(cached)
+                def note_first_token():
+                    if on_planner_stream:
+                        on_planner_stream(data["stage"])
+                return await self._planner_json(system, data, originals, max_tokens=max_tokens,
+                    route=route, on_first_token=note_first_token)
+
+            result = await session.call(data["stage"], signature, perform,
                 on_start=starting, on_retry=retrying)
+            if stage_cache_sink is not None and cached is None:
+                stage_cache_sink(fingerprint(signature), data["stage"], result)
             last_stage_result = {"stage": data["stage"], "raw_output": result}
             return result
         sources = [a for a in assets if a["kind"] == "product" and not a.get("metadata", {}).get("generated")][:3]
@@ -1123,7 +1275,9 @@ class Gateway:
                     draft_issues=draft_enum_issues, duration=duration, generation_strategy=generation_strategy,
                     assets=sources, conversation=context["conversation"], merchant_request=merchant_request,
                     current_plan=current_plan, initial_brief=initial_brief, content_only=lean_enabled,
-                    speech_only=speech_only)
+                    speech_only=speech_only,
+                    max_refinements=getattr(self.settings, "planner_max_refinements", MAX_PLAN_REFINEMENTS),
+                    refinement_format=getattr(self.settings, "planner_refinement_format", "sparse_or_full"))
                 plan["skill_trace"] = copy.deepcopy(skill_trace)
                 return AgentDecision.model_validate({"kind": "plan",
                     "message": "广告方案已准备好，创意摘要和分镜见下方。需要修改，直接告诉我；确认后再准备图片。",

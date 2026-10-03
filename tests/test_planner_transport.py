@@ -376,7 +376,10 @@ def isolated_environment(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "ROOT", tmp_path)
     for key in ("PLANNER_PROVIDER", "PLANNER_MODEL", "DEEPSEEK_MODEL", "DEEPSEEK_API_KEY",
                 "TUDOU_API_KEY", "AD_DATA_ROOT", "TTS_VOICE", "JOINT_PLANNING_ENABLED",
-                "PLANNER_STORYBOARD_EFFORT"):
+                "PLANNER_STORYBOARD_EFFORT", "PLANNER_DIRECTION_REVIEW_EFFORT", "PLANNER_STAGE_ROUTES",
+                "PLANNER_FALLBACK_PROVIDER", "PLANNER_FALLBACK_MODEL", "PLANNER_FALLBACK_ON",
+                "PLANNER_STREAM", "PLANNER_REQUEST_DEADLINE_SECONDS", "PLANNER_MAX_REFINEMENTS",
+                "PLANNER_REFINEMENT_FORMAT", "PLANNER_SPECULATE_RECOMMENDED"):
         monkeypatch.delenv(key, raising=False)
     return tmp_path
 
