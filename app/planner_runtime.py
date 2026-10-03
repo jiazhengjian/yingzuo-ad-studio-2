@@ -224,7 +224,8 @@ def planner_wire_context(context: dict) -> dict:
         if len(selected) == 1:
             gate["options"] = [{key: value for key, value in selected[0].items()
                                 if key in ("id", "rule_id", "label", "angle", "audience_value",
-                                           "product_expression", "evidence_ids", "story_summary", "attraction_mechanism", "film_concept")}]
+                                           "product_expression", "evidence_ids", "story_summary", "attraction_mechanism", "film_concept",
+                                           "consumer_insight", "big_idea", "hook_type", "brand_world")}]
     return result
 
 

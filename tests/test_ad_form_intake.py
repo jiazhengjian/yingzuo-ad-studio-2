@@ -19,7 +19,7 @@ from app.planning import evidence_sources
 from app.providers.gateway import Gateway
 from app.strategy import ProductBrief, validate_brief
 from test_conversation_api import env, post_turn, ready_plan
-from test_direction_selection import candidates_for, isolated_skill_loader, approved_direction_review
+from test_direction_selection import candidates_for, isolated_skill_loader, approved_direction_review, concept_pool_for
 
 
 @pytest.fixture(autouse=True)
@@ -219,7 +219,8 @@ def test_real_acceptance_sequence_through_api_frozen_gateway_and_reopened_store(
         brief = candidate.brief.model_dump()
         brief.pop("ad_form", None)
         return {"kind": "directions", "message": "请选择一个方向。", "brief": brief,
-                "directions": [d.model_dump() for d in candidate.directions]}
+                "directions": [d.model_dump() for d in candidate.directions],
+                "concept_pool": concept_pool_for(candidate.directions)}
     monkeypatch.setattr(Gateway, "_planner_json", fake)
     previous_gate = None
     for index, (fields, expected) in enumerate(inputs):
@@ -486,7 +487,8 @@ def test_actual_gateway_candidate_and_selected_job_inherit_preference(env, monke
         contexts.append(deepcopy(data))
         if data["stage"] == "strategy":
             return {"kind": "directions", "message": "请选择", "brief": raw_brief,
-                    "directions": [d.model_dump() for d in candidate.directions]}
+                    "directions": [d.model_dump() for d in candidate.directions],
+                    "concept_pool": concept_pool_for(candidate.directions)}
         assert data["stage"] == "direction_review"
         return approved_direction_review(data["directions"])
     monkeypatch.setattr(Gateway, "_planner_json", fake)

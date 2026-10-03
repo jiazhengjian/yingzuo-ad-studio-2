@@ -9,6 +9,19 @@ import ProductionSummary from './ProductionSummary';
 
 type Props = Omit<ConversationGateProps, 'gate'> & { gate: DirectionGateData };
 
+const hookLabels: Record<string, string> = {
+  macro_detail: '特写里的一个细节',
+  silhouette: '先看到轮廓',
+  signature_sound: '先听到一声',
+  scale_shift: '大小突然变了',
+  awkward_moment: '一个尴尬瞬间',
+  situational_conflict: '当场卡住',
+  arresting_line: '先说一句',
+  direct_question: '先问一句',
+  counterintuitive: '和想的不一样',
+  result_first: '先给结果',
+};
+
 const filmStructureLabels: Record<FilmStructure, string> = {
   product_visual: '产品视觉呈现',
   world_intercut: '产品与场景交替',
@@ -30,6 +43,9 @@ function distinctRows(rows: [string, string | undefined][], seen = new Set<strin
 function FilmConceptContent({ option, concept }: { option: DirectionOption; concept: FilmConcept }) {
   const seen = new Set<string>();
   const mainRows = distinctRows([
+    ['一句话', option.big_idea],
+    ['观众处境', option.consumer_insight],
+    ['开头', option.hook_type ? hookLabels[option.hook_type] : undefined],
     ['主打什么', option.angle],
     ['核心画面', concept.key_visual],
     ['创意展开', option.story_summary],

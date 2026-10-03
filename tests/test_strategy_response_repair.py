@@ -12,7 +12,7 @@ from app.db import Store
 from app.pipeline import Pipeline
 from app.providers.gateway import Gateway, ProviderError
 from test_conversation_api import env, post_turn
-from test_direction_selection import candidates_for, approved_direction_review, isolated_skill_loader
+from test_direction_selection import candidates_for, approved_direction_review, concept_pool_for, isolated_skill_loader
 from test_providers import chat_output, request_context
 
 
@@ -41,6 +41,7 @@ def repair_case(env, monkeypatch, isolated_skill_loader):
     candidate = candidates_for(local_env)
     valid = {"kind": "directions", "message": "请比较三个外观故事", "brief": candidate.brief.model_dump(),
         "directions": [direction.model_dump() for direction in candidate.directions],
+        "concept_pool": concept_pool_for(candidate.directions),
         "recommended_direction_id": candidate.recommended_direction_id}
     valid = json.loads(json.dumps(valid, ensure_ascii=False).replace("瓶身", "机身").replace("瓶子", "吹风机"))
     valid["brief"]["category"] = "appliance"

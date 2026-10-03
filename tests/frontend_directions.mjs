@@ -45,6 +45,22 @@ const filmDirection = (id, structure = 'product_visual') => ({ ...direction(id),
     memory_anchor: `记忆画面${id}：环绕产品的风与发丝。`, sound_role: `声音职责${id}：旁白补充已确认功能与造型师的选择关注。` },
 });
 
+test('an ad concept shows the one-liner, the viewer tension and the opening in the main column', () => {
+  const production = { version: '1.0.0', product_constraints: [], characters: [], speech_mode: 'voiceover', speaker_id: '', voice_description: '自然旁白' };
+  const option = { ...filmDirection('concept'), production,
+    big_idea: '先看见一条轮廓', consumer_insight: '还没看清整只瓶子，就想知道它长什么样。', hook_type: 'macro_detail' };
+  const html = markup(gate({ options: [option, { ...filmDirection('plain'), production }, { ...filmDirection('other'), production }] }));
+  const start = html.indexOf('方向：创意concept');
+  const main = html.indexOf('class="direction-film-main"', start);
+  const secondary = html.indexOf('class="direction-film-details"', main);
+  const visible = html.slice(main, secondary);
+  for (const text of ['一句话', '先看见一条轮廓', '观众处境', '还没看清整只瓶子，就想知道它长什么样。', '开头', '特写里的一个细节']) {
+    assert.ok(visible.includes(text), text);
+  }
+  assert.ok(!visible.includes(option.hook));
+  assert.equal((html.match(/<dt>一句话<\/dt>/g) ?? []).length, 1);
+});
+
 test('film concepts make structure and the visible idea clear while secondary copy stays collapsed', () => {
   const production = { version: '1.0.0', product_constraints: [], characters: [], speech_mode: 'voiceover', speaker_id: '', voice_description: '自然旁白' };
   const options = ['product_visual', 'world_intercut', 'lifestyle'].map((structure, index) => ({

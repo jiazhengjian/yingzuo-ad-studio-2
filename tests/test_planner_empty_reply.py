@@ -11,7 +11,7 @@ import pytest
 from app.pipeline import Pipeline
 from app.providers.gateway import EmptyPlannerResponse, Gateway, ProviderError
 from test_conversation_api import env, post_turn
-from test_direction_selection import approved_direction_review, candidates_for, isolated_skill_loader
+from test_direction_selection import approved_direction_review, candidates_for, concept_pool_for, isolated_skill_loader
 from test_providers import chat_output, request_context
 
 
@@ -37,7 +37,8 @@ def empty_output(content="", finish_reason="stop"):
 
 def strategy_output(candidate):
     return {"kind": "directions", "message": "待审核的三个方向", "brief": candidate.brief.model_dump(),
-        "directions": [direction.model_dump() for direction in candidate.directions]}
+        "directions": [direction.model_dump() for direction in candidate.directions],
+        "concept_pool": concept_pool_for(candidate.directions)}
 
 
 def run_decision(env, **callbacks):

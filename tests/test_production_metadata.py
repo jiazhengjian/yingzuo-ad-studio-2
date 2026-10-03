@@ -11,7 +11,7 @@ from app.production import (ProductionPlan, derive_authored_production_metadata,
 from app.providers.gateway import Gateway, ProviderError
 from app.strategy import StrategyRecord, build_strategy, select_rules
 from test_conversation_api import env, post_turn
-from test_direction_selection import candidates_for, approved_direction_review, isolated_skill_loader
+from test_direction_selection import candidates_for, approved_direction_review, concept_pool_for, isolated_skill_loader
 
 
 @pytest.fixture(autouse=True)
@@ -37,7 +37,8 @@ def test_gateway_owns_version_for_authored_strategy_and_review(env, monkeypatch,
         assert production_schema["additionalProperties"] is False
         if stage == "strategy":
             raw = {"kind": "directions", "message": "三个候选", "brief": candidates.brief.model_dump(),
-                   "directions": [d.model_dump() for d in candidates.directions]}
+                   "directions": [d.model_dump() for d in candidates.directions],
+                   "concept_pool": concept_pool_for(candidates.directions)}
         else:
             assert stage == "direction_review"
             assert all(d["production"]["version"] == "1.0.0" for d in context["directions"])

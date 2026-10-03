@@ -9,7 +9,7 @@ import pytest
 from app.providers import gateway as gateway_module
 from app.providers.gateway import Gateway, ProviderError, save_failed_planner_output
 from test_conversation_api import env
-from test_direction_selection import candidates_for, forbid_unmocked_network
+from test_direction_selection import candidates_for, concept_pool_for, forbid_unmocked_network
 
 
 def test_truncated_response_reports_stage_without_logging_private_content(env, monkeypatch, caplog):
@@ -61,7 +61,8 @@ def test_failed_planner_saves_only_last_response_and_safe_guard_locations(env, m
     _, app, pid, asset = env
     candidate = candidates_for(env)
     response = {"kind": "directions", "message": "选择方向", "brief": candidate.brief.model_dump(),
-        "directions": [d.model_dump() for d in candidate.directions]}
+        "directions": [d.model_dump() for d in candidate.directions],
+        "concept_pool": concept_pool_for(candidate.directions)}
     if failure == "schema":
         response["extra"] = "REPLAYABLE_SCHEMA_FAILURE"
     else:

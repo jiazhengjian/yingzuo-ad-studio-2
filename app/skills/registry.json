@@ -114,7 +114,7 @@
     {
       "id": "ads-video-creative-strategy",
       "display_name": "Ads Video Creative Strategy",
-      "version": "1.6.5",
+      "version": "1.7.0",
       "stages": [
         "strategy"
       ],
@@ -152,7 +152,7 @@
           "sha256": "9692d6efab17b8311d870a9811211c24c218a98f187a268a6d1057fd80ec6cd3"
         }
       ],
-      "adaptation_note": "区分用途、明确片场与参考意图；按所选形式与结构偏好给三个产品价值概念，以核心画面、变化关系、产品记忆和声音任务形成差异，允许同结构同卖点；选定后完整交接。"
+      "adaptation_note": "同一次先写六个短概念，程序按机制、钩子和品牌世界留下三个再展开。观众处境、一句话和具名开场用消费者的话；商品主张仍要事实，情绪和夸张不另编号也不写成功效。"
     },
     {
       "id": "ads-video-script-planning",
@@ -382,7 +382,7 @@
     {
       "id": "ads-video-plan-review",
       "display_name": "Ads Video Plan Review",
-      "version": "1.15.0",
+      "version": "1.16.0",
       "stages": [
         "direction_review",
         "plan_review",
@@ -415,7 +415,7 @@
           "sha256": "9692d6efab17b8311d870a9811211c24c218a98f187a268a6d1057fd80ec6cd3"
         }
       ],
-      "adaptation_note": "先据实际画面与声音判断可接收信息，再核对事实、价值、创作意图和影片概念；同次最小修订候选及窄范围图片观察纠正，商家事实冻结，不增加模型阶段或循环。",
+      "adaptation_note": "审核只改没有依据的商品主张，不改写观众处境、一句话、开场钩子和标题。张力和钩子强度只记录，不决定是否通过；同次修订不增加模型阶段。",
       "stage_resources": {
         "direction_review": [
           "SKILL.md",
@@ -486,7 +486,7 @@
     {
       "id": "product-evidence",
       "path": "shared/product-evidence.md",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "stages": [
         "strategy",
         "direction_review"
@@ -495,7 +495,7 @@
     {
       "id": "ad-form-contract",
       "path": "shared/ad-form-contract.md",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "stages": [
         "strategy",
         "direction_review"
@@ -504,7 +504,7 @@
     {
       "id": "script-expression",
       "path": "shared/script-expression.md",
-      "version": "1.4.0",
+      "version": "1.5.0",
       "stages": [
         "ad_script",
         "storyboard",

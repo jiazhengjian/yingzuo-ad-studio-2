@@ -17,12 +17,38 @@ from .production import ProductionPlan, validate_production_sources
 from .ad_form import AdForm
 
 
-STRATEGY_VERSION = "1.2.0"
+STRATEGY_VERSION = "1.3.0"
 Category = Literal["food", "appliance", "general"]
 Identifier = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
 ShortText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
 LongText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1500)]
 HistoricalDirectionText = Annotated[str, StringConstraints(strip_whitespace=True, max_length=1500)]
+InsightText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=4, max_length=80)]
+BigIdeaText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=4, max_length=28)]
+HookType = Literal[
+    "macro_detail", "silhouette", "signature_sound", "scale_shift",
+    "awkward_moment", "situational_conflict", "arresting_line",
+    "direct_question", "counterintuitive", "result_first",
+]
+BrandWorld = Literal["functional", "identity", "sensory"]
+PLAYBOOK_HOOKS = {
+    "brand_tvc": frozenset({"macro_detail", "silhouette", "signature_sound", "scale_shift"}),
+    "scene_story": frozenset({"awkward_moment", "situational_conflict", "arresting_line"}),
+    "presenter_pitch": frozenset({"direct_question", "counterintuitive", "result_first"}),
+}
+EMOTIONAL_RULES = frozenset({
+    "exaggeration", "contrast_humor", "identity_attitude", "ritual_sensory", "situational_conflict",
+})
+# Consumer-facing direction prose is what later lines tend to copy. These are
+# planner phrases seen in real drafts, not a ban on ordinary words like 看 or 用.
+JARGON_PATTERNS = (
+    r"满足你对", r"兼顾", r"纳入", r"高端质感", r"打造", r"呈现", r"体现",
+    r"主打", r"受众", r"记忆点", r"观看期待", r"卖点", r"策划", r"关注",
+)
+CONSUMER_FIELDS = (
+    "label", "angle", "audience_value", "product_expression", "story_summary",
+    "attraction_mechanism", "hook", "development", "payoff", "consumer_insight", "big_idea",
+)
 
 
 class _StrictModel(BaseModel):
@@ -104,6 +130,14 @@ class CreativeDirection(_StrictModel):
         description="创意展开：按所选主要表达方式讲清开场、推进与收束；可以是商品展示、情境故事或人物讲解，不强制短剧情，不是逐镜清单")
     attraction_mechanism: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
         description="吸引观众的具体方式：开头为什么想看、接下来期待什么、看完记住什么；不能只说高级好看有质感")
+    consumer_insight: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
+        description="观众卡住的那一点：一句人话里的张力或未满足处境。可以是情境、情绪或态度，不是调研结论，也不写成商品功效")
+    big_idea: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
+        description="一句话概念，4到28字，观众听得懂。不是口号字卡，也不报功能名")
+    hook_type: HookType | None = Field(default=None, exclude_if=lambda value: value is None,
+        description="具名开场钩子，必须属于当前广告类型 playbook 允许的那一组")
+    brand_world: BrandWorld | None = Field(default=None, exclude_if=lambda value: value is None,
+        description="概念层的品牌世界路径：functional 功能环境、identity 身份态度、sensory 感官仪式。不是商品事实")
     hook: LongText
     development: LongText
     payoff: LongText
@@ -114,6 +148,26 @@ class CreativeDirection(_StrictModel):
     @model_validator(mode="after")
     def unique_evidence(self):
         _require_unique(self.evidence_ids, "方向证据 ID")
+        return self
+
+
+class ConceptSketch(_StrictModel):
+    """A short concept the strategy call can afford to write six of.
+
+    The three expanded directions are chosen from these ids. Mood and humour
+    live here; evidence_ids only ground the product claim.
+    """
+    id: Identifier
+    rule_id: Identifier
+    hook_type: HookType
+    brand_world: BrandWorld
+    consumer_insight: InsightText
+    big_idea: BigIdeaText
+    evidence_ids: list[Identifier] = Field(min_length=1, max_length=12)
+
+    @model_validator(mode="after")
+    def unique_evidence(self):
+        _require_unique(self.evidence_ids, "短概念证据 ID")
         return self
 
 
@@ -200,6 +254,12 @@ class DirectionReviewCheck(_StrictModel):
         description="实际创意与制作选择是否兑现用户选定主要表达方式，而非只在标签上改类型")
     film_concept_passed: bool | None = Field(default=None, strict=True, exclude_if=lambda value: value is None,
         description="对照原始要求核对用途/片场/参考意图区分、影片结构与实际核心画面、卖点和记忆点相符；不能仅看标签")
+    creative_tension: Literal["low", "medium", "high"] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+        description="创意张力：观众处境是否让人想看下去。只记录，不决定 ready")
+    hook_strength: Literal["low", "medium", "high"] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+        description="开场钩子是否具体、属于本类型，并且后面有兑现。只记录，不决定 ready")
     note: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)] = Field(
         description="针对修订后实际内容的简短可核对结论：引用事实、产品价值如何体现、主要表达方式及必要修正；不输出思考过程")
 
@@ -515,6 +575,157 @@ def build_strategy(
         rules_used=[AppliedRule(id=rule_id, version=allowed[rule_id]["version"],
                                 sources=list(allowed[rule_id]["sources"])) for rule_id in used_ids],
     )
+
+
+def allowed_hooks(ad_form: str | None, structure: str | None = None) -> frozenset[str]:
+    """Playbook openings win. Auto follows the direction's own structure."""
+    if ad_form in PLAYBOOK_HOOKS:
+        return PLAYBOOK_HOOKS[ad_form]
+    if structure == "scene_action":
+        return PLAYBOOK_HOOKS["scene_story"]
+    if structure == "presenter_explanation":
+        return PLAYBOOK_HOOKS["presenter_pitch"]
+    if structure == "lifestyle":
+        return PLAYBOOK_HOOKS["brand_tvc"] | PLAYBOOK_HOOKS["scene_story"]
+    if structure in {"product_visual", "world_intercut"}:
+        return PLAYBOOK_HOOKS["brand_tvc"]
+    return frozenset().union(*PLAYBOOK_HOOKS.values())
+
+
+def consumer_jargon(text: str) -> str | None:
+    """Return the first planner phrase in consumer-facing copy, if any."""
+    for pattern in JARGON_PATTERNS:
+        found = re.search(pattern, text)
+        if found:
+            return found.group(0)
+    return None
+
+
+def require_consumer_language(directions: list[CreativeDirection]) -> None:
+    """Reject planner phrasing in the copy later lines tend to repeat."""
+    for direction in directions:
+        for field, text in _consumer_texts(direction):
+            phrase = consumer_jargon(text)
+            if phrase:
+                raise ValueError(f"方向 {direction.id} 的{field}要用观众听得懂的话，不要写「{phrase}」")
+
+
+def _consumer_texts(direction: CreativeDirection) -> list[tuple[str, str]]:
+    texts = [(field, getattr(direction, field) or "") for field in CONSUMER_FIELDS]
+    concept = direction.film_concept
+    if concept is not None:
+        texts.extend((field, getattr(concept, field) or "") for field in ("key_visual", "memory_anchor", "sound_role"))
+    return [(field, text) for field, text in texts if text]
+
+
+def require_ad_concepts(directions: list[CreativeDirection], brief: ProductBrief | None = None) -> None:
+    """New offers need an insight, a one-line idea and a playbook hook.
+
+    Historical directions omit these fields and stay readable. This does not
+    judge whether the idea is good, only that the contract and wording are present.
+    """
+    ideas = []
+    for direction in directions:
+        if not direction.consumer_insight or not direction.big_idea or direction.hook_type is None or direction.brand_world is None:
+            raise ValueError(f"方向 {direction.id} 必须写观众处境、一句话概念、开场钩子和品牌世界路径")
+        if not 4 <= len(direction.big_idea) <= 28:
+            raise ValueError(f"方向 {direction.id} 的一句话概念用4到28个字")
+        structure = direction.film_concept.structure if direction.film_concept is not None else None
+        form = brief.ad_form if brief is not None else None
+        if direction.hook_type not in allowed_hooks(form, structure):
+            raise ValueError(f"方向 {direction.id} 的开场钩子不属于当前广告类型")
+        if not 4 <= len(direction.consumer_insight) <= 80:
+            raise ValueError(f"方向 {direction.id} 的观众处境用4到80个字")
+        ideas.append(_normal_form(direction.big_idea))
+    require_consumer_language(directions)
+    _require_unique(ideas, "一句话概念")
+
+
+def _validate_sketch(brief: ProductBrief, sketch: ConceptSketch) -> None:
+    facts = {fact.id: fact for fact in brief.facts}
+    rules = _rules_by_id()
+    rule = rules.get(sketch.rule_id)
+    if rule is None:
+        raise ValueError(f"未知策略规则：{sketch.rule_id}")
+    if brief.category not in rule["categories"]:
+        raise ValueError(f"规则 {sketch.rule_id} 不适用于该商品品类")
+    if any(fact_id not in facts for fact_id in sketch.evidence_ids):
+        raise ValueError(f"短概念 {sketch.id} 引用了不存在的商品事实")
+    cited = [facts[fact_id] for fact_id in sketch.evidence_ids]
+    if len(cited) < rule["prerequisites"]["min_facts"] or not _merchant_support(cited, rule["prerequisites"]):
+        raise ValueError(f"规则 {sketch.rule_id} 缺少前提：{rule['prerequisites']['description']}")
+    if sketch.hook_type not in allowed_hooks(brief.ad_form):
+        raise ValueError(f"短概念 {sketch.id} 的开场钩子不属于当前广告类型")
+    for field in ("consumer_insight", "big_idea"):
+        phrase = consumer_jargon(getattr(sketch, field))
+        if phrase:
+            raise ValueError(f"短概念 {sketch.id} 的{field}要用观众听得懂的话，不要写「{phrase}」")
+
+
+def _sketch_score(sketch: ConceptSketch, chosen: list[ConceptSketch]) -> tuple:
+    """Prefer a new mechanism, hook and brand world. Ties keep earlier sketches."""
+    rules = {item.rule_id for item in chosen}
+    hooks = {item.hook_type for item in chosen}
+    worlds = {item.brand_world for item in chosen}
+    families = {("emotional" if item.rule_id in EMOTIONAL_RULES else "informational") for item in chosen}
+    family = "emotional" if sketch.rule_id in EMOTIONAL_RULES else "informational"
+    ideas = {_normal_form(item.big_idea) for item in chosen}
+    score = 0
+    if sketch.rule_id not in rules:
+        score += 5
+    if sketch.hook_type not in hooks:
+        score += 3
+    if sketch.brand_world not in worlds:
+        score += 2
+    if family not in families:
+        score += 4
+    if _normal_form(sketch.big_idea) in ideas:
+        score -= 8
+    return (score, 1 if family == "emotional" else 0)
+
+
+def select_concept_ids(sketches: list[ConceptSketch]) -> list[str]:
+    """Pick three sketches that differ in mechanism, hook and brand world.
+
+    Strength here is that diversity score, not a model self-rating and not a
+    predicted conversion. The call order is only a tie-break.
+    """
+    remaining = list(sketches)
+    chosen: list[ConceptSketch] = []
+    while remaining and len(chosen) < 3:
+        best = max(range(len(remaining)), key=lambda index: (_sketch_score(remaining[index], chosen), -index))
+        chosen.append(remaining.pop(best))
+    return [item.id for item in chosen]
+
+
+def validate_direction_offer(brief: ProductBrief, directions: list[CreativeDirection], pool: list[ConceptSketch]) -> None:
+    """Check a six-sketch pool and the three directions expanded from it."""
+    brief = ProductBrief.model_validate(brief)
+    directions = [CreativeDirection.model_validate(value) for value in directions]
+    pool = [ConceptSketch.model_validate(value) for value in pool]
+    if len(pool) != 6:
+        raise ValueError("新方向需要六个短概念，再展开其中三个")
+    _require_unique([item.id for item in pool], "短概念 ID")
+    require_ad_concepts(directions, brief)
+    for sketch in pool:
+        _validate_sketch(brief, sketch)
+    chosen = select_concept_ids(pool)
+    if {direction.id for direction in directions} != set(chosen):
+        raise ValueError("展开的三个方向须是机制、钩子和品牌世界差异最大的一组：" + "、".join(chosen))
+    by_id = {item.id: item for item in pool}
+    for direction in directions:
+        sketch = by_id[direction.id]
+        if (direction.rule_id, direction.hook_type, direction.brand_world, direction.consumer_insight,
+                direction.big_idea, tuple(direction.evidence_ids)) != (
+                sketch.rule_id, sketch.hook_type, sketch.brand_world, sketch.consumer_insight,
+                sketch.big_idea, tuple(sketch.evidence_ids)):
+            raise ValueError(f"方向 {direction.id} 必须沿用对应短概念的机制、钩子、洞察、一句话和商品依据")
+    if len({direction.rule_id for direction in directions}) < 2:
+        raise ValueError("三个方向至少要使用两种创意机制")
+    if len({direction.hook_type for direction in directions}) < 2:
+        raise ValueError("三个方向至少要使用两种开场钩子")
+    if len({direction.brand_world for direction in directions}) < 2:
+        raise ValueError("三个方向至少要使用两种品牌世界路径")
 
 
 def build_direction_candidates(brief, directions, recommended_id, rules, *, direction_review=None) -> DirectionCandidates:

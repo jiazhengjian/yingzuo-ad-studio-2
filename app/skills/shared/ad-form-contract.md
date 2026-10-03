@@ -31,7 +31,7 @@
 - `memory_anchor`：观众应记住的一个产品认识或可辨认视觉记忆，不是泛用口号或转化承诺。
 - `sound_role`：声音的信息或节奏任务，与 `production.speech_mode` 一致。纯产品不等于无人声；视觉难以准确表达功能时可用短旁白补充已知意义，无需话语时可无人声。这里不写完整台词或动作解说。
 
-`angle` 写主打特点，`audience_value` 写受众为何在意，`product_expression` 说明哪段实际内容让该特点被理解；均遵守 [商品依据](product-evidence.md)。`story_summary` 保留历史键名，承担唯一的简短创意展开，不要求三类都写成故事；`hook/development/payoff` 分记同一创意的进入、展开和落点，`attraction_mechanism` 说明具体观看期待，不另起一套稿。
+`angle` 写主打特点，`audience_value` 写受众为何在意，`product_expression` 说明哪段实际内容让该特点被理解；均遵守 [商品依据](product-evidence.md)。`consumer_insight` 是一句观众卡住的处境，`big_idea` 是 4 到 28 字的一句话概念，不是画面口号或结尾字卡。`hook_type` 用当前类型 playbook 里的具名开场，`brand_world` 只在概念层标功能环境、身份态度或感官仪式，不是商品事实。这些字段和展开都用观众能说的话。`story_summary` 保留历史键名，承担唯一的简短创意展开，不要求三类都写成故事；`hook/development/payoff` 分记同一创意的进入、展开和落点，`attraction_mechanism` 说明具体观看期待，不另起一套稿。
 
 ## 选择与历史兼容
 

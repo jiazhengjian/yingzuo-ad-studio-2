@@ -1210,7 +1210,7 @@ class Gateway:
                             feedback = [{"type": "strategy_contract", "message": str(exc)[:500]}]
                         request_context = {**copy.deepcopy(context), "task_kind": "strategy_response_repair",
                             "previous_response": copy.deepcopy(raw), "validation_feedback": feedback,
-                            "repair_instruction": "上一份入口回复未通过程序校验，尚未向用户展示。根据原始需求重新判断 reply/clarify/directions/plan 路由，只返回修正后的完整 schema JSON。信息不足且用户未授权代定时先澄清；不要为凑三个方向选用不适用品类或缺少事实前提的规则。同一规则可用于实质不同的故事。不得修改用户要求、伪造商品事实或绕过来源校验。"}
+                            "repair_instruction": "上一份入口回复未通过程序校验，尚未向用户展示。根据原始需求重新判断 reply/clarify/directions/plan 路由，只返回修正后的完整 schema JSON。信息不足且用户未授权代定时先澄清；不要为凑三个方向选用不适用品类或缺少事实前提的规则。同一规则可用于实质不同的故事。若反馈指出应展开的三个短概念 id，只展开那三个，并沿用它们的机制、钩子、品牌世界、观众处境、一句话和事实编号。不得修改用户要求、伪造商品事实或绕过来源校验。"}
                         if on_progress:
                             on_progress("deciding")
                 if decision.kind == "directions":

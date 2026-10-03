@@ -80,10 +80,25 @@ def candidates_for(env):
             "characters": ([{"id": "char_worker", "name": "办公者", "description": "创作设定：短发成年办公者，穿浅色长袖衬衫"}] if i == 1 else []),
             "speech_mode": "voiceover", "speaker_id": "", "voice_description": "自然普通话画外音，向观众介绍桌面搭配，平缓不播音腔"})
         for i, (rule, label, angle, hook, development, payoff, reason) in enumerate([
-            ("appearance_reveal", "轮廓之美", "关注瓶身的轮廓关系", "一道轮廓先出现", "看到瓶身线条", "整体落定", "外观可见"),
-            ("everyday_context", "桌面一角", "考虑商品与办公桌的搭配", "手整理办公桌", "将商品摆在留出的桌面空间", "桌面搭配完成", "场景符合用户要求"),
-            ("appearance_reveal", "光线里的变化", "同一外观在光线下的层次", "斜射光照到商品", "主体不动，光线经过瓶身", "保留自然光中的商品", "不依赖未知功能"),
+            ("appearance_reveal", "轮廓之美", "先从轮廓认出这只瓶子", "一道轮廓先出现", "看到瓶身线条", "整体落定", "外观可见"),
+            ("everyday_context", "桌面一角", "桌角还空着，这只瓶子刚好放下", "手整理办公桌", "将商品摆在留出的桌面空间", "桌面搭配完成", "场景符合用户要求"),
+            ("appearance_reveal", "光线里的变化", "同一只瓶子，早晚光线不一样", "斜射光照到商品", "主体不动，光线经过瓶身", "保留自然光中的商品", "不依赖未知功能"),
         ])]
+    hooks = {"scene_story": ("awkward_moment", "situational_conflict", "arresting_line"),
+             "presenter_pitch": ("direct_question", "counterintuitive", "result_first")}.get(
+        brief.ad_form, ("macro_detail", "scale_shift", "silhouette"))
+    insights = (
+        "还没看清整只瓶子，就想知道它长什么样。",
+        "桌面已经很满，还想给这只瓶子留一个位置。",
+        "光线一变，就怕认不出还是不是同一只瓶子。",
+    )
+    ideas = ("先看见一条轮廓", "桌角终于有了它", "光线换了瓶子还在")
+    worlds = ("functional", "identity", "sensory")
+    for index, direction in enumerate(directions):
+        direction.consumer_insight = insights[index]
+        direction.big_idea = ideas[index]
+        direction.hook_type = hooks[index]
+        direction.brand_world = worlds[index]
     if brief.ad_form == "presenter_pitch":
         # These type-switch tests use a synthetic presenter response rather
         # than relabeling the voiceover fixture as a successful presenter ad.
@@ -104,8 +119,22 @@ def approved_direction_review(directions):
         "checks": [{"direction_id": direction["id"], "physical_plausibility_passed": True,
             "product_role_passed": True, "attraction_passed": True,
             "claim_support_passed": True, "expression_form_passed": True, "film_concept_passed": True,
-            "note": "离线审核夹具：保留同一商品，完成展示或摆放后状态一致，观看期待有对应展开。"}
+            "creative_tension": "medium", "hook_strength": "medium",
+            "note": "离线审核夹具：保留同一商品，完成展示或摆放后状态一致，开场后面有展开。"}
             for direction in directions]}
+
+
+def concept_pool_for(directions):
+    """Six short concepts whose greedy pick is the three supplied directions."""
+    items = []
+    for direction in directions:
+        data = direction if isinstance(direction, dict) else direction.model_dump()
+        items.append({"id": data["id"], "rule_id": data["rule_id"], "hook_type": data["hook_type"],
+            "brand_world": data["brand_world"], "consumer_insight": data["consumer_insight"],
+            "big_idea": data["big_idea"], "evidence_ids": list(data["evidence_ids"])})
+    for index in range(3):
+        items.append({**items[0], "id": f"spare_{index}"})
+    return items
 
 
 def compiled_from_reservations(context):
@@ -240,7 +269,8 @@ def test_cannot_mix_direction_gate_with_image_confirmation(env):
 def test_direction_contract_rejects_auto_selection_and_cosmetic_duplicates(env):
     candidate = candidates_for(env)
     base = {"kind": "directions", "message": "选方向", "brief": candidate.brief.model_dump(),
-        "directions": [d.model_dump() for d in candidate.directions], "selected_direction_id": None}
+        "directions": [d.model_dump() for d in candidate.directions],
+        "concept_pool": concept_pool_for(candidate.directions), "selected_direction_id": None}
     StrategyDecision.model_validate(base)
     for bad in ({**base, "selected_direction_id": "direction_0"}, {**base, "directions": base["directions"][:2]}):
         with pytest.raises(ValidationError):
@@ -257,7 +287,8 @@ def test_direction_contract_rejects_auto_selection_and_cosmetic_duplicates(env):
 def test_new_direction_response_requires_nonempty_story_and_attraction(env, field, value):
     candidate = candidates_for(env)
     payload = {"kind": "directions", "message": "请选择方向", "brief": candidate.brief.model_dump(),
-        "directions": [d.model_dump() for d in candidate.directions]}
+        "directions": [d.model_dump() for d in candidate.directions],
+        "concept_pool": concept_pool_for(candidate.directions)}
     if value is None:
         payload["directions"][1].pop(field)
     else:
@@ -270,7 +301,8 @@ def test_new_direction_response_requires_nonempty_story_and_attraction(env, fiel
 def test_new_direction_response_cannot_inherit_or_omit_brief(env, omit_brief):
     candidate = candidates_for(env)
     response = {"kind": "directions", "message": "三个方向", "brief": None,
-        "directions": [d.model_dump() for d in candidate.directions]}
+        "directions": [d.model_dump() for d in candidate.directions],
+        "concept_pool": concept_pool_for(candidate.directions)}
     if omit_brief:
         response.pop("brief")
     with pytest.raises(ValidationError):
@@ -378,7 +410,8 @@ def test_real_gateway_pauses_then_uses_only_selected_direction(env, monkeypatch,
                       if selected_direction.get("story_summary") and selected_direction.get("attraction_mechanism")
                       else selected_direction)
     strategy_response = {"kind": "directions", "message": "选一个方向", "brief": candidates.brief.model_dump(),
-        "directions": [d.model_dump() for d in candidates.directions], "selected_direction_id": None,
+        "directions": [d.model_dump() for d in candidates.directions],
+        "concept_pool": concept_pool_for(candidates.directions), "selected_direction_id": None,
         "recommended_direction_id": candidates.recommended_direction_id}
     calls, compiled = [], None
     real_client = httpx.AsyncClient
@@ -564,7 +597,8 @@ def test_gateway_reopens_choices_only_on_explicit_reselection(env, monkeypatch, 
             assert context["existing_direction"] is None
             assert context["direction_selection_required"] is True
             return {"kind": "directions", "message": "请选择新方向", "brief": candidate.brief.model_dump(),
-                "directions": [item.model_dump() for item in candidate.directions]}
+                "directions": [item.model_dump() for item in candidate.directions],
+                "concept_pool": concept_pool_for(candidate.directions)}
         assert context["existing_direction"]["id"] == "direction_1"
         assert context["allowed_decisions"] == ["reply", "clarify", "plan"]
         required = context["schema"]["$defs"]["CreativeDirection"]["required"]
@@ -673,7 +707,7 @@ def test_private_schema_diagnostic_has_only_bounded_locations_and_types(env, mon
     directions[2]["X" * 200] = private_value
     async def planned(self, system, context, originals, max_tokens=7000):
         return {"kind": "directions", "message": "选择方向", "brief": candidate.brief.model_dump(),
-            "directions": directions}
+            "directions": directions, "concept_pool": concept_pool_for(candidate.directions)}
     monkeypatch.setattr(Gateway, "_planner_json", planned)
     with caplog.at_level(logging.WARNING, logger="app.providers.gateway"):
         with pytest.raises(ProviderError, match="结构校验") as error:

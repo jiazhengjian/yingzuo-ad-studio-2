@@ -11,7 +11,7 @@ from app.planner_runtime import planner_wire_context
 from app.planning import StrategyDecision, strategy_decision_schema
 from app.strategy import DirectionCandidates, DirectionReviewSummary, select_rules
 from test_conversation_api import env
-from test_direction_selection import candidates_for, approved_direction_review, offer, select
+from test_direction_selection import candidates_for, approved_direction_review, concept_pool_for, offer, select
 
 
 @pytest.mark.parametrize("field", ["audience_value", "product_expression"])
@@ -19,7 +19,8 @@ from test_direction_selection import candidates_for, approved_direction_review, 
 def test_new_offers_require_value_and_execution_without_fabricated_defaults(env, field, value):
     candidate = candidates_for(env)
     raw = {"kind": "directions", "message": "选择概念", "brief": candidate.brief.model_dump(),
-           "directions": [d.model_dump() for d in candidate.directions]}
+           "directions": [d.model_dump() for d in candidate.directions],
+           "concept_pool": concept_pool_for(candidate.directions)}
     if value is None:
         raw["directions"][0].pop(field)
     else:
@@ -98,7 +99,7 @@ def test_review_can_correct_presenter_concept_in_same_request_but_not_approve_vo
         d["production"].update(characters=[{"id": "char_host", "name": "讲解者",
             "description": "创作角色：成年桌面用品讲解者"}], speech_mode="character_dialogue", speaker_id="char_host")
         d["product_expression"] = "讲解者面向观众介绍瓶形，手持商品帮助辨认轮廓，不宣称亲测功能。"
-        d["story_summary"] = "讲解者提出桌面布置的选择，展示瓶形并解释选择关注，收束到完整商品。"
+        d["story_summary"] = "讲解者提出桌面布置的选择，展示瓶形并说明为什么留下它，收束到完整商品。"
     result = validate_direction_review(reviewed, original, select_rules(None), product_reference_count=1)
     assert result.ready and original.model_dump() == before
 

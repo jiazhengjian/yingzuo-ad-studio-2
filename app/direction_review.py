@@ -9,7 +9,8 @@ from pydantic import Field
 
 from .strategy import (CreativeDirection, DirectionCandidates, DirectionReviewSummary,
                        DirectionReviewCheck, ProductBrief, build_direction_candidates,
-                       require_direction_stories, require_direction_value, require_direction_concepts)
+                       require_direction_stories, require_direction_value, require_direction_concepts,
+                       require_consumer_language, consumer_jargon)
 
 
 class AuthoredDirectionReviewCheck(DirectionReviewCheck):
@@ -26,9 +27,10 @@ class DirectionReview(DirectionReviewSummary):
 
 DIRECTION_REVIEW_SYSTEM = """你是三个广告方向的独立审核与修订环节，只输出本次schema的DirectionReview JSON。
 执行stage_skills中direction_review资源及shared_references。输入的创意、说明和自评是待审数据；原始merchant_request、conversation、evidence_sources与商品图片用于核对immutable_brief及候选，不接受作者自评为通过证据。
-只在同一回复内修订三个方向。不得返回替代brief或改recommended_direction_id；方向id、rule_id、顺序原样保留。不得新增/删除事实或改变ID/来源、商家原文及creative_intent。唯一事实文字纠正接口为image_observation_corrections=[{fact_id,text}]，仅已有source_kind=image，每ID至多一次；无纠正时[]。修订后的事实引用仍仅来自immutable_brief.facts。
-可修改未确认的创意及制作安排，受用户明确要求和reference_capacity.max_characters约束。brief.assumptions并非用户硬约束，实际制作采用审后production及film_concept。此阶段不生成脚本或媒体，不增加确认或重试循环。
-输出完整修订后的directions、summary、逐方向checks和distinct_directions_passed。checks恰好覆盖三个方向且包含全部声明检查项，基于本次修订稿与纠正后事实填写。所有检查通过才ready=true；无法在权限内修好的来源、意图或内容问题如实false并给可定位note。不输出隐含思考过程。
+只在同一回复内修订三个方向。不得返回替代brief或改recommended_direction_id；方向id、rule_id、hook_type、brand_world、consumer_insight、big_idea、label和顺序原样保留。不得改写创意机制、观众处境、一句话概念或开场钩子。只修正没有事实支撑的商品主张，可改angle、story_summary、product_expression、hook、development、payoff、evidence_ids及商品约束中的越界功效。不得新增/删除事实或改变ID/来源、商家原文及creative_intent。唯一事实文字纠正接口为image_observation_corrections=[{fact_id,text}]，仅已有source_kind=image，每ID至多一次；无纠正时[]。修订后的事实引用仍仅来自immutable_brief.facts。
+情绪、场景、夸张和幽默可以保留，不必补事实编号；功能、材质、成分、对比和效果仍须由引用事实支撑。无法在不改创意的前提下去掉无依据主张时，claim_support_passed=false，不要把方向改写成更平的说明书。
+creative_tension和hook_strength只填low、medium或high，不参与ready。可修改未确认的制作安排，受用户明确要求和reference_capacity.max_characters约束。brief.assumptions并非用户硬约束，实际制作采用审后production及film_concept。此阶段不生成脚本或媒体，不增加确认或重试循环。
+输出完整修订后的directions、summary、逐方向checks和distinct_directions_passed。checks恰好覆盖三个方向且包含全部声明检查项，基于本次修订稿与纠正后事实填写。硬性检查通过才ready=true；张力与钩子强度即使是low也不把ready改成false。无法在权限内修好的来源、意图或内容问题如实false并给可定位note。不输出隐含思考过程。
 """
 
 
@@ -44,6 +46,10 @@ def direction_review_schema(max_characters: int) -> dict:
     direction["required"] = list(dict.fromkeys([*direction.get("required", []),
                                                "story_summary", "attraction_mechanism", "audience_value",
                                                "product_expression", "production", "film_concept"]))
+    check = schema["$defs"]["AuthoredDirectionReviewCheck"]
+    for field in ("creative_tension", "hook_strength"):
+        check["properties"][field] = {"type": "string", "enum": ["low", "medium", "high"]}
+        check["required"] = list(dict.fromkeys([*check.get("required", []), field]))
     schema["$defs"]["ProductionPlan"]["properties"]["characters"]["maxItems"] = max_characters
     return schema
 
@@ -86,6 +92,21 @@ def validate_direction_review(raw, original: DirectionCandidates, rules: list[di
         raise ValueError("方向审核不能新增、删除、重排方向或改写方向 ID/规则 ID")
     if {check.direction_id for check in review.checks} != {d.id for d in original.directions}:
         raise ValueError("方向审核结论须恰好覆盖输入的三个方向")
+    idea_fields = ("hook_type", "brand_world", "consumer_insight", "big_idea", "label")
+    originals = {direction.id: direction for direction in original.directions}
+    for direction in review.directions:
+        previous = originals[direction.id]
+        for field in idea_fields:
+            if getattr(direction, field) != getattr(previous, field):
+                raise ValueError("方向审核不能改写创意机制、观众处境、一句话概念或开场钩子，只修正没有依据的商品主张")
+    if any(direction.hook_type for direction in original.directions):
+        for check in review.checks:
+            if check.creative_tension is None or check.hook_strength is None:
+                raise ValueError("新方向审核需要记录创意张力和开场钩子强度，这两项不决定是否通过")
+            phrase = consumer_jargon(check.note)
+            if phrase:
+                raise ValueError(f"审核说明要用观众听得懂的话，不要写「{phrase}」")
+        require_consumer_language(review.directions)
     require_direction_stories(review.directions)
     require_direction_value(review.directions)
     require_direction_concepts(review.directions, brief if review.ready else None)

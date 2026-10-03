@@ -19,7 +19,7 @@ from app.providers.gateway import Gateway, ProviderError
 from app.strategy import DirectionCandidates, DirectionReviewSummary, select_rules
 from test_conversation_api import env
 from test_direction_selection import (
-    approved_direction_review, candidates_for, historical_candidates,
+    approved_direction_review, candidates_for, concept_pool_for, historical_candidates,
     isolated_skill_loader, offer, select,
 )
 
@@ -32,8 +32,9 @@ def no_unmocked_provider(monkeypatch):
 
 
 def fresh(candidate):
+    directions = [d.model_dump() for d in candidate.directions]
     return {"kind": "directions", "message": "比较三个广告概念", "brief": candidate.brief.model_dump(),
-            "directions": [d.model_dump() for d in candidate.directions]}
+            "directions": directions, "concept_pool": concept_pool_for(directions)}
 
 
 @pytest.mark.parametrize("location", ["brief", "direction"])

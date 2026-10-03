@@ -14,7 +14,7 @@ from app.pipeline import Pipeline
 from app.providers.gateway import Gateway
 from app.strategy import DirectionCandidates, select_rules
 from test_conversation_api import env, post_turn
-from test_direction_selection import (approved_direction_review, candidates_for,
+from test_direction_selection import (approved_direction_review, candidates_for, concept_pool_for,
                                       isolated_skill_loader, offer)
 from test_providers import chat_output, request_context, assert_skill_wire_matches_source
 
@@ -167,7 +167,8 @@ def test_review_transport_uses_same_model_high_budget_original_image_and_persist
         assert payload["model"] == app.state.settings.planner_model
         if stage == "strategy":
             return chat_output({"kind": "directions", "message": "初稿", "brief": candidate.brief.model_dump(),
-                "directions": [d.model_dump() for d in candidate.directions]})
+                "directions": [d.model_dump() for d in candidate.directions],
+                "concept_pool": concept_pool_for(candidate.directions)})
         assert stage == "direction_review"
         assert payload["thinking"] == {"type": "enabled"}
         assert payload["reasoning_effort"] == "high"
@@ -179,7 +180,7 @@ def test_review_transport_uses_same_model_high_budget_original_image_and_persist
         assert len(payload["messages"][1]["content"]) == 2
         assert payload["messages"][1]["content"][1]["type"] == "image_url"
         raw = approved_direction_review(context["directions"])
-        raw["directions"][0]["label"] = "审后保留的观看方向"
+        raw["directions"][0]["story_summary"] = "窗光先勾出一条线，再看清整只瓶子，最后停在完整外观。"
         raw["summary"] = "保留事实与原场景，三个实际展开不同；未添加商品份量或功能承诺。"
         return chat_output(raw)
     monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: real_client(*args, transport=httpx.MockTransport(handle), **kwargs))
@@ -188,7 +189,9 @@ def test_review_transport_uses_same_model_high_budget_original_image_and_persist
         on_progress=progresses.append, on_skill_trace=traces.append))
     assert calls == ["strategy", "direction_review"]
     assert progresses == ["reviewing_directions"]
-    assert result["direction_candidates"]["directions"][0]["label"] == "审后保留的观看方向"
+    assert result["direction_candidates"]["directions"][0]["story_summary"] == "窗光先勾出一条线，再看清整只瓶子，最后停在完整外观。"
+    assert result["direction_candidates"]["directions"][0]["label"] == candidate.directions[0].label
+    assert result["direction_candidates"]["directions"][0]["big_idea"] == candidate.directions[0].big_idea
     assert result["direction_candidates"]["direction_review"]["ready"]
     assert any(trace["stage"] == "direction_review" for trace in traces)
     assert traces == expected_traces
@@ -205,7 +208,8 @@ def test_review_transport_uses_same_model_high_budget_original_image_and_persist
     app.state.store.finish_decision(job["id"], result)
     saved = app.state.store.get_job(job["id"])["payload"]["direction_candidates"]
     assert saved == result["direction_candidates"]
-    assert app.state.store.pending_gate(pid)["options"][0]["label"] == "审后保留的观看方向"
+    assert app.state.store.pending_gate(pid)["options"][0]["story_summary"] == "窗光先勾出一条线，再看清整只瓶子，最后停在完整外观。"
+    assert app.state.store.pending_gate(pid)["options"][0]["label"] == candidate.directions[0].label
 
 
 def test_failed_review_stops_once_preserves_existing_assets_and_does_not_offer_unreviewed_prose(env, monkeypatch, isolated_skill_loader):
@@ -219,7 +223,8 @@ def test_failed_review_stops_once_preserves_existing_assets_and_does_not_offer_u
         calls.append(context["stage"])
         if context["stage"] == "strategy":
             return {"kind": "directions", "message": "未审初稿", "brief": candidate.brief.model_dump(),
-                "directions": [d.model_dump() for d in candidate.directions]}
+                "directions": [d.model_dump() for d in candidate.directions],
+                "concept_pool": concept_pool_for(candidate.directions)}
         assert context["stage"] == "direction_review"
         raw = approved_direction_review(context["directions"])
         raw["ready"] = False
@@ -252,7 +257,8 @@ def test_cancellation_callback_prevents_second_request(env, monkeypatch, isolate
     async def planned(self, system, context, originals, max_tokens=7000):
         calls.append(context["stage"])
         return {"kind": "directions", "message": "初稿", "brief": candidate.brief.model_dump(),
-            "directions": [d.model_dump() for d in candidate.directions]}
+            "directions": [d.model_dump() for d in candidate.directions],
+            "concept_pool": concept_pool_for(candidate.directions)}
     def canceled(phase):
         assert phase == "reviewing_directions"
         raise StaleRevision()

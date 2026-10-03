@@ -37,8 +37,8 @@
 
 | 程序阶段 | 实际模型指令 | 说明 |
 | --- | --- | --- |
-| 入口 `strategy` | Orchestrator + Sound Direction + Product Understanding + Creative Strategy；两份共用参考 | 一次请求，可回复/澄清或生成三个方向；创意含方向比较与影片概念参考 |
-| `direction_review` | Plan Review 主文件 + `direction-review.md`；两份共用参考 | 一次独立审核，可在同回复内修订方向 |
+| 入口 `strategy` | Orchestrator + Sound Direction + Product Understanding + Creative Strategy；两份共用参考 | 一次请求，可回复/澄清，或先写六个短概念再展开程序选中的三个方向 |
+| `direction_review` | Plan Review 主文件 + `direction-review.md`；两份共用参考 | 一次独立审核，只修没有依据的主张，不改写创意身份 |
 | `ad_script` | Script Planning + Dialogue Writing 及其声音参考；`script-expression` 共用参考 | 同一次请求联合完成分类内容稿和台词 |
 | `content_draft`（试验内部资源分支，传输仍为 `ad_script`） | Script Planning 主入口 + `content-draft.md`；Dialogue 主文件/示例；共用表达方法 | 只写实际台词与画面内容，完整动作、状态和估时交既有分镜阶段 |
 | `speech_draft`（默认关闭的候选，传输仍为 `ad_script`） | 独立 Voiceover Draft 短方法；仅已选产品视觉展示与画外音 | 原始事实先写整段旁白；替换原起稿，导演仍拿完整策略，不添加模型请求。人工简报样本不等于自动路径已验证 |
