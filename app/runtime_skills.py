@@ -99,6 +99,11 @@ def _registry() -> dict:
         normalized_path = _shared_resource(path)
         if normalized_path in seen_paths:
             raise ValueError("共用规则路径不能重复")
+        forms = item.get("ad_forms")
+        if forms is not None and (not isinstance(forms, list) or not forms
+                or any(form not in {"auto", "brand_tvc", "scene_story", "presenter_pitch"} for form in forms)
+                or len(forms) != len(set(forms))):
+            raise ValueError("共用规则的广告类型范围无效")
         seen_references.add(item["id"])
         seen_paths.add(normalized_path)
     return data
@@ -139,8 +144,12 @@ def _bundle(item: dict, *, include_documents: bool = False, stage: str | None = 
     return (bundle, dict(documents)) if include_documents else bundle
 
 
-def stage_skill_context(stage: str, mode: str | None = None) -> dict:
-    """Return model instructions; media compilers must use compiler_template."""
+def stage_skill_context(stage: str, mode: str | None = None, *, playbook_form: str | None = None) -> dict:
+    """Return model instructions; media compilers must use compiler_template.
+
+    A playbook is injected only for the requested form. Omitting the form keeps
+    the historical shared set, so checkpoints of untyped briefs stay stable.
+    """
     if mode is not None and mode not in {"model", "review"}:
         raise ValueError("模型阶段只支持 model/review；素材模板须通过 compiler_template 编译")
     registry = _registry()
@@ -151,7 +160,8 @@ def stage_skill_context(stage: str, mode: str | None = None) -> dict:
     if not skills:
         raise ValueError(f"阶段 {stage} 尚未绑定运行 Skill")
     shared = [_shared_reference(item) for item in registry.get("shared_references", [])
-              if stage in item["stages"]]
+              if stage in item["stages"]
+              and (not item.get("ad_forms") or playbook_form in item["ad_forms"])]
     return {"schema_version": 1, "stage": stage, "skills": skills, "shared_references": shared,
             "content_sha256": _json_hash({
                 "skills": [(s["id"], s["version"], s["content_sha256"]) for s in skills],

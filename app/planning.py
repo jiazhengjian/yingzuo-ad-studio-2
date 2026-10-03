@@ -17,7 +17,7 @@ from .strategy import (CreativeDirection, ProductBrief, require_direction_storie
 from .beat_timing import allocate_beat_ticks, beat_minimum_ticks, speech_ticks, visual_ticks
 
 
-def storyboard_schedule(script, durations, *, beat_groups=None):
+def storyboard_schedule(script, durations, *, beat_groups=None, characters_per_tenth=29):
     """Place whole reviewed lines before asking a model to describe the shots.
 
     This is a conservative planned allocation, not measured speech timing.
@@ -25,7 +25,7 @@ def storyboard_schedule(script, durations, *, beat_groups=None):
     continue the adjacent beat silently instead of inventing new ad content.
     """
     beats = script.beats
-    needs = [beat_minimum_ticks(beat) for beat in beats]
+    needs = [beat_minimum_ticks(beat, characters_per_tenth) for beat in beats]
     best = None
     if beat_groups is not None:
         groups = [list(group) for group in beat_groups]
@@ -72,7 +72,7 @@ def storyboard_schedule(script, durations, *, beat_groups=None):
     return result
 
 
-def expression_schedule(script, durations, *, beat_groups=None):
+def expression_schedule(script, durations, *, beat_groups=None, characters_per_tenth=29):
     """Reserve content and speech windows without choosing camera cuts.
 
     The earlier packing algorithm allocates content groups, not final shots.
@@ -80,7 +80,8 @@ def expression_schedule(script, durations, *, beat_groups=None):
     These reservations are conservative instructions, not measured audio.
     """
     result = []
-    for segment in storyboard_schedule(script, durations, beat_groups=beat_groups):
+    for segment in storyboard_schedule(script, durations, beat_groups=beat_groups,
+                                       characters_per_tenth=characters_per_tenth):
         groups = []
         for item in segment["shots"]:
             group = {"beat_id": item["beat_id"], "start": item["start"], "end": item["end"],
@@ -94,7 +95,7 @@ def expression_schedule(script, durations, *, beat_groups=None):
                 if not timing["speech_overlap"]:
                     speech_floor = group["visual_end"]
             if item["narration"]:
-                required = speech_ticks(item["narration"]) / 10
+                required = speech_ticks(item["narration"], characters_per_tenth) / 10
                 spare = round(item["end"] - speech_floor - required, 6)
                 # Leave a little lead-in/release if the approved copy fits.
                 lead = min(.2, max(0, spare / 2))
@@ -401,7 +402,7 @@ ad_expression_skill是应用提供的广告表达方法，结合本轮商品依�
 reply：问候、进度、能力、原因等普通问题直接简短答复，不改方案。纯问候一两句自然回应，只了解想推广什么，不列问卷或技术规格。
 clarify：仍缺少会改变广告方向的重要信息时才问，每轮1至3题；信息越充分问题越少，不按有图/无图机械规定题数。图片能告诉你外观，不能告诉你卖给谁、真实功效或价格。已明确、已回答、已跳过或交给AI决定的内容不重复问。缺少但不影响安全创作的信息放入unknowns，采用克制的表达；不要把每项unknown都问一遍。
 plan：已有原始商品图，且足够确定推荐方向时进入策划。投放/使用情境缺失且会显著影响方向、用户未授权你决定时先澄清。用户明确让你决定或planning_requested=true时，采用可修改的保守假设，记录assumptions，不反复问。无原图只能reply或clarify；先正常聊需求，在创作需要锁定外观时用一句自然回复请上传商品图，不为上传图片造选择题。
-questions仅提供可选的实际答案；自由输入由统一输入框承担。不要给自填、我来补充、其他、让AI决定等伪选项，不预填未知的功效或参数供用户认领。问题短、用商家听得懂的话，不问awareness、angle、分辨率或已选时长。不为结尾文字/CTA索要信息。
+questions仅提供可选的实际答案；自由输入由统一输入框承担。不要给自填、我来补充、其他、让AI决定等伪选项，不预填未知的功效或参数供用户认领。问题短、用商家听得懂的话，不问awareness、angle、分辨率或已选时长。不为结尾文字/CTA索要信息。tagline_policy.enabled 为 false 时保持不写口号和购买引导；为 true 时也不追问口号，只允许后续收束多一句口播。
 优先问主要投放/消费场景这一项能改变方向的缺口；已有图片能看清外观就不要再让用户复述外观。只为确认方向所需的信息提问，暂不打价格战就不问价位。需要商家补充口味、成分、功能等未知事实时，options必须为空，允许统一输入框回答和跳过；严禁在选项中预填“巧克力味浓郁”“用料丰富”“健康”“快干”等未确认说法。候选场景如“办公室下午茶”是创意选择，不当作真实销售记录。
 
 商品信息brief：
@@ -422,7 +423,7 @@ angle用一句话确定主打哪项已知特点、用途或设计，不是摄影
 先连通商品依据、顾客关注理由与具体呈现，再写创意展开及hook、development、payoff。只有外观资料时，可选择有观看价值的设计发现或商品与具体使用情境的关系；不能借场景暗示提神、缓解压力等未知功效。商家在卖点问题中明确声明“风速、温度控制、护发功能”时可在其原话功能层级表达，但不能扩成快干、恒温、不伤发或效果对照。核心表达需要未知机制或效果时，只澄清该关键缺口，不能编造，也不暗中替换用户的主推目标。整条内容应让人知道商品是什么、此时为何关注、从广告哪里理解这一点。
 用户提出“换个思路”时，在明确的主要表达方式与参考意图内改变视觉构思、行动机制或讲解路径，允许重新安排台词和镜头；不要被旧方案首段台词锁死。明确指定只改某处时保留其他已确认意图。
 message是给商家看的简短回复，说明推荐什么、突出什么或还缺哪项，不暴露内部字段、完整候选矩阵或思维链。推荐理由必须简短、可核对，不承诺高转化、自然音色或已验证声画同步。
-继续保持：右侧只图片和视频；商品使用原图；先确认方案、再检查图片、再生成视频；没有新增确认门、营销报告、独立结尾字卡或强制购买引导。方向阶段只确定必要人物和声音的制作选择，不展开完整脚本或声画时轴，不把制作计划等同成片质量已验证。
+继续保持：右侧只图片和视频；商品使用原图；先确认方案、再检查图片、再生成视频；没有新增确认门、营销报告、独立结尾字卡或强制购买引导。tagline_policy 只影响是否允许多一句收束口播，不增加字卡，也不把文字做进画面。若注入了类型 playbook，方向的 hook、展开和 payoff 按那一份的开场与节拍来写；只有短索引时，每个方向先承诺一种主要形式。方向阶段只确定必要人物和声音的制作选择，不展开完整脚本或声画时轴，不把制作计划等同成片质量已验证。
 """
 
 

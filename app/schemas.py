@@ -17,12 +17,14 @@ def segment_durations(duration_seconds):
     return [10] * full + ([tail] if tail else [])
 
 
-def script_character_limit(duration_seconds):
-    return duration_seconds * 29 // 10
+def script_character_limit(duration_seconds, characters_per_tenth=29):
+    return duration_seconds * characters_per_tenth // 10
 
 
-def shot_character_limit(start, end):
-    return math.floor((end - start) * 2.9 + 1e-7)
+def shot_character_limit(start, end, characters_per_tenth=29):
+    if characters_per_tenth == 29:
+        return math.floor((end - start) * 2.9 + 1e-7)
+    return math.floor((end - start) * (characters_per_tenth / 10) + 1e-7)
 
 
 def is_custom_answer_option(label):
@@ -108,7 +110,8 @@ class SpeechSpan(BaseModel):
             raise ValueError("旁白时段须包含非空ID、完整台词和有效时段；静音画面使用镜头表示")
         if re.search(r"[，,、：:；;]\s*[”’」』\"']*\s*$", self.text):
             raise ValueError("旁白时段须保留完整表达，不能以未完标点结束")
-        if len(self.text) > shot_character_limit(self.start, self.end):
+        from .ad_form_playbook import active_speech_tenth
+        if len(self.text) > shot_character_limit(self.start, self.end, active_speech_tenth()):
             raise ValueError("旁白台词超过对应朗读时段的长度，请精简或重新安排时段")
         if "".join(anchor.text for anchor in self.anchors) != self.text:
             raise ValueError("台词锚点须按顺序完整拼接旁白整句，不得遗漏、重复或改写")
@@ -169,7 +172,8 @@ class Segment(BaseModel):
                 raise ValueError("每个内容节拍的完整台词只能有一个旁白时段")
             if self.narration != "".join(span.text for span in self.speech_spans):
                 raise ValueError("每段台词须由旁白时段的完整文字按顺序拼接")
-            if len(self.narration) > script_character_limit(self.duration_seconds):
+            from .ad_form_playbook import speech_ceiling_tenth
+            if len(self.narration) > script_character_limit(self.duration_seconds, speech_ceiling_tenth()):
                 raise ValueError("单段台词超过该段的朗读长度，请精简后确认")
             previous = 0
             for span in self.speech_spans:
@@ -207,6 +211,18 @@ class Plan(BaseModel):
     strategy: StrategyRecord | None = None
     ad_script: AdScript | None = None
     script_review: ScriptReview | None = None
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def bind_form_speech_budget(cls, data, handler):
+        """Let nested speech spans use this plan's rate, then restore the caller."""
+        from .ad_form_playbook import bind_plan_speech_tenth, reset_plan_speech_tenth
+        strategy = data.get("strategy") if isinstance(data, dict) else getattr(data, "strategy", None)
+        token = bind_plan_speech_tenth(strategy)
+        try:
+            return handler(data)
+        finally:
+            reset_plan_speech_tenth(token)
 
     @model_validator(mode="after")
     def unique_segments(self, info: ValidationInfo):
@@ -285,24 +301,27 @@ class Plan(BaseModel):
                 raise ValueError("方案商品事实必须与本轮策划依据一致")
         if len({s.id for s in self.segments}) != len(self.segments):
             raise ValueError("片段ID重复")
+        from .ad_form_playbook import speech_profile_for_strategy
+        tenth = speech_profile_for_strategy(self.strategy).characters_per_tenth
         durations = [s.duration_seconds for s in self.segments]
         validate_generation_durations(durations, self.generation_strategy)
         if self.generation_strategy == "legacy_10s":
             if any(len(segment.shots) > 6 or len(segment.speech_spans or []) > 6 for segment in self.segments):
                 raise ValueError("历史10秒方案每段最多6个镜头和旁白时段")
         elif self.ad_script is not None:
-            grouping = generation_groups(self.ad_script, sum(durations), self.generation_strategy)
+            grouping = generation_groups(self.ad_script, sum(durations), self.generation_strategy,
+                                         characters_per_tenth=tenth)
             actual_groups = [shot_beat_sequence(segment.shots) for segment in self.segments]
             expected_groups = [[self.ad_script.beats[index].id for index in group]
                                for group in grouping["beat_groups"]]
             if durations != grouping["durations"] or actual_groups != expected_groups:
                 raise ValueError("实际生成段必须保留已审脚本的连续性分组，不能切开连续动作或移动完整表达边界")
-        if not (info.context or {}).get("allow_script_repair") and len(self.script) > script_character_limit(sum(durations)):
+        if not (info.context or {}).get("allow_script_repair") and len(self.script) > script_character_limit(sum(durations), tenth):
             raise ValueError("文案超过所选时长的朗读长度，请精简后确认")
         if self.audio_strategy == "native" and not (info.context or {}).get("allow_script_repair"):
             if re.sub(r"\s", "", self.script) != re.sub(r"\s", "", "".join(s.narration for s in self.segments)):
                 raise ValueError("整条文案必须与逐段台词一致")
-            if any(len(s.narration) > script_character_limit(s.duration_seconds) for s in self.segments):
+            if any(len(s.narration) > script_character_limit(s.duration_seconds, tenth) for s in self.segments):
                 raise ValueError("单段台词超过该段的朗读长度，请精简后确认")
             # Historical native drafts remain readable. New provider plans opt
             # into this contract, and any shot-bound edit must keep it intact.
@@ -313,7 +332,7 @@ class Plan(BaseModel):
                         continue
                     if re.sub(r"\s", "", segment.narration) != re.sub(r"\s", "", "".join(shot.narration for shot in segment.shots)):
                         raise ValueError("每段台词必须与对应镜头台词一致")
-                    if any(len(shot.narration) > shot_character_limit(shot.start, shot.end) for shot in segment.shots):
+                    if any(len(shot.narration) > shot_character_limit(shot.start, shot.end, tenth) for shot in segment.shots):
                         raise ValueError("镜头台词超过对应画面时长，请精简或重新安排镜头")
         validate_production_plan(self)
         if self.plan_review is not None:

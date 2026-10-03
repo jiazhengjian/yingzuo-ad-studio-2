@@ -230,6 +230,41 @@ def test_historical_plan_without_spans_keeps_shot_narration_contract(plan_data):
     with pytest.raises(ValueError, match="一个镜头中说出"): Plan.model_validate(plan_data)
 
 
+def test_typed_plan_checks_speech_windows_at_its_own_rate(plan_data):
+    """A presenter window can hold a line the historical 2.9 cap would reject."""
+    from app.config import Settings
+    from app.pipeline import video_submission_spec
+    from app.providers.gateway import Gateway, SubmissionError
+
+    line = "字" * 20 + "。"
+    segment = plan_data["segments"][0]
+    span = segment["speech_spans"][0]
+    span["text"] = segment["narration"] = plan_data["script"] = line
+    span["anchors"] = [{"text": line, "start": 0, "end": 7, "shot_ids": ["desk", "detail"],
+                        "visual_evidence": "办公桌上的蛋糕建立下午茶选择"}]
+    plan_data["ad_script"]["beats"][0]["narration"] = line
+    plan_data["script_review"]["script"] = deepcopy(plan_data["ad_script"])
+    with pytest.raises(ValueError, match="超过对应朗读时段"):
+        Segment.model_validate(segment)
+    plan_data["strategy"]["brief"]["ad_form"] = "presenter_pitch"
+    plan = Plan.model_validate(plan_data, context={"require_shot_narration": True})
+    assert plan.segments[0].speech_spans[0].text == line
+    with pytest.raises(ValueError, match="超过对应朗读时段"):
+        SpeechSpan.model_validate(span)
+    dumped = plan.model_dump()
+    spec = video_submission_spec(dumped, dumped["segments"][0])
+    assert spec["speech_characters_per_tenth"] == 48
+    plan_data["strategy"]["brief"]["ad_form"] = None
+    assert "speech_characters_per_tenth" not in video_submission_spec(plan_data, plan_data["segments"][0])
+    prepared = Gateway(Settings()).prepare_video_request(spec)
+    assert "speech_characters_per_tenth" not in prepared["prompt"]
+    assert "不追加屏幕文字、随机字幕、价格、CTA、尾字卡或额外水印。" in prepared["prompt"]
+    forged = deepcopy(spec)
+    forged["speech_characters_per_tenth"] = 80
+    with pytest.raises(SubmissionError, match="时轴无效"):
+        Gateway(Settings()).prepare_video_request(forged)
+
+
 def test_native_creative_alternatives_preserve_speech_timing(plan_data):
     for field in ("strategy", "ad_script", "script_review"): plan_data[field] = None
     segment = plan_data["segments"][0]

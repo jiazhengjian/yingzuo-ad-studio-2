@@ -79,8 +79,8 @@ def test_new_flow_draft_and_review_use_runtime_version_without_more_requests(enu
     service_contexts = {}
     load = runtime_skills.stage_skill_context
 
-    def capture(stage, mode=None):
-        loaded = load(stage, mode)
+    def capture(stage, mode=None, **kwargs):
+        loaded = load(stage, mode, **kwargs)
         if stage in service_contexts:
             assert service_contexts[stage] == loaded
         service_contexts[stage] = deepcopy(loaded)

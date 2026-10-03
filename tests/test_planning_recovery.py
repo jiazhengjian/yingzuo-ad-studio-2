@@ -171,8 +171,8 @@ def test_changed_rules_cannot_reuse_old_stage_results(run_case, monkeypatch):
         execute()
     from app import runtime_skills
     original = runtime_skills.stage_skill_context
-    def changed(stage):
-        data = original(stage)
+    def changed(stage, mode=None, **kwargs):
+        data = original(stage, mode, **kwargs)
         data["skills"][0]["content"] += "规则已更新。"
         return data
     monkeypatch.setattr(runtime_skills, "stage_skill_context", changed)

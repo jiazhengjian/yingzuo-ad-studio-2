@@ -34,7 +34,7 @@ def forbid_unmocked_network(monkeypatch):
 def isolated_skill_loader(monkeypatch):
     # Explicit transport fixture, not a runtime fallback. Runtime loader bytes
     # and registry bindings are independently verified in test_runtime_skills.
-    def load(stage, mode=None):
+    def load(stage, mode=None, **kwargs):
         skill = {"id": "ads-video-" + stage.replace("_", "-"), "display_name": "Ads Video " + stage,
             "version": "test-1", "mode": "planner", "content": "EXPLICIT OFFLINE SKILL",
             "resources": [{"path": "SKILL.md", "sha256": "b" * 64}], "content_sha256": "a" * 64}

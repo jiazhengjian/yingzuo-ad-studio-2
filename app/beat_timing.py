@@ -13,10 +13,14 @@ def field(value, key, default=None):
     return value.get(key, default) if isinstance(value, dict) else getattr(value, key, default)
 
 
-def speech_ticks(text):
-    """Conservative engineering speech limit, rounded up to a tenth."""
-    # 2.9 characters/second, expressed with integers to avoid float rounding.
-    return (len(text) * 100 + 28) // 29
+def speech_ticks(text, characters_per_tenth=29):
+    """Conservative engineering speech limit, rounded up to a tenth.
+
+    The default tenth is the historical 2.9 characters/second cap. A typed
+    playbook passes its own tenth; 29 keeps the previous integer formula.
+    """
+    tenth = characters_per_tenth
+    return (len(text) * 100 + tenth - 1) // tenth
 
 
 def visual_ticks(timing):
@@ -26,8 +30,8 @@ def visual_ticks(timing):
     return int((Decimal(str(seconds)) * 10).to_integral_value(rounding=ROUND_CEILING))
 
 
-def beat_minimum_ticks(beat):
-    spoken = speech_ticks(field(beat, "narration", ""))
+def beat_minimum_ticks(beat, characters_per_tenth=29):
+    spoken = speech_ticks(field(beat, "narration", ""), characters_per_tenth)
     timing = field(beat, "timing")
     if timing is None:
         return max(10, spoken)
@@ -54,13 +58,13 @@ def execution_action_bounds(window):
     return None, None
 
 
-def beat_timing_budget(beat):
+def beat_timing_budget(beat, characters_per_tenth=29):
     timing = field(beat, "timing")
     result = {
         "beat_id": field(beat, "id"),
         "character_count": len(field(beat, "narration", "")),
-        "speech_seconds": speech_ticks(field(beat, "narration", "")) / 10,
-        "minimum_seconds": beat_minimum_ticks(beat) / 10,
+        "speech_seconds": speech_ticks(field(beat, "narration", ""), characters_per_tenth) / 10,
+        "minimum_seconds": beat_minimum_ticks(beat, characters_per_tenth) / 10,
     }
     if timing is not None:
         result.update(visual_seconds=visual_ticks(timing) / 10,
@@ -68,12 +72,12 @@ def beat_timing_budget(beat):
     return result
 
 
-def script_capacity_budget(script, duration_seconds):
+def script_capacity_budget(script, duration_seconds, characters_per_tenth=29):
     """Report exact tick-based totals; declarations cannot override this sum."""
     beats = field(script, "beats", [])
-    minimum_ticks = sum(beat_minimum_ticks(beat) for beat in beats)
+    minimum_ticks = sum(beat_minimum_ticks(beat, characters_per_tenth) for beat in beats)
     return {
-        "beats": [beat_timing_budget(beat) for beat in beats],
+        "beats": [beat_timing_budget(beat, characters_per_tenth) for beat in beats],
         "total_minimum_seconds": minimum_ticks / 10,
         "target_seconds": duration_seconds,
         "overrun_seconds": max(0, minimum_ticks - duration_seconds * 10) / 10,

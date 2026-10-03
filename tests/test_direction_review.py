@@ -140,8 +140,8 @@ def test_review_transport_uses_same_model_high_budget_original_image_and_persist
     service_contexts, expected_traces = {}, []
     load = runtime_skills.stage_skill_context
 
-    def capture(stage, mode=None):
-        loaded = load(stage, mode)
+    def capture(stage, mode=None, **kwargs):
+        loaded = load(stage, mode, **kwargs)
         service_contexts[stage] = deepcopy(loaded)
         return loaded
 
@@ -153,8 +153,9 @@ def test_review_transport_uses_same_model_high_budget_original_image_and_persist
         calls.append(stage)
         assert "ad_expression_skill" not in context
         shared = context["stage_skills"]["shared_references"]
-        assert {item["id"] for item in shared} == {"product-evidence", "ad-form-contract"}
-        assert len(shared) == 2
+        assert {item["id"] for item in shared} == {"product-evidence", "ad-form-contract", "ad-form-playbook-index"}
+        assert len(shared) == 3
+        assert not any(item["id"].startswith("ad-form-playbook-") and item["id"] != "ad-form-playbook-index" for item in shared)
         if stage == "strategy":
             assert context["orchestrator_skills"]["shared_references"] == []
         loaded_stages = ["orchestrator", stage] if stage == "strategy" else [stage]
@@ -195,8 +196,8 @@ def test_review_transport_uses_same_model_high_budget_original_image_and_persist
     shared_traces = [trace for trace in traces if trace.get("execution_kind") == "shared_reference"]
     assert {(trace["stage"], trace["id"]) for trace in shared_traces} == {
         (stage, identifier) for stage in ("strategy", "direction_review")
-        for identifier in ("product-evidence", "ad-form-contract")}
-    assert len(shared_traces) == 4
+        for identifier in ("product-evidence", "ad-form-contract", "ad-form-playbook-index")}
+    assert len(shared_traces) == 6
     assert "plan" not in result or result["plan"] is None
     # Persistence revalidates rule provenance without discarding the audit.
     job = post_turn(env, client_turn_id="store-reviewed", content="策划广告").json()["job"]

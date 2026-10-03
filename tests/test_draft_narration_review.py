@@ -43,9 +43,11 @@ def test_original_long_draft_reaches_existing_director_then_full_independent_rev
     assert plan["ad_script"]["beats"][0]["narration"] == SHORT_LINE
     assert state.contexts[-1]["final_plan"]["ad_script"]["beats"][0]["narration"] == SHORT_LINE
     assert plan["plan_review"]["ready"] is True
-    # The canonical persisted type has not acquired an authoring exception.
+    # The stored beat ceiling is wider than this untyped brief. The profile cap
+    # still rejects the long line; only the progressive draft may defer it.
+    assert len(LONG_LINE) <= AdBeat.model_json_schema()["properties"]["narration"]["maxLength"]
     with pytest.raises(ValidationError):
-        AdBeat.model_validate(originals[0]["beats"][0])
+        AdBeat.model_validate({**originals[0]["beats"][0], "narration": "字" * 81})
 
 
 @pytest.mark.parametrize("stage", ["storyboard", "plan_refinement"])

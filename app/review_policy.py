@@ -21,8 +21,8 @@ _TARGET = (rf"^(?:/ad_script/beats/{_INDEX}/(?:narration|visual_role|timing/acti
 class ReviewSuggestion(BaseModel):
     model_config = ConfigDict(extra="forbid", revalidate_instances="always")
 
-    kind: Literal["ordinary_wording", "expression_quality", "optional_pacing", "shot_variety"] = Field(
-        description="仅普通措辞、表达质感、可选节奏或镜头丰富度建议；不能代替事实、动作容量、说话者等硬性检查")
+    kind: Literal["ordinary_wording", "expression_quality", "optional_pacing", "shot_variety", "type_fit"] = Field(
+        description="仅普通措辞、表达质感、可选节奏、镜头丰富度或类型贴合建议；type_fit 不阻断，不能代替事实、动作容量、说话者等硬性检查")
     target: Annotated[str, StringConstraints(strict=True, max_length=160, pattern=_TARGET)] = Field(
         description="当前final_plan中允许的实际文本字段JSON Pointer；数组使用从0开始的索引，不能指向事实、审核结论或数值时长")
     quote: Annotated[str, StringConstraints(strict=True, min_length=1, max_length=240)] = Field(

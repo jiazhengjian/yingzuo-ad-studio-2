@@ -23,7 +23,9 @@
       "copyright": "Copyright (c) 2026 Ethan Wang",
       "license_sha256": "d5ddbca6d673d5f02b30ce0e576db65c36d46ef9f2f7bd78f84558452055a068",
       "notice": "docs/THIRD_PARTY_NOTICES.md",
-      "scope": "Product visual, product/context intercut and lifestyle structures adapted from treatment methods; no full source document, grid workflow, third-party media or model capability claims imported."
+      "scope": "Product visual structures from treatment.md, plus timing templates, product screen-time, shot vocabulary and phase structure adapted from a user-provided verbatim excerpt of the same author's tvc-director references. Adapted from 16:9/Seedance defaults to 9:16/wan3.0. Chinese line examples are original to this product. No grid workflow, third-party media or model capability claims imported.",
+      "excerpt_sha256": "c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1",
+      "excerpt_note": "SHA-256 of the user-provided compilation tvc-director-examples.md, including its header and the verbatim excerpts. Not an upstream file hash."
     }
   ],
   "skills": [
@@ -112,7 +114,7 @@
     {
       "id": "ads-video-creative-strategy",
       "display_name": "Ads Video Creative Strategy",
-      "version": "1.6.4",
+      "version": "1.6.5",
       "stages": [
         "strategy"
       ],
@@ -155,7 +157,7 @@
     {
       "id": "ads-video-script-planning",
       "display_name": "Ads Video Script Planning",
-      "version": "1.6.0",
+      "version": "1.6.1",
       "stages": [
         "ad_script",
         "content_draft"
@@ -199,7 +201,7 @@
     {
       "id": "ads-video-dialogue-writing",
       "display_name": "Ads Video Dialogue Writing",
-      "version": "1.7.1",
+      "version": "1.7.2",
       "stages": [
         "ad_script",
         "storyboard",
@@ -246,7 +248,7 @@
     {
       "id": "ads-video-storyboard-direction",
       "display_name": "Ads Video Storyboard Direction",
-      "version": "1.11.0",
+      "version": "1.11.1",
       "stages": [
         "storyboard",
         "plan_refinement",
@@ -380,7 +382,7 @@
     {
       "id": "ads-video-plan-review",
       "display_name": "Ads Video Plan Review",
-      "version": "1.14.0",
+      "version": "1.15.0",
       "stages": [
         "direction_review",
         "plan_review",
@@ -493,7 +495,7 @@
     {
       "id": "ad-form-contract",
       "path": "shared/ad-form-contract.md",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "stages": [
         "strategy",
         "direction_review"
@@ -502,7 +504,7 @@
     {
       "id": "script-expression",
       "path": "shared/script-expression.md",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "stages": [
         "ad_script",
         "storyboard",
@@ -510,6 +512,42 @@
         "plan_review",
         "content_draft"
       ]
+    },
+    {
+      "id": "ad-form-playbook-index",
+      "path": "shared/ad-form-playbooks/index.md",
+      "version": "1.0.0",
+      "stages": ["strategy", "direction_review"],
+      "ad_forms": ["auto"],
+      "source_refs": [{"source_id": "tvc-director-local", "path": "tvc-director-examples.md", "sha256": "c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1"}],
+      "adaptation_note": "方向选定前的三种骨架索引。时长与阶段结构改编自用户提供的 tvc-director 摘录，台词例子为映作原创。"
+    },
+    {
+      "id": "ad-form-playbook-brand-tvc",
+      "path": "shared/ad-form-playbooks/brand-tvc.md",
+      "version": "1.0.0",
+      "stages": ["strategy", "direction_review", "ad_script", "content_draft", "storyboard", "plan_refinement", "plan_review", "speech_draft"],
+      "ad_forms": ["brand_tvc"],
+      "source_refs": [{"source_id": "tvc-director-local", "path": "tvc-director-examples.md", "sha256": "c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1"}],
+      "adaptation_note": "产品展示的开场、可缩放节拍、短旁白、镜头和英雄定格。16:9/Seedance 改为 9:16/wan3.0。台词例子为映作原创。"
+    },
+    {
+      "id": "ad-form-playbook-scene-story",
+      "path": "shared/ad-form-playbooks/scene-story.md",
+      "version": "1.0.0",
+      "stages": ["strategy", "direction_review", "ad_script", "content_draft", "storyboard", "plan_refinement", "plan_review"],
+      "ad_forms": ["scene_story"],
+      "source_refs": [{"source_id": "tvc-director-local", "path": "tvc-director-examples.md", "sha256": "c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1"}],
+      "adaptation_note": "剧情/场景的处境开场、一个包袱、短对白、反应镜头和英雄定格。台词例子为映作原创。"
+    },
+    {
+      "id": "ad-form-playbook-presenter-pitch",
+      "path": "shared/ad-form-playbooks/presenter-pitch.md",
+      "version": "1.0.0",
+      "stages": ["strategy", "direction_review", "ad_script", "content_draft", "storyboard", "plan_refinement", "plan_review"],
+      "ad_forms": ["presenter_pitch"],
+      "source_refs": [{"source_id": "tvc-director-local", "path": "tvc-director-examples.md", "sha256": "c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1"}],
+      "adaptation_note": "人物讲解的直视开场、讲加演示、更高台词密度和英雄定格。台词例子为映作原创。"
     }
   ]
 }

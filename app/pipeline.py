@@ -24,6 +24,11 @@ def video_submission_spec(plan, segment, assets=None):
     """Freeze the same confirmed visual contract for every provider group."""
     spec = {**segment, "audio_strategy": plan["audio_strategy"],
             "generation_strategy": plan.get("generation_strategy", "legacy_10s")}
+    from .ad_form_playbook import LEGACY_TENTH, speech_profile_for_strategy
+    strategy = plan.get("strategy") if isinstance(plan, dict) else getattr(plan, "strategy", None)
+    tenth = speech_profile_for_strategy(strategy).characters_per_tenth
+    if tenth != LEGACY_TENTH:
+        spec["speech_characters_per_tenth"] = tenth
     director = direction_context(plan)
     if director is not None:
         spec["director_context"] = director

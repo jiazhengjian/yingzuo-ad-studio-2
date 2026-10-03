@@ -159,8 +159,19 @@ def reviewable_draft_enum_issues(raw, strategy, duration, generation_strategy, *
     }
     if not isinstance(raw, dict) or not isinstance(raw.get("beats"), list):
         return []
+    from app.ad_form_playbook import speech_profile_for_strategy
+    beat_cap = speech_profile_for_strategy(strategy).max_beat_characters
     check_copy, issues = copy.deepcopy(raw), []
     for index, beat in enumerate(raw["beats"]):
+        if isinstance(beat, dict):
+            narration = beat.get("narration")
+            if isinstance(narration, str) and len(narration) > beat_cap:
+                if not (allow_long_narration and narration.strip()):
+                    return []
+                check_copy["beats"][index]["narration"] = "校验占位。"
+                issues.append({"loc": ["beats", index, "narration"], "type": "string_too_long",
+                    "max_length": beat_cap, "actual_length": len(narration)})
+                beat = {**beat, "narration": "校验占位。"}
         try:
             AdBeat.model_validate(beat)
         except ValidationError as error:
@@ -174,8 +185,7 @@ def reviewable_draft_enum_issues(raw, strategy, duration, generation_strategy, *
                     # or pass this placeholder into a request or saved plan.
                     check_copy["beats"][index]["narration"] = "校验占位。"
                     issues.append({"loc": ["beats", index, "narration"], "type": "string_too_long",
-                        "max_length": AdBeat.model_json_schema()["properties"]["narration"]["maxLength"],
-                        "actual_length": len(value)})
+                        "max_length": beat_cap, "actual_length": len(value)})
                     continue
                 if item["type"] != "literal_error" or location not in allowed:
                     return []
@@ -925,8 +935,20 @@ class Gateway:
                     skill_stage = "speech_draft"
                 if skill_stage == "storyboard" and not getattr(self.settings, "progressive_planning_enabled", False):
                     skill_stage = "legacy_storyboard"
-                bundle = stage_skill_context(skill_stage)
+                from app.ad_form_playbook import (resolve_playbook_form, speech_profile,
+                                                   structure_from_stage_data, tagline_policy)
+                playbook_form = (resolve_playbook_form(data.get("ad_form"), structure_from_stage_data(data))
+                                 if "ad_form" in data else None)
+                data["tagline_policy"] = tagline_policy()
+                bundle = (stage_skill_context(skill_stage, playbook_form=playbook_form) if playbook_form
+                          else stage_skill_context(skill_stage))
                 data["stage_skills"] = bundle
+                if playbook_form in ("brand_tvc", "scene_story", "presenter_pitch") and isinstance(data.get("speech_budget"), dict):
+                    profile = speech_profile(playbook_form)
+                    data["speech_budget"]["characters_per_second"] = profile.characters_per_second
+                    data["speech_budget"]["max_beat_characters"] = profile.max_beat_characters
+                    if isinstance(data.get("duration_seconds"), int):
+                        data["speech_budget"]["max_total_characters"] = data["duration_seconds"] * profile.characters_per_tenth // 10
                 bundles = [bundle]
                 if stage in ("ad_script", "script_review") and isinstance(data.get("creative_strategy"), dict):
                     data["creative_strategy"].pop("selected_direction", None)
@@ -1078,11 +1100,15 @@ class Gateway:
             direction_schema["properties"]["production"] = {"$ref": "#/$defs/ProductionPlan"}
             direction_schema["required"] = list(dict.fromkeys([*direction_schema.get("required", []), "production"]))
             decision_schema["$defs"]["ProductionPlan"]["properties"]["characters"]["maxItems"] = min(8, 9 - len(sources))
+        from app.ad_form_playbook import resolve_playbook_form, speech_profile
+        opening_profile = speech_profile(resolve_playbook_form(project.get("ad_form")) if "ad_form" in project else None)
         context = {
             "stage": "strategy", "brief": initial_brief,
             "merchant_request": merchant_request, "initial_brief": initial_brief,
             "duration_seconds": duration, "segment_durations": durations,
-            "script_budget": {"hard_max_characters": script_character_limit(duration),
+            "script_budget": {"hard_max_characters": script_character_limit(duration, opening_profile.characters_per_tenth),
+                              "characters_per_second": opening_profile.characters_per_second,
+                              "max_beat_characters": opening_profile.max_beat_characters,
                               "basis": "含标点的保守工程上限，非实测语速；信息任务决定密度，不设一两句目标"},
             "assets": [{"id": a["id"], "name": a["name"]} for a in sources],
             "allowed_decisions": allowed_decisions, "planning_requested": force_plan,
@@ -1216,6 +1242,8 @@ class Gateway:
                     return AgentDecision(kind=decision.kind, message=decision.message, questions=decision.questions,
                         planning_brief=decision.brief, skill_trace=skill_trace if choice_enabled else None).model_dump()
             selected = next(d for d in strategy.directions if d.id == strategy.selected_direction_id)
+            from app.ad_form_playbook import speech_profile_for_strategy
+            speech = speech_profile_for_strategy(strategy)
             joint_authoring = (choice_enabled and getattr(self.settings, "progressive_planning_enabled", False)
                                and getattr(self.settings, "joint_planning_enabled", False))
             speech_only = bool(choice_enabled and getattr(self.settings, "progressive_planning_enabled", False)
@@ -1242,8 +1270,9 @@ class Gateway:
                     "content_draft_version": CONTENT_DRAFT_VERSION,
                     "schema": content_draft_schema(strategy), "brief": strategy.brief.model_dump(),
                     "selected_direction": selected.model_dump(), "duration_seconds": duration,
-                    "speech_budget": {"characters_per_second": 2.9, "max_beat_characters": 29,
-                        "max_total_characters": duration * 29 // 10,
+                    "speech_budget": {"characters_per_second": speech.characters_per_second,
+                        "max_beat_characters": speech.max_beat_characters,
+                        "max_total_characters": duration * speech.characters_per_tenth // 10,
                         "basis": "工程上限，不是实测语速；保留完整句意，不为填满时长强写台词"},
                     "merchant_request": merchant_request, "conversation": context["conversation"],
                     "fixed_speech": fixed_speech(initial_brief, context["conversation"], current_plan)}
@@ -1255,7 +1284,7 @@ class Gateway:
                     on_progress("writing_script")
                 script_input = script_context(strategy, duration, generation_strategy=generation_strategy,
                     skill_stage="ad_script" if choice_enabled else None)
-                script_input.update(stage="ad_script", schema=script_stage_schema() if choice_enabled else AdScript.model_json_schema(),
+                script_input.update(stage="ad_script", schema=script_stage_schema(max_beat_characters=speech.max_beat_characters) if choice_enabled else AdScript.model_json_schema(),
                                     merchant_request=merchant_request, conversation=context["conversation"])
                 if choice_enabled:
                     script_input["fixed_speech"] = fixed_speech(initial_brief, context["conversation"], current_plan)
@@ -1347,7 +1376,7 @@ class Gateway:
                     generation_strategy=generation_strategy)
                 draft_enum_issues = []
                 if choice_enabled:
-                    capacity = script_capacity_budget(ad_script, duration)
+                    capacity = script_capacity_budget(ad_script, duration, speech.characters_per_tenth)
                     if action_capacity_failed or capacity["overrun_seconds"] > 0:
                         save_failed_planner_output(self.settings, last_stage_result)
                         if plan_attempt:
@@ -1362,7 +1391,8 @@ class Gateway:
                         draft = ad_script
                         continue
                 ad_script = validate_script(ad_script, strategy, duration, generation_strategy=generation_strategy)
-                grouping = generation_groups(ad_script, duration, generation_strategy=generation_strategy)
+                grouping = generation_groups(ad_script, duration, generation_strategy=generation_strategy,
+                                            characters_per_tenth=speech.characters_per_tenth)
                 durations = grouping["durations"]
                 if on_progress:
                     on_progress("storyboarding")
@@ -1789,15 +1819,20 @@ class Gateway:
             raise SubmissionError("未知的视频生成策略，尚未提交供应商")
         if continuous and self.settings.video_model not in ("wan3.0", "wan3.0-fast", "wan3.0-video", "wan3.0-video-fast"):
             raise SubmissionError("当前模型尚未验证连续性生成的时长协议，尚未提交供应商")
+        from app.ad_form_playbook import accepted_submission_tenth, bind_speech_tenth, reset_plan_speech_tenth
+        token = bind_speech_tenth(accepted_submission_tenth(segment.get("speech_characters_per_tenth")))
         try:
-            Segment.model_validate(segment)
-            if any(shot.get("continuity") for shot in segment.get("shots", [])) and not segment.get("director_context"):
-                raise ValueError("missing shared visual direction")
-            if ((continuous and not 2 <= segment["duration_seconds"] <= 30)
-                    or (not continuous and segment["duration_seconds"] > 10)):
-                raise ValueError()
-        except (ValidationError, ValueError, KeyError, TypeError):
-            raise SubmissionError("视频段的时长或镜头时轴无效；尚未提交供应商") from None
+            try:
+                Segment.model_validate(segment)
+                if any(shot.get("continuity") for shot in segment.get("shots", [])) and not segment.get("director_context"):
+                    raise ValueError("missing shared visual direction")
+                if ((continuous and not 2 <= segment["duration_seconds"] <= 30)
+                        or (not continuous and segment["duration_seconds"] > 10)):
+                    raise ValueError()
+            except (ValidationError, ValueError, KeyError, TypeError):
+                raise SubmissionError("视频段的时长或镜头时轴无效；尚未提交供应商") from None
+        finally:
+            reset_plan_speech_tenth(token)
         native = segment.get("audio_strategy", "voiceover") == "native"
         if segment.get("speech_spans") is not None and not native:
             raise SubmissionError("独立旁白方案须使用原生声音，尚未提交视频")
