@@ -25,8 +25,11 @@ STRUCTURE_TO_FORM = {
 }
 CONCRETE_FORMS = ("brand_tvc", "scene_story", "presenter_pitch")
 _SUGGESTION_KINDS = frozenset({
-    "ordinary_wording", "expression_quality", "optional_pacing", "shot_variety", "type_fit",
+    "ordinary_wording", "expression_quality", "optional_pacing", "shot_variety", "type_fit", "shot_craft",
 })
+# Share of runtime with the product in frame. Scene films keep the playbook's
+# lower target; a storyboard that never opted into the new fields is not scored.
+SCREEN_TIME_TARGETS = {"brand_tvc": 0.80, "scene_story": 0.50, "presenter_pitch": 0.70}
 _RATE_ENV = {
     "brand_tvc": ("AD_SPEECH_RATE_BRAND_TVC", "3.0", "AD_BEAT_CHARS_BRAND_TVC", 30),
     "scene_story": ("AD_SPEECH_RATE_SCENE_STORY", "3.8", "AD_BEAT_CHARS_SCENE_STORY", 38),
@@ -80,6 +83,11 @@ def _beat_characters(name: str, default: int) -> int:
     if not 8 <= value <= BEAT_CHAR_CEILING:
         return default
     return value
+
+
+def screen_time_target(form: str | None) -> float:
+    """In-frame product share for one form. Unknown forms use the general floor."""
+    return SCREEN_TIME_TARGETS.get(form or "", 0.70)
 
 
 def speech_profile(form: str | None) -> SpeechProfile:

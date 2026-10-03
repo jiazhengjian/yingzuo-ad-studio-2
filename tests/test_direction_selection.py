@@ -459,7 +459,7 @@ def test_real_gateway_pauses_then_uses_only_selected_direction(env, monkeypatch,
             if progressive:
                 assert context["brief"] == candidates.brief.model_dump()
                 assert "expression_schedule" not in context and "approved_ad_script" not in context
-                assert set(context["schema"]["properties"]) == {"title", "ad_script", "visual_direction", "shots"}
+                assert set(context["schema"]["properties"]) == {"title", "video_flow", "ad_script", "visual_direction", "shots"}
                 assert "evidence_ids" not in context["schema"]["$defs"]["AdScript"]["properties"]
                 script = deepcopy(context["draft_script"])
                 for field in ("evidence_ids", "skill_version"):

@@ -14,15 +14,16 @@ REVIEW_POLICY_VERSION = 1
 MAX_REVIEW_SUGGESTIONS = 6
 _INDEX = r"(?:0|[1-9][0-9]*)"
 _TARGET = (rf"^(?:/ad_script/beats/{_INDEX}/(?:narration|visual_role|timing/action_plan)"
-           rf"|/segments/{_INDEX}/shots/{_INDEX}/(?:description|narration|continuity/camera_move)"
+           rf"|/visual_direction/(?:scene|lighting|color_palette|camera_style)"
+           rf"|/segments/{_INDEX}/shots/{_INDEX}/(?:description|narration|continuity/(?:camera_move|start_state|allowed_changes|end_state))"
            rf"|/segments/{_INDEX}/speech_spans/{_INDEX}/text)$")
 
 
 class ReviewSuggestion(BaseModel):
     model_config = ConfigDict(extra="forbid", revalidate_instances="always")
 
-    kind: Literal["ordinary_wording", "expression_quality", "optional_pacing", "shot_variety", "type_fit"] = Field(
-        description="仅普通措辞、表达质感、可选节奏、镜头丰富度或类型贴合建议；type_fit 不阻断，不能代替事实、动作容量、说话者等硬性检查")
+    kind: Literal["ordinary_wording", "expression_quality", "optional_pacing", "shot_variety", "type_fit", "shot_craft"] = Field(
+        description="仅普通措辞、表达质感、可选节奏、镜头丰富度、类型贴合或镜头工艺建议；type_fit 与 shot_craft 不阻断，不能代替事实、动作容量、说话者等硬性检查")
     target: Annotated[str, StringConstraints(strict=True, max_length=160, pattern=_TARGET)] = Field(
         description="当前final_plan中允许的实际文本字段JSON Pointer；数组使用从0开始的索引，不能指向事实、审核结论或数值时长")
     quote: Annotated[str, StringConstraints(strict=True, min_length=1, max_length=240)] = Field(
@@ -49,6 +50,10 @@ def review_suggestion_targets(plan: BaseModel | dict) -> dict[str, str]:
 
     # The model may omit the concatenated script summary. Anchor advice to
     # actual beats and speech spans, which survive request compaction.
+    direction = data.get("visual_direction") or {}
+    if isinstance(direction, dict):
+        for field in ("scene", "lighting", "color_palette", "camera_style"):
+            add(f"/visual_direction/{field}", direction.get(field))
     script = data.get("ad_script") or {}
     for index, beat in enumerate(script.get("beats", [])):
         prefix = f"/ad_script/beats/{index}"
@@ -61,7 +66,9 @@ def review_suggestion_targets(plan: BaseModel | dict) -> dict[str, str]:
             shot_path = f"{prefix}/shots/{shot_index}"
             for field in ("description", "narration"):
                 add(f"{shot_path}/{field}", shot.get(field))
-            add(f"{shot_path}/continuity/camera_move", (shot.get("continuity") or {}).get("camera_move"))
+            continuity = shot.get("continuity") or {}
+            for field in ("camera_move", "start_state", "allowed_changes", "end_state"):
+                add(f"{shot_path}/continuity/{field}", continuity.get(field))
         for span_index, span in enumerate(segment.get("speech_spans") or []):
             add(f"{prefix}/speech_spans/{span_index}/text", span.get("text"))
     return result

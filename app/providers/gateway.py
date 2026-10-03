@@ -937,6 +937,8 @@ class Gateway:
                     skill_stage = "speech_draft"
                 if data.get("task_kind") == "line_jargon_rewrite":
                     skill_stage = "line_rewrite"
+                if data.get("task_kind") == "shot_craft_rewrite":
+                    skill_stage = "shot_craft_rewrite"
                 if skill_stage == "storyboard" and not getattr(self.settings, "progressive_planning_enabled", False):
                     skill_stage = "legacy_storyboard"
                 from app.ad_form_playbook import (resolve_playbook_form, speech_profile,

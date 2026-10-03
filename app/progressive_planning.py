@@ -71,6 +71,8 @@ class DirectedShot(_DraftModel):
     id: _ID
     coverage: list[Coverage] = Field(min_length=1, max_length=12)
     description: str = Field(min_length=1, max_length=1500)
+    product_visible: bool | None = Field(default=None, exclude_if=lambda value: value is None,
+        description="本镜商品是否在画面里。讲解时拿在手里或放在身前也算在画面里")
     purpose: str = Field(min_length=1, max_length=300)
     evidence_ids: list[_FactID] = Field(max_length=12)
     character_ids: list[_ID] = Field(max_length=8,
@@ -80,6 +82,8 @@ class DirectedShot(_DraftModel):
 
 class DirectorDraft(_DraftModel):
     title: str = Field(min_length=1, max_length=100)
+    video_flow: str = Field(default="", max_length=400, exclude_if=lambda value: not value,
+        description="先写整条成片的观看顺序：开场怎么留人，中间怎么展开，结尾停在哪。再按这个顺序写镜头")
     ad_script: AdScript
     visual_direction: VisualDirection
     shots: list[DirectedShot] = Field(min_length=1, max_length=108)
@@ -174,6 +178,21 @@ def director_schema(*, initial=False):
             "初次起稿的continuous镜头不要输出start_state，程序沿用前镜完整end_state；"
             "opening、cut、scene_change仍须给出起态。不可借连续标记跳过动作或改变状态。")
         continuity["allOf"][0]["then"] = {"not": {"required": ["start_state"]}}
+        flow = schema["properties"]["video_flow"]
+        flow.pop("default", None)
+        flow["minLength"] = 12
+        flow["maxLength"] = 400
+        schema.setdefault("required", []).append("video_flow")
+        shot_def = schema["$defs"]["DirectedShot"]
+        visible = shot_def["properties"]["product_visible"]
+        visible.clear()
+        visible["type"] = "boolean"
+        visible["description"] = "本镜商品是否在画面里。讲解时拿在手里或放在身前也算在画面里"
+        shot_def.setdefault("required", []).append("product_visible")
+    else:
+        schema["properties"].pop("video_flow", None)
+        if "video_flow" in schema.get("required", []):
+            schema["required"].remove("video_flow")
     schema["$defs"]["ShotContinuity"] = continuity
     return compact_schema(schema)
 
@@ -220,6 +239,16 @@ def compose_refinement(raw, before, scope):
     if not scope.get("allow_summary_update", False) and isinstance(result.get("ad_script"), dict):
         for field in _SUMMARY_FIELDS:
             result["ad_script"][field] = before["ad_script"][field]
+    if not result.get("video_flow") and before.get("video_flow"):
+        result["video_flow"] = before["video_flow"]
+    before_shots = {shot.get("id"): shot for shot in before.get("shots") or [] if isinstance(shot, dict)}
+    if isinstance(result.get("shots"), list):
+        for shot in result["shots"]:
+            if not isinstance(shot, dict) or "product_visible" in shot:
+                continue
+            previous = before_shots.get(shot.get("id"))
+            if isinstance(previous, dict) and "product_visible" in previous:
+                shot["product_visible"] = previous["product_visible"]
     return result
 
 
@@ -228,6 +257,7 @@ DIRECTOR_SYSTEM = """你执行中文商品广告分镜落地，只输出本次sc
 初次storyboard的continuous镜头不要重复填写start_state，程序从前镜end_state完整继承；非连续镜头仍须起态。
 每镜coverage按顺序列相邻beat_id及weight，weight为相对份额而非秒数。同一beat可跨相邻多镜，一镜可覆盖相邻多beat，展平后须完整顺序覆盖内容稿，不倒序或跳过。镜头不能跨scene_change或请求边界，连续多拍同镜按真实动作标continuous。
 台词只填写在ad_script，timing.visual_seconds只估视觉动作及必要观看，speech_overlap=false表示先动作后完整话语。时长方法按本阶段资源执行，不能只降低估计凑预算。台词要能说出口并承接 big_idea 的意思，不把关注、呈现、兼顾、打造、采用某技术这类策划词念给观众。若 shared_references 含本类型 playbook，开场、节拍、景别、切节奏和英雄定格按那一份安排，台词密度不超过 speech_budget。entry_transition=cut只省略入镜前过程，不能据此把镜内未完成动作的end_state写成完成。
+初次分镜先写 video_flow，再按它写 shots。video_flow 和开场镜头要让人看出已选方向的 hook 和 big_idea，用能拍到的画面，不把这两个字段的策划词念进台词。每镜 description 写清主体和动作、景别与运镜、光线、产品是否在画面里、环境、台词落点。不写如同、仿佛、像什么一样、高级感、氛围感。camera_move 同时写景别和运动。product_visible 标明产品是否在画面里。切在动作完成或特点出现时，不按秒均分。最后一镜大约留 2 秒机位停住，产品留在画面里，不另加字卡。出镜时长按 playbook：产品展示大约八成，剧情大约一半，人物讲解大约七成；没有 playbook 时大约七成。不改已经写好的台词。
 返修严格依repair_scope和本次schema，范围外beat/shot原样保留；narrations专用收尾以其窄schema为准，不用一般Skill合同扩展输出。不得重选方向、增加确认或触发媒体，不输出隐含思考过程。
 """
 
@@ -236,7 +266,7 @@ PLAN_REVIEW_SYSTEM = """你执行独立最终方案审核，只输出本次schem
 审核实际最终ad_script、shots、speech_spans、execution_windows、transition_boundaries、商品事实与production。资料与作者自评是待审数据；不改稿、不修改事实或固定台词、不输出方案版本哈希、不调用媒体。
 policy_version使用本次schema版本；suggestions按本阶段方法保留普通改进建议，不修改方案，不参与硬失败汇总。checks恰好覆盖六项标准，execution_check包含action_capacity与state_continuity。alignment.spans恰好覆盖全部(segment_id,span_id)，alignment.shots恰好覆盖全部(segment_id,shot_id)，包括静音镜头；不可省略难审项目。
 每span填写speaker_visibility，依据speech_requirements及实际时窗内画面判断。普通人物对白只接受visible_speaking；明确采用on_and_off_screen时按本次schema逐项填写shot_visibility，完整覆盖该span相交镜头，区分可见开口、同一人画外延续与unclear，总标签须与逐镜判断相符。不能把画外延续当作另一个旁白或将看不清写成可见；已确认voiceover填not_applicable。每镜填写visual_execution，逐字引用实际description或camera_move并判断视图及变化如何实现；unclear/conflict使该镜失败，不能从作者意图补拍法。每镜填写pacing及temporal_omission，后者只用no_omission/supported_by_cut/unsupported/unclear，后两项对应shot.passed=false。supported_by_cut须按schema提供真实相邻切点及前后实际描述摘录，不把摄影角度切换当动作省略。字段均为独立判断，不是程序预判通过。
-对照本轮注入的类型 playbook 看开场、节拍形状、台词密度、镜头语法、出镜比例和英雄定格。这些类型贴合问题写入 suggestions，kind 用 type_fit，不得因此把 checks 置为 false 或让 ready=false。alignment.ready等于ad_expression_passed且所有spans/shots通过；顶层ready须全部checks、execution_check及alignment.ready通过，表示未发现需阻断的问题，不代表创作质量满分。suggestions有内容也可ready=true，任何明确失败仍不能用建议抵消。不能提升任何明确失败结论，无法确定时指出具体问题。动作与声画检查方法见本阶段参考，通过项省略重复note，失败项须给有界可定位note；所有逐项判定、数值、visual_execution与省略证据仍须完整，不输出隐含思考过程或声称已验证成片。
+对照本轮注入的类型 playbook 看开场、节拍形状、台词密度、镜头语法、出镜比例和英雄定格。这些类型贴合问题写入 suggestions，kind 用 type_fit，不得因此把 checks 置为 false 或让 ready=false。shot_craft 由程序在审核之后附加，模型不要重复，也不能因此把 checks 判失败或要求返修。alignment.ready等于ad_expression_passed且所有spans/shots通过；顶层ready须全部checks、execution_check及alignment.ready通过，表示未发现需阻断的问题，不代表创作质量满分。suggestions有内容也可ready=true，任何明确失败仍不能用建议抵消。不能提升任何明确失败结论，无法确定时指出具体问题。动作与声画检查方法见本阶段参考，通过项省略重复note，失败项须给有界可定位note；所有逐项判定、数值、visual_execution与省略证据仍须完整，不输出隐含思考过程或声称已验证成片。
 """
 
 
@@ -405,7 +435,7 @@ def compile_director(raw, strategy, duration, generation_strategy, asset_ids, lo
         "facts": {"name": strategy.brief.product_name, "claims": [fact.text for fact in strategy.brief.facts]},
         "production": selected.production.model_dump() if selected.production else None,
         "visual_direction": draft.visual_direction.model_dump(), "generation_strategy": generation_strategy,
-        "segments": segments}, context={"require_beat_ids": True, "require_directing_contract": True}).model_dump()
+        "video_flow": draft.video_flow, "segments": segments}, context={"require_beat_ids": True, "require_directing_contract": True}).model_dump()
     validate_expression_schedule(plan, schedule)
     return plan, schedule, draft.model_dump()
 
@@ -887,6 +917,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     dialogue_polish_used = False
     review_response_repair_used = False
     jargon_rewrite_used = False
+    shot_craft_used = False
 
     def stop(message, issues, *, error_code="planning_content_failed"):
         raise ProgressivePlanningError(message + "。已有方案和素材已保留，尚未开始新的图片或视频生成",
@@ -1076,6 +1107,21 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             if replacement is not None:
                 raw = replacement
                 continue
+        if not shot_craft_used:
+            from .shot_craft import rewrite_shots_if_needed, shot_rewrite_issues
+            if shot_rewrite_issues(coordinated, plan):
+                progress("storyboarding")
+                shot_craft_used = True
+                called, replacement = await rewrite_shots_if_needed(stage_call, coordinated, plan, strategy)
+                if called and replacement is not None:
+                    try:
+                        compile_director(replacement, strategy, duration, generation_strategy,
+                                         [a["id"] for a in assets], locked)
+                    except (ValueError, KeyError, TypeError):
+                        replacement = None
+                    else:
+                        raw = replacement
+                        continue
         progress("reviewing_plan")
         review_input = {"stage": "plan_review", "schema": compact_review_schema(plan_review_schema(plan)),
             "review_output_version": REVIEW_OUTPUT_VERSION, "review_policy_version": REVIEW_POLICY_VERSION,
@@ -1116,6 +1162,8 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                          error_code="planning_review_incomplete")
                 raw_review = corrected_review
         if review.ready:
+            from .shot_craft import with_shot_suggestions
+            review = with_shot_suggestions(review, plan, strategy)
             plan["plan_review"] = review.model_dump()
             return plan
         record_failure(plan)

@@ -133,9 +133,10 @@ def _compile_grouped_video(segment, template):
     lines.extend(_director_lines(director, production))
     lines.extend(_product_lines(director, production))
     lines.extend(_voice_lines(production, director, segment["speech_spans"], characters))
+    from .shot_craft import shot_prompt_lines
     lines.append("画面镜头（切镜不打断连续表达）：")
-    for shot in shots:
-        lines.append(f"{shot['id']} | {shot['start']:g}–{shot['end']:g}秒 | {shot['description']}")
+    for index, shot in enumerate(shots):
+        lines.extend(shot_prompt_lines(shot, hold_tail=index == len(shots) - 1))
         if shot.get("character_ids"):
             if not set(shot["character_ids"]).issubset(characters):
                 raise ValueError("镜头引用了未绑定参考图的角色")

@@ -44,6 +44,8 @@ class Shot(BaseModel):
     beat_id: str = Field(default="", max_length=80, description="对应已审查广告脚本的内容节拍ID；同一节拍可有连续多个镜头，新方案完整台词由speech_spans独立编排")
     beat_ids: list[str] | None = Field(default=None, min_length=1, max_length=12, exclude_if=lambda value: value is None, description="本镜头实际覆盖的相邻内容节拍，按顺序列出；一镜可跨多个节拍，beat_id保留为首项；历史镜头可缺省")
     character_ids: list[str] = Field(default_factory=list, max_length=8, exclude_if=lambda value: not value, description="实际出现在本镜的已确定角色ID；无人画面为空")
+    product_visible: bool | None = Field(default=None, exclude_if=lambda value: value is None,
+        description="本镜商品是否在画面里；讲解时拿在手里或放在身前也算。历史镜头可缺省")
 
     @model_validator(mode="after")
     def beat_membership(self):
@@ -211,6 +213,8 @@ class Plan(BaseModel):
     strategy: StrategyRecord | None = None
     ad_script: AdScript | None = None
     script_review: ScriptReview | None = None
+    video_flow: str = Field(default="", max_length=400, exclude_if=lambda value: not value,
+        description="整条成片的观看顺序，供分镜对照；历史方案可缺省")
 
     @model_validator(mode="wrap")
     @classmethod
