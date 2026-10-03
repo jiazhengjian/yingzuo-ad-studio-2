@@ -311,6 +311,40 @@ def lower_first_estimate_only(value):
         action_plan="重新估计三秒足够，不改变实际动作。")
 
 
+def test_real_edit_keeps_an_unchanged_estimate_without_another_model_round(progressive_gateway):
+    state = progressive_gateway
+
+    def prepare(value):
+        overburden_first_beat(value)
+        value["ad_script"]["beats"][1]["timing"]["visual_seconds"] = 5
+
+    def mixed(value):
+        simplify_first_beat(value)
+        value["ad_script"]["beats"][1]["timing"]["visual_seconds"] = 1
+
+    state.first_director_mutation = prepare
+    state.refinement_mutations = [mixed]
+    plan = state.run()
+    assert state.calls == ["ad_script", "storyboard", "plan_refinement", "plan_review"]
+    assert plan["ad_script"]["beats"][0]["timing"]["visual_seconds"] == 3
+    assert plan["ad_script"]["beats"][1]["timing"]["visual_seconds"] == 5
+    assert plan["plan_review"]["ready"] is True
+
+
+def test_sparse_refinement_format_requests_a_patch_without_the_full_branch(progressive_gateway, settings):
+    settings.planner_refinement_format = "sparse"
+    state = progressive_gateway
+    state.first_review_mutation = reject_first_shot
+    state.refinement_mutation = lambda value: value["shots"][0].update(
+        description="办公者取放商品一次，再辨认瓶身轮廓。")
+    assert state.run()["plan_review"]["ready"] is True
+    refinement = next(context for context in state.contexts if context["stage"] == "plan_refinement")
+    assert refinement["repair_scope"].get("allow_beat_restructure") is not True
+    assert refinement["refinement_output_format"] == "sparse"
+    assert "oneOf" not in refinement["schema"]
+    assert "patch" in refinement["schema"]["properties"]
+
+
 @pytest.mark.parametrize("trigger", ["compile", "review"])
 def test_estimate_guard_uses_remaining_repair_and_reviews_actual_final_content(progressive_gateway, trigger):
     state = progressive_gateway

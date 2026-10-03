@@ -787,10 +787,38 @@ def _capacity_improved(previous, current, before, after):
         for key, gap in current.items())
 
 
+def _restore_unsupported_estimates(before, revised, error):
+    """Put unauthorized estimate cuts back when the rest of the edit can stand.
+
+    A refinement that also changes real action or speech keeps those edits.
+    Beats whose pictures and narration did not change return to the baseline
+    visual estimate and speech overlap. The caller still compiles and reviews
+    the restored draft; this never treats the restored numbers as approval.
+    """
+    restored = deepcopy(revised)
+    before_beats = {beat["id"]: beat for beat in before["ad_script"]["beats"]}
+    targets = set(error.beat_ids)
+    if error.whole_plan:
+        targets.update(before_beats)
+    changed = False
+    for beat in restored["ad_script"]["beats"]:
+        original = before_beats.get(beat["id"])
+        if (original is None or beat["id"] not in targets or "timing" not in beat
+                or "timing" not in original
+                or _beat_actions(before, original) != _beat_actions(restored, beat)):
+            continue
+        for field in ("visual_seconds", "speech_overlap"):
+            if beat["timing"].get(field) != original["timing"].get(field):
+                beat["timing"][field] = deepcopy(original["timing"][field])
+                changed = True
+    return restored if changed else None
+
+
 async def progressive_plan(*, stage_call, on_progress, record_failure, strategy, draft,
                            draft_issues, duration, generation_strategy, assets, conversation,
                            merchant_request, current_plan, initial_brief=None, content_only=False,
-                           speech_only=False):
+                           speech_only=False, max_refinements=MAX_PLAN_REFINEMENTS,
+                           refinement_format="sparse_or_full"):
     from .av_review import review_execution_windows, review_speech_requirements, review_transition_boundaries
     from .beat_timing import script_capacity_budget
     from .plan_review import plan_review_schema, lower_failed_plan_verdicts, validate_plan_review
@@ -857,9 +885,10 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
         initial_feedback = feedback
         reviewed_timing = (_reviewed_timing_authorization(before, plan, bound_review)
                            if plan is not None and bound_review is not None else None)
+        limit_names = {0: "零轮", 1: "一轮", 2: "两轮"}
         while True:
-            if repairs >= MAX_PLAN_REFINEMENTS:
-                stop("两轮自动调整后，本次方案仍有未解决的内容或动作问题", issues)
+            if repairs >= max_refinements:
+                stop(f"{limit_names.get(max_refinements, str(max_refinements) + '轮')}自动调整后，本次方案仍有未解决的内容或动作问题", issues)
             progress("refining_storyboard")
             repairs += 1
             refinement = {**data, "stage": "plan_refinement", "schema": refinement_schema(scope),
@@ -867,14 +896,23 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 "repair_capacity": script_capacity_budget(current["ad_script"], duration),
                 "repair_capacity_basis": "这是当前draft_storyboard的逐拍和全片最低容量，不是初稿预算，也不是动作已经可执行的证明。改动后须重新计算：speech_overlap=true按动作与完整台词所需时长较大者计；false按两者相加。全片最低容量不得超过target_seconds，还须满足生成分段与实际动作要求。新增动作或延长台词会占用现有余量；超过容量须精简真实内容或有依据地省略过程，不能仅下调估时。",
                 "review_feedback": feedback, "repair_scope": scope,
-                "repair_attempt": repairs, "repair_attempt_limit": MAX_PLAN_REFINEMENTS,
+                "repair_attempt": repairs, "repair_attempt_limit": max_refinements,
                 "repair_rules": "只输出本次schema的可编辑字段。title、visual_direction以及未允许更新的三项摘要由程序保留原值，不重写。一次处理全部已知问题，仅修改允许范围及必要相邻状态。保留其他内容和用户固定要求；不能只修改purpose、action_plan或审核说明。完成后程序重排时间并独立完整复核。"}
             sparse_allowed = sparse_refinement_compatible(current, scope)
             refinement_system = DIRECTOR_SYSTEM
             if sparse_allowed:
-                refinement["schema"] = sparse_refinement_schema(refinement["schema"], current, scope)
+                sparse_schema = sparse_refinement_schema(refinement["schema"], current, scope)
+                use_sparse_only = (refinement_format == "sparse"
+                                   and scope.get("allow_beat_restructure") is not True)
+                if use_sparse_only:
+                    patch_only = deepcopy(sparse_schema["oneOf"][0])
+                    patch_only["$defs"] = sparse_schema["$defs"]
+                    refinement["schema"] = patch_only
+                    refinement["refinement_output_format"] = "sparse"
+                else:
+                    refinement["schema"] = sparse_schema
+                    refinement["refinement_output_format"] = "sparse_or_full"
                 refinement["refinement_output_version"] = REFINEMENT_OUTPUT_VERSION
-                refinement["refinement_output_format"] = "sparse_or_full"
                 refinement_system += "\n" + SPARSE_REFINEMENT_INSTRUCTION
             if plan is not None and current == before:
                 refinement["final_plan"] = review_projection(plan)
@@ -889,6 +927,21 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 validate_script_timing(revised["ad_script"], required=True)
                 validate_local_refinement(before, revised, scope, reviewed_timing=reviewed_timing)
             except TimingReductionError as error:
+                # An unauthorized estimate cut beside real edits does not need
+                # another model round when restoring those numbers still compiles.
+                restored = _restore_unsupported_estimates(before, revised, error)
+                if restored is not None:
+                    try:
+                        validate_local_refinement(before, restored, scope, reviewed_timing=reviewed_timing)
+                        compile_director(restored, strategy, duration, generation_strategy,
+                                         [a["id"] for a in assets], locked)
+                    except (TimingReductionError, ValueError, KeyError, TypeError):
+                        restored = None
+                    else:
+                        mapping_improved = (initial_feedback.get("kind") == "evidence_mapping"
+                            and _evidence_mapping_gaps(restored) < _evidence_mapping_gaps(before))
+                        if _refinement_content(before) != _refinement_content(restored) or mapping_improved:
+                            return restored
                 # Gather the other known capacity conflict now, rather than
                 # spending the last repair on one estimate and discovering an
                 # overrun afterwards. Authored identity/lock errors still stop.
@@ -908,7 +961,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 if error.whole_plan:
                     guard_issues[("estimate",)] = "实际全片内容未变，不能仅降低总估时"
                 issues = {**issues, **guard_issues}
-                if repairs >= MAX_PLAN_REFINEMENTS:
+                if repairs >= max_refinements:
                     record_failure(plan)
                     raise ProgressivePlanningError(str(error), issue_summary=list(issues.values()),
                         repair_attempts=repairs) from None
@@ -1043,7 +1096,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
         issues = _review_issues(feedback, plan)
         if dialogue_polish_used:
             stop("单次台词收尾后，本次方案仍有未解决的问题", issues)
-        if (repairs == MAX_PLAN_REFINEMENTS and _only_natural_speech_failed(review)
+        if (max_refinements > 0 and repairs == max_refinements and _only_natural_speech_failed(review)
                 and any(beat["narration"] for beat in coordinated["ad_script"]["beats"])):
             # Replaying the same completed stage reconstructs this flag after
             # restart; its request and the full review share the session budget.
@@ -1054,7 +1107,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 "schema": dialogue_polish_schema(coordinated, narration_limits),
                 "narration_limits": narration_limits, "draft_storyboard": coordinated,
                 "final_plan": review_projection(plan), "review_feedback": feedback,
-                "repair_attempt": repairs, "repair_attempt_limit": MAX_PLAN_REFINEMENTS,
+                "repair_attempt": repairs, "repair_attempt_limit": max_refinements,
                 "dialogue_polish_attempt": 1, "dialogue_polish_limit": 1}
             polish_input.pop("speech_budget", None)
             candidate = await stage_call(DIALOGUE_POLISH_SYSTEM, polish_input, [])
