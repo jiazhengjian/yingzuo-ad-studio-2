@@ -58,7 +58,8 @@ def test_speech_draft_replaces_first_call_without_inventing_beats(speech_gateway
     content, director, review = state.contexts
     assert content["draft_format"] == director["draft_format"] == "speech_only"
     assert content["speech_draft_version"] == director["speech_draft_version"] == SPEECH_DRAFT_VERSION
-    assert set(content["schema"]["properties"]) == {"narration"}
+    assert set(content["schema"]["properties"]) == {"narration", "hook_options", "closing_options"}
+    assert content["schema"]["required"] == ["narration"]
     assert content["stage_skills"]["stage"] == "speech_draft"
     assert "source_context" not in content
     assert director["draft_speech"] == {"narration": "给忙碌的桌角，留一点自己的喜欢。"}

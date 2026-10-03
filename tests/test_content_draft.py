@@ -94,7 +94,8 @@ def test_enabled_content_draft_is_only_a_first_stage_before_complete_plan_review
     assert state.calls == ["ad_script", "storyboard", "plan_review"]
     content, director, review = state.contexts
     assert content["draft_format"] == director["draft_format"] == "content_only"
-    assert set(content["schema"]["properties"]) == {"beats"}
+    assert set(content["schema"]["properties"]) == {"beats", "key_line_options"}
+    assert content["schema"]["required"] == ["beats"]
     assert not {"runtime_skill", "creative_strategy", "ad_expression_skill", "generation_strategy"}.intersection(content)
     assert not {"draft_capacity", "draft_capacity_basis"}.intersection(director)
     assert ContentDraft.model_validate(director["draft_script"]).model_dump() == director["draft_script"]
