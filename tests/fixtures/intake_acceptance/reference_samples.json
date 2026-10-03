@@ -1,0 +1,159 @@
+{
+  "schema_version": "1.0.0",
+  "purpose": "第一阶段人工参考基线；不属于运行时提示，不是模型质量结果。",
+  "origin": "all_product_inputs_and_reference_scripts_are_synthetic",
+  "status": "reference_candidates_pending_human_acceptance",
+  "ad_forms": ["brand_tvc", "scene_story", "presenter_pitch"],
+  "held_out_policy": "reading_stand 不得复制到运行时提示或用于当前调参。这里是留出商品的可审阅参考，不是保密盲测集；后续真实评测另保留未参与调参的变体。被用于调整规则的样本应转为回归样本。",
+  "products": [
+    {
+      "id": "hairdryer", "partition": "regression", "name": "带挂环的三档吹风机",
+      "input": "合成测试商品：深灰机身、圆形出风口。按手柄风速键切换三档风速，底部有挂环，可挂起收纳。给洗漱台空间有限的人做20秒中文广告。没有快干、护发或噪声测试。",
+      "facts": [
+        {"id": "dryer_shape", "text": "深灰机身、圆形出风口", "basis": "synthetic_merchant_input"},
+        {"id": "dryer_speed", "text": "按手柄风速键切换三档风速", "basis": "synthetic_merchant_input"},
+        {"id": "dryer_loop", "text": "底部有挂环，可挂起收纳", "basis": "synthetic_merchant_input"}
+      ],
+      "assumptions": ["洗漱台空间有限是测试受众设定，不是用户画像研究。", "已有且适配的墙钩是场景道具，不是商品附送配件。"],
+      "unknowns": ["实际吹干速度", "温控护发", "噪声", "材质", "配件", "售价"],
+      "forbidden_inferences": ["可见按钮本身不能证明三档。", "挂起不能扩展成节省某个百分比空间。", "不得添加未经确认的吹干效果对比。"]
+    },
+    {
+      "id": "cake", "partition": "regression", "name": "一人份黑巧切块蛋糕",
+      "input": "合成测试商品：使用70%可可黑巧克力制作的切块蛋糕，按一人份售卖，切面有多层结构。给办公室里想买下午茶的人做20秒广告。不宣传低糖、健康、当天现做或具体口感。",
+      "facts": [
+        {"id": "cake_chocolate", "text": "配料使用70%可可黑巧克力", "basis": "synthetic_merchant_input"},
+        {"id": "cake_portion", "text": "按一人份切块售卖", "basis": "synthetic_merchant_input"},
+        {"id": "cake_layers", "text": "切面有多层结构", "basis": "synthetic_merchant_input"}
+      ],
+      "assumptions": ["一个人选下午茶是创意情境，不代表调查结论。", "人物是虚构角色，不是真实买家。"],
+      "unknowns": ["整块蛋糕的可可含量", "糖含量", "营养数据", "口感", "新鲜程度", "价格", "顶部装饰配料"],
+      "forbidden_inferences": ["70%修饰所用黑巧克力，不能说整块蛋糕70%都是可可。", "一人份不代表低热量。", "吃完的同一块蛋糕不能重新完整出现。"]
+    },
+    {
+      "id": "reading_stand", "partition": "held_out", "name": "两档角度折叠阅读架",
+      "input": "合成测试商品：桌面阅读架，可在两个支撑角度之间调整，不用时可折平。现有样品可支撑指定的演示薄册。做20秒中文广告。没有承重、护眼或颈椎相关测试，尺寸和材质没提供。",
+      "facts": [
+        {"id": "stand_angles", "text": "有两个支撑角度", "basis": "synthetic_merchant_input"},
+        {"id": "stand_fold", "text": "不用时可折平", "basis": "synthetic_merchant_input"},
+        {"id": "stand_sample", "text": "样品可支撑指定演示薄册", "basis": "synthetic_merchant_input"}
+      ],
+      "assumptions": ["书桌上对照薄册抄写是创作场景。", "薄册是道具，不代表商品附送。"],
+      "unknowns": ["尺寸", "材质", "精确角度", "承重", "厚书或电子设备适用性", "健康效果", "防水耐热"],
+      "forbidden_inferences": ["不能从指定薄册推断所有厚书或平板均适用。", "不得承诺矫正坐姿、护眼或缓解颈椎问题。", "不发明夹页、磁吸或充电装置。"]
+    }
+  ],
+  "reference_samples": [
+    {
+      "id": "hairdryer_brand_tvc", "product_id": "hairdryer", "ad_form": "brand_tvc", "duration_seconds": 20,
+      "origin": "author_written_reference", "review_status": "pending_human_acceptance", "title": "台面留白",
+      "core_message": "通过挂环收纳方式回应台面空间需求，并展现商品轮廓。",
+      "evidence_ids": ["dryer_shape", "dryer_loop"],
+      "voice_decision": "画外音补充空间需求和收纳依据，结尾以简短情绪句收束。",
+      "why_this_form": "由轮廓、光线与构图组织节奏，不依赖人物冲突或身份揭晓。",
+      "shots": [
+        {"id": "s1", "start": 0, "end": 6, "visual": "深灰背景，斜光扫过圆形风口，商品平放，不添加支架或悬浮结构。", "speech_mode": "voiceover", "speech": "小小的洗漱台，也想留一点空。", "speech_role": "说明受众需求", "evidence_ids": ["dryer_shape"], "continuity": "保持同一商品外形"},
+        {"id": "s2", "start": 6, "end": 13, "visual": "手握已断电商品，用底部挂环挂上已有墙钩；墙钩与商品分别可辨。", "speech_mode": "voiceover", "speech": "自带挂环，用完有处收。", "speech_role": "连接功能与用途", "evidence_ids": ["dryer_loop"], "continuity": "墙钩是场景道具，先挂稳再松手"},
+        {"id": "s3", "start": 13, "end": 20, "visual": "商品稳定挂好，镜头后移，台面留杯与毛巾，商品始终在画面中。", "speech_mode": "voiceover", "speech": "给日常，留点余地。", "speech_role": "收束空间主题", "evidence_ids": ["dryer_loop"], "continuity": "不重新插电或回到手持吹发"}
+      ]
+    },
+    {
+      "id": "hairdryer_scene_story", "product_id": "hairdryer", "ad_form": "scene_story", "duration_seconds": 20,
+      "origin": "author_written_reference", "review_status": "pending_human_acceptance", "title": "腾出一个放杯子的位置",
+      "core_message": "用具体的台面收纳需要引出商品挂环。", "evidence_ids": ["dryer_loop"],
+      "voice_decision": "画外音补充人物目标和商品依据，结尾由画面兑现目标。",
+      "why_this_form": "人物要放杯子，收纳功能直接解决情境中的目标。",
+      "shots": [
+        {"id": "s1", "start": 0, "end": 6, "visual": "洗漱后角色拿杯子走到台面，断电的吹风机占着她想放杯子的位置。", "speech_mode": "voiceover", "speech": "洗漱台不大，东西得各有位置。", "speech_role": "说明动机", "evidence_ids": [], "continuity": "杯子在手中，吹风机已停用"},
+        {"id": "s2", "start": 6, "end": 13, "visual": "先把杯子放到另一处空位，再用挂环把吹风机挂上墙钩。", "speech_mode": "voiceover", "speech": "这台自带挂环，可以挂起来收。", "speech_role": "明确商品解决方式", "evidence_ids": ["dryer_loop"], "continuity": "挂稳后松手，杯子仍在临时位置"},
+        {"id": "s3", "start": 13, "end": 20, "visual": "角色把杯子移到刚空出的原位置，擦干手离开；吹风机仍在墙上。", "speech_mode": "none", "speech": "", "speech_role": "用画面完成目标", "evidence_ids": ["dryer_loop"], "continuity": "同一台、同一杯，位置可追踪"}
+      ]
+    },
+    {
+      "id": "hairdryer_presenter_pitch", "product_id": "hairdryer", "ad_form": "presenter_pitch", "duration_seconds": 20,
+      "origin": "author_written_reference", "review_status": "pending_human_acceptance", "title": "怎么调，怎么收",
+      "core_message": "说明按键调档与挂环收纳。", "evidence_ids": ["dryer_speed", "dryer_loop"],
+      "voice_decision": "同一讲解者面对观众，嘴部始终可见，不冒充真实买家。",
+      "why_this_form": "围绕观众选购问题组织解释和演示，不是角色在场景内交谈。",
+      "shots": [
+        {"id": "s1", "start": 0, "end": 6, "visual": "讲解者面向镜头手持断电商品，脸与商品均可见。", "speech_mode": "character_dialogue", "speech": "选吹风机，也看看怎么调、怎么收。", "speech_role": "提出选购角度", "evidence_ids": [], "continuity": "同一讲解者、同一商品"},
+        {"id": "s2", "start": 6, "end": 13, "visual": "保留嘴部，手指向已确认的风速键，不按键或演示未知风量效果。", "speech_mode": "character_dialogue", "speech": "这颗键切换三档风速。", "speech_role": "必要的操作说明", "evidence_ids": ["dryer_speed"], "continuity": "信息依据是商家文字，图像不能证明三档"},
+        {"id": "s3", "start": 13, "end": 20, "visual": "讲解者用挂环把商品挂到身旁墙钩，挂稳松手，再面对镜头。嘴部全程可见。", "speech_mode": "character_dialogue", "speech": "底部有挂环，用完可以挂起收纳。", "speech_role": "交代功能用途", "evidence_ids": ["dryer_loop"], "continuity": "商品断电；墙钩不算附送配件"}
+      ]
+    },
+    {
+      "id": "cake_brand_tvc", "product_id": "cake", "ad_form": "brand_tvc", "duration_seconds": 20,
+      "origin": "author_written_reference", "review_status": "pending_human_acceptance", "title": "一个人的黑巧时刻",
+      "core_message": "黑巧配料与一人份规格构成下午茶选择。", "evidence_ids": ["cake_chocolate", "cake_portion", "cake_layers"],
+      "voice_decision": "旁白说明原料和选择理由，画面展示外观，不能声称图像证明成分。",
+      "why_this_form": "商品切面、灯光与单人份构图构成视觉主线，没有强行故事反转。",
+      "shots": [
+        {"id": "s1", "start": 0, "end": 6, "visual": "侧光拍完整切块的多层切面，蛋糕在盘上静止。", "speech_mode": "voiceover", "speech": "想给自己选一份黑巧下午茶。", "speech_role": "建立选择情境", "evidence_ids": ["cake_chocolate", "cake_portion"], "continuity": "全片不发生食用动作"},
+        {"id": "s2", "start": 6, "end": 13, "visual": "沿同一块蛋糕侧面缓慢移动，展现切面，不生成未知配料。", "speech_mode": "voiceover", "speech": "用的是百分之七十可可黑巧克力。", "speech_role": "准确交代配料", "evidence_ids": ["cake_chocolate", "cake_layers"], "continuity": "70%属于黑巧原料，不属于整块蛋糕"},
+        {"id": "s3", "start": 13, "end": 20, "visual": "拉开到一人份蛋糕和一只杯子的桌面构图，保持商品可见。", "speech_mode": "voiceover", "speech": "一人份，留给自己的茶歇。", "speech_role": "把规格连接到场景", "evidence_ids": ["cake_portion"], "continuity": "同一块蛋糕始终完整"}
+      ]
+    },
+    {
+      "id": "cake_scene_story", "product_id": "cake", "ad_form": "scene_story", "duration_seconds": 20,
+      "origin": "author_written_reference", "review_status": "pending_human_acceptance", "title": "不用等人凑齐的下午茶",
+      "core_message": "一人份切块适合独自决定下午茶的情境。", "evidence_ids": ["cake_portion", "cake_chocolate", "cake_layers"],
+      "voice_decision": "旁白补充选择动机及规格，吃一口的动作无需复述。",
+      "why_this_form": "围绕人物的下午茶选择展开，规格对选择有实际作用。",
+      "shots": [
+        {"id": "s1", "start": 0, "end": 6, "visual": "办公室角色停下文稿，看向桌边茶点位置；不展示聊天信息或好评。", "speech_mode": "voiceover", "speech": "下午茶，也可以自己决定。", "speech_role": "表达人物动机", "evidence_ids": [], "continuity": "桌边茶点位置为空"},
+        {"id": "s2", "start": 6, "end": 13, "visual": "角色把一盘完整切块放到空位，镜头带到多层切面。", "speech_mode": "voiceover", "speech": "黑巧切块，一人份，不必等人凑齐。", "speech_role": "连接规格与需要", "evidence_ids": ["cake_portion", "cake_chocolate", "cake_layers"], "continuity": "蛋糕此时完整"},
+        {"id": "s3", "start": 13, "end": 20, "visual": "用叉子取下一小口后，镜头停在盘中缺了一角的蛋糕与人物同框画面。", "speech_mode": "none", "speech": "", "speech_role": "完成茶歇动作", "evidence_ids": ["cake_portion"], "continuity": "只取一口，保持缺角；不重新完整或取未知装饰"}
+      ]
+    },
+    {
+      "id": "cake_presenter_pitch", "product_id": "cake", "ad_form": "presenter_pitch", "duration_seconds": 20,
+      "origin": "author_written_reference", "review_status": "pending_human_acceptance", "title": "看清这一份",
+      "core_message": "向选下午茶的人说明售卖规格和黑巧配料。", "evidence_ids": ["cake_portion", "cake_chocolate"],
+      "voice_decision": "同一人面对观众讲清选择依据，不作试吃证言；嘴部持续可见。",
+      "why_this_form": "口语说明具体商品信息，不表演消费者效果或夸大营养价值。",
+      "shots": [
+        {"id": "s1", "start": 0, "end": 6, "visual": "讲解者坐在桌前面对观众，脸与盘中完整蛋糕均可见。", "speech_mode": "character_dialogue", "speech": "一个人买下午茶，可以看看这份。", "speech_role": "点明适用情境", "evidence_ids": ["cake_portion"], "continuity": "同一讲解者，蛋糕不被食用"},
+        {"id": "s2", "start": 6, "end": 13, "visual": "保持讲解者嘴部可见，把盘子轻移向前。", "speech_mode": "character_dialogue", "speech": "一人份切块，不用买整只蛋糕。", "speech_role": "解释规格意义", "evidence_ids": ["cake_portion"], "continuity": "蛋糕保持完整，不添加额外装饰"},
+        {"id": "s3", "start": 13, "end": 20, "visual": "讲解者指向盘中蛋糕而不触碰食物，面向观众说完。", "speech_mode": "character_dialogue", "speech": "配料用的是百分之七十可可黑巧克力。", "speech_role": "准确说明原料比例", "evidence_ids": ["cake_chocolate"], "continuity": "不切到无人的商品画面继续人物口播"}
+      ]
+    },
+    {
+      "id": "reading_stand_brand_tvc", "product_id": "reading_stand", "ad_form": "brand_tvc", "duration_seconds": 20,
+      "origin": "author_written_reference", "review_status": "pending_human_acceptance", "title": "展开与收起之间",
+      "core_message": "用支撑与折平状态呈现阅读架的使用和收纳。", "evidence_ids": ["stand_angles", "stand_fold", "stand_sample"],
+      "voice_decision": "旁白补充使用偏好和两档信息，画面呈现结构变化。",
+      "why_this_form": "以结构状态和几何构图为主，不要求人物情绪反转。",
+      "shots": [
+        {"id": "s1", "start": 0, "end": 6, "visual": "纯色桌面上，阅读架折平，侧光表现已知结构，不推断材质。", "speech_mode": "voiceover", "speech": "桌上的空间，想留给正在做的事。", "speech_role": "连接桌面使用偏好", "evidence_ids": ["stand_fold"], "continuity": "同一架体，没有额外夹页装置"},
+        {"id": "s2", "start": 6, "end": 13, "visual": "手将阅读架展开至第一档，再放上指定薄册，固定镜头展示支撑关系。", "speech_mode": "voiceover", "speech": "两档角度，选一个合适的位置。", "speech_role": "说明画面单个状态不能证明的规格", "evidence_ids": ["stand_angles", "stand_sample"], "continuity": "先稳固支架再放书，不夸大角度范围"},
+        {"id": "s3", "start": 13, "end": 20, "visual": "先移走薄册，再将阅读架折平，放到桌边空出的收纳位置。", "speech_mode": "voiceover", "speech": "不用时折平，桌面留给下一件事。", "speech_role": "解释折叠用途", "evidence_ids": ["stand_fold"], "continuity": "不能夹着书一起折平"}
+      ]
+    },
+    {
+      "id": "reading_stand_scene_story", "product_id": "reading_stand", "ad_form": "scene_story", "duration_seconds": 20,
+      "origin": "author_written_reference", "review_status": "pending_human_acceptance", "title": "腾出手记一句",
+      "core_message": "支撑指定薄册，让角色在对照内容时能双手整理笔记。", "evidence_ids": ["stand_angles", "stand_sample"],
+      "voice_decision": "画外音解释动机与适用范围，不把场景演示升级为学习效率承诺。",
+      "why_this_form": "产品在人物空出手写字的动作因果中发挥作用。",
+      "shots": [
+        {"id": "s1", "start": 0, "end": 6, "visual": "角色左手扶薄册、右手持笔，准备在旁边纸本记录。", "speech_mode": "voiceover", "speech": "对照着记笔记，想把手空出来。", "speech_role": "说明人物目标", "evidence_ids": [], "continuity": "两手已有明确任务"},
+        {"id": "s2", "start": 6, "end": 13, "visual": "角色放下笔与薄册，展开阅读架选定一档，再把薄册靠稳后松手。", "speech_mode": "voiceover", "speech": "这本薄册，交给阅读架。", "speech_role": "限定当前道具适用范围", "evidence_ids": ["stand_angles", "stand_sample"], "continuity": "先放下手中物品再操作，避免多手动作"},
+        {"id": "s3", "start": 13, "end": 20, "visual": "薄册仍靠在架上，角色左手扶纸本、右手写字，完整关系入画。", "speech_mode": "voiceover", "speech": "两档角度，按桌面安排来选。", "speech_role": "补充可调整方式", "evidence_ids": ["stand_angles"], "continuity": "不再手扶薄册；不展示自动翻页或夹页"}
+      ]
+    },
+    {
+      "id": "reading_stand_presenter_pitch", "product_id": "reading_stand", "ad_form": "presenter_pitch", "duration_seconds": 20,
+      "origin": "author_written_reference", "review_status": "pending_human_acceptance", "title": "看这两个位置",
+      "core_message": "讲清两档支撑、限定薄册演示与折平收纳。", "evidence_ids": ["stand_angles", "stand_fold", "stand_sample"],
+      "voice_decision": "同一人面向观众解释并演示，讲话时嘴部可见。",
+      "why_this_form": "三段原句服务具体使用信息，没有角色剧情或抽象品牌宣言。",
+      "shots": [
+        {"id": "s1", "start": 0, "end": 6, "visual": "讲解者面对镜头，桌上阅读架第一档已支撑指定薄册，嘴部可见。", "speech_mode": "character_dialogue", "speech": "用来对照这本薄册，手就能空出来。", "speech_role": "说明演示用途与范围", "evidence_ids": ["stand_sample"], "continuity": "限定本薄册，不暗示厚书和平板也适用"},
+        {"id": "s2", "start": 6, "end": 13, "visual": "讲解者先取下薄册，再将空架调到第二档，保留脸与双手入画。", "speech_mode": "character_dialogue", "speech": "它有两档支撑角度，可以自己选。", "speech_role": "配合有先后顺序的操作说明规格", "evidence_ids": ["stand_angles"], "continuity": "不带书调整结构"},
+        {"id": "s3", "start": 13, "end": 20, "visual": "讲解者把空架折平，放在桌边，薄册独立放在桌上。", "speech_mode": "character_dialogue", "speech": "不用的时候折平，收在桌边就好。", "speech_role": "说明收纳方式", "evidence_ids": ["stand_fold"], "continuity": "不展示未确认尺寸的抽屉或包袋"}
+      ]
+    }
+  ],
+  "runtime_validation": {"generated": false, "audio_measured": false, "media_verified": false, "semantic_quality_verified": false},
+  "timing_note": "20秒和镜头划分是人工规划；未合成声音，不能据此保证实际语速、口型或动作时长。"
+}

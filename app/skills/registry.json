@@ -1,0 +1,515 @@
+{
+  "schema_version": 1,
+  "source_catalog": [
+    {
+      "id": "tvc-ai-director-local",
+      "title": "TVC AI Director Skill Suite local snapshot",
+      "origin": "User-provided local document snapshot",
+      "remote_url": null,
+      "commit": null,
+      "license": "MIT",
+      "copyright": "Copyright (c) 2026 Guangjun",
+      "license_sha256": "e557607fdf95b9592a88a08660287d0ad4f3e1d8ee6020a1fb5962a4a5bd8097",
+      "notice": "docs/THIRD_PARTY_NOTICES.md",
+      "scope": "Selected methods adapted; no entire repository, third-party media, export scripts, or search/runtime implementation imported."
+    },
+    {
+      "id": "tvc-director-local",
+      "title": "TVC Director local snapshot",
+      "origin": "User-provided local document snapshot",
+      "remote_url": null,
+      "commit": null,
+      "license": "MIT",
+      "copyright": "Copyright (c) 2026 Ethan Wang",
+      "license_sha256": "d5ddbca6d673d5f02b30ce0e576db65c36d46ef9f2f7bd78f84558452055a068",
+      "notice": "docs/THIRD_PARTY_NOTICES.md",
+      "scope": "Product visual, product/context intercut and lifestyle structures adapted from treatment methods; no full source document, grid workflow, third-party media or model capability claims imported."
+    }
+  ],
+  "skills": [
+    {
+      "id": "ads-video-orchestrator",
+      "display_name": "Ads Video Orchestrator",
+      "version": "1.7.4",
+      "stages": [
+        "orchestrator"
+      ],
+      "mode": "model",
+      "resources": [
+        "SKILL.md"
+      ],
+      "runtime_status": "active",
+      "source_refs": [
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-ai-director/SKILL.md",
+          "sha256": "2113b93c1c84b23c960e543ffd54a19dc2ca6e74275b6ec5ab3720d5c8df6c30"
+        },
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-brief-strategist/SKILL.md",
+          "sha256": "031c6bedb75d40e9956a13eb970b8e501c2abb14b290ce3b2ee0ca38ef76d031"
+        },
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-client-review-interpreter/SKILL.md",
+          "sha256": "162b8a2955bbf33e9b0a2db9c988003e54a84138895be884c482bd7405da1e89"
+        }
+      ],
+      "adaptation_note": "入口意图、必要澄清与反馈解释；程序控制阶段、预算、确认和媒体提交。"
+    },
+    {
+      "id": "ads-video-reference-research",
+      "display_name": "Ads Video Reference Research",
+      "version": "1.0.1",
+      "stages": [
+        "reference_research"
+      ],
+      "mode": "model",
+      "resources": [
+        "SKILL.md"
+      ],
+      "runtime_status": "pending",
+      "source_refs": [
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-concept-developer/SKILL.md",
+          "sha256": "c15c7e335e23a9600433601021ee99a1d7a5c8269c0fafff02a8975e8ec33e36"
+        }
+      ],
+      "adaptation_note": "真实参考的相关性、来源与限制；不引入检索或案例库实现。"
+    },
+    {
+      "id": "ads-video-sound-direction",
+      "display_name": "Ads Video Sound Direction",
+      "version": "1.3.0",
+      "stages": [
+        "strategy"
+      ],
+      "mode": "model",
+      "resources": [
+        "SKILL.md"
+      ],
+      "runtime_status": "active",
+      "source_refs": [],
+      "adaptation_note": "映作自写：方向中的人物、原生声音形式与说话人决策。"
+    },
+    {
+      "id": "ads-video-product-understanding",
+      "display_name": "Ads Video Product Understanding",
+      "version": "1.1.5",
+      "stages": [
+        "strategy"
+      ],
+      "mode": "model",
+      "resources": [
+        "SKILL.md"
+      ],
+      "runtime_status": "active",
+      "source_refs": [],
+      "adaptation_note": "映作自写：商品图形态识别与有来源的动作边界，不推断份量规格。"
+    },
+    {
+      "id": "ads-video-creative-strategy",
+      "display_name": "Ads Video Creative Strategy",
+      "version": "1.6.4",
+      "stages": [
+        "strategy"
+      ],
+      "mode": "model",
+      "resources": [
+        "SKILL.md",
+        "references/direction-comparison.md",
+        "references/film-concept.md"
+      ],
+      "runtime_status": "active",
+      "source_refs": [
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-brief-strategist/SKILL.md",
+          "sha256": "031c6bedb75d40e9956a13eb970b8e501c2abb14b290ce3b2ee0ca38ef76d031"
+        },
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-concept-developer/SKILL.md",
+          "sha256": "c15c7e335e23a9600433601021ee99a1d7a5c8269c0fafff02a8975e8ec33e36"
+        },
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-concept-developer/references/proposal-logic.md",
+          "sha256": "5164e09e50e57c1dd9c681503f20eeb7e755c914d25f29f17f05428d7f233d06"
+        },
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-ai-director/references/category-playbooks.md",
+          "sha256": "8b2ff93b1f7c826d73099737bfed229643d37a8aa5af5925f28f35bb5571cc52"
+        },
+        {
+          "source_id": "tvc-director-local",
+          "path": "references/treatment.md",
+          "sha256": "9692d6efab17b8311d870a9811211c24c218a98f187a268a6d1057fd80ec6cd3"
+        }
+      ],
+      "adaptation_note": "区分用途、明确片场与参考意图；按所选形式与结构偏好给三个产品价值概念，以核心画面、变化关系、产品记忆和声音任务形成差异，允许同结构同卖点；选定后完整交接。"
+    },
+    {
+      "id": "ads-video-script-planning",
+      "display_name": "Ads Video Script Planning",
+      "version": "1.6.0",
+      "stages": [
+        "ad_script",
+        "content_draft"
+      ],
+      "mode": "model",
+      "resources": [
+        "SKILL.md",
+        "references/timed-script.md",
+        "references/content-draft.md"
+      ],
+      "runtime_status": "active",
+      "source_refs": [
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-concept-developer/SKILL.md",
+          "sha256": "c15c7e335e23a9600433601021ee99a1d7a5c8269c0fafff02a8975e8ec33e36"
+        },
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-storyboard-writer/SKILL.md",
+          "sha256": "ecaee13dbfb58ea4e99edcedc75d9b62dd9db02c7b1ad02ca0622f2ac466a0d9"
+        },
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-ai-director/references/tvc-quality-bar.md",
+          "sha256": "73884723e71e92916cac3522236b6c488e6a962073ff5497e08b3e25dbf58879"
+        }
+      ],
+      "adaptation_note": "商品作用、故事推进与动作/说话联合容量；内容稿供分镜协调，明确依附和消耗状态及时间省略。",
+      "stage_resources": {
+        "ad_script": [
+          "SKILL.md",
+          "references/timed-script.md"
+        ],
+        "content_draft": [
+          "SKILL.md",
+          "references/content-draft.md"
+        ]
+      }
+    },
+    {
+      "id": "ads-video-dialogue-writing",
+      "display_name": "Ads Video Dialogue Writing",
+      "version": "1.7.1",
+      "stages": [
+        "ad_script",
+        "storyboard",
+        "content_draft"
+      ],
+      "mode": "model",
+      "resources": [
+        "SKILL.md",
+        "references/speech-timing.md",
+        "references/speech-picture-alignment.md",
+        "references/ad-dialogue-examples.md"
+      ],
+      "runtime_status": "active",
+      "source_refs": [
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-storyboard-writer/SKILL.md",
+          "sha256": "ecaee13dbfb58ea4e99edcedc75d9b62dd9db02c7b1ad02ca0622f2ac466a0d9"
+        },
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-editing-director/SKILL.md",
+          "sha256": "67ed37618a07cf5d2e822a9f0cf6d47268235dd3164fff34759b08ea11bf9fbd"
+        }
+      ],
+      "adaptation_note": "吸收声画分工与节奏；中文台词、跨镜语义和示例由映作自写，草稿台词可在分镜中协调。",
+      "stage_resources": {
+        "ad_script": [
+          "SKILL.md",
+          "references/speech-timing.md",
+          "references/speech-picture-alignment.md",
+          "references/ad-dialogue-examples.md"
+        ],
+        "storyboard": [
+          "SKILL.md",
+          "references/ad-dialogue-examples.md"
+        ],
+        "content_draft": [
+          "SKILL.md",
+          "references/ad-dialogue-examples.md"
+        ]
+      }
+    },
+    {
+      "id": "ads-video-storyboard-direction",
+      "display_name": "Ads Video Storyboard Direction",
+      "version": "1.11.0",
+      "stages": [
+        "storyboard",
+        "plan_refinement",
+        "legacy_storyboard"
+      ],
+      "mode": "model",
+      "resources": [
+        "SKILL.md",
+        "references/coordinated-storyboard.md",
+        "references/legacy-storyboard.md"
+      ],
+      "runtime_status": "active",
+      "source_refs": [
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-director-treatment/SKILL.md",
+          "sha256": "825eb1c48a8383e055cf596a448e1d2f267899c16c546784edb8f5525b4c3738"
+        },
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-director-treatment/references/visual-development.md",
+          "sha256": "3dae76263c8b73c334f8cb9bafb0ab3719b3ccd6d8078e99c3caf34b22a71db9"
+        },
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-storyboard-writer/SKILL.md",
+          "sha256": "ecaee13dbfb58ea4e99edcedc75d9b62dd9db02c7b1ad02ca0622f2ac466a0d9"
+        },
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-editing-director/SKILL.md",
+          "sha256": "67ed37618a07cf5d2e822a9f0cf6d47268235dd3164fff34759b08ea11bf9fbd"
+        },
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-ai-director/references/tvc-quality-bar.md",
+          "sha256": "73884723e71e92916cac3522236b6c488e6a962073ff5497e08b3e25dbf58879"
+        }
+      ],
+      "adaptation_note": "新流程协调内容稿与有序覆盖镜头，程序排时并有界局部修正；旧固定台词/时轴分镜以独立资源兼容加载。",
+      "stage_resources": {
+        "storyboard": [
+          "SKILL.md",
+          "references/coordinated-storyboard.md"
+        ],
+        "plan_refinement": [
+          "SKILL.md",
+          "references/coordinated-storyboard.md"
+        ],
+        "legacy_storyboard": [
+          "SKILL.md",
+          "references/legacy-storyboard.md"
+        ]
+      }
+    },
+    {
+      "id": "ads-video-asset-prompts",
+      "display_name": "Ads Video Asset Prompts",
+      "version": "1.1.0",
+      "stages": [
+        "asset_prompts"
+      ],
+      "mode": "compiler",
+      "resources": [
+        "SKILL.md",
+        "references/scene-template.txt",
+        "references/character-template.txt"
+      ],
+      "runtime_status": "active",
+      "source_refs": [
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-director-treatment/SKILL.md",
+          "sha256": "825eb1c48a8383e055cf596a448e1d2f267899c16c546784edb8f5525b4c3738"
+        },
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-director-treatment/references/visual-development.md",
+          "sha256": "3dae76263c8b73c334f8cb9bafb0ab3719b3ccd6d8078e99c3caf34b22a71db9"
+        },
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-ai-shot-prompter/references/image-prompt-method.md",
+          "sha256": "7f717ba7ffdc15f12d20a04df44c740e828c94f3d010543f2b427d762322adb4"
+        },
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-ai-director/references/prompt-style-guide.md",
+          "sha256": "b4fd33000d08ac60e347693e2ec1eed2eb5773c1f390a778d207242b6fbb5e30"
+        }
+      ],
+      "adaptation_note": "场景具体化、参考职责与商品一致性；复用商品原图，生成场景及已确认角色的组合四视图，不生成逐镜关键帧。"
+    },
+    {
+      "id": "ads-video-video-prompts",
+      "display_name": "Ads Video Video Prompts",
+      "version": "1.3.0",
+      "stages": [
+        "video_prompts"
+      ],
+      "mode": "compiler",
+      "resources": [
+        "SKILL.md",
+        "references/video-template.txt"
+      ],
+      "runtime_status": "active",
+      "source_refs": [
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-ai-shot-prompter/references/video-prompt-method.md",
+          "sha256": "80d0baeec4b6a66355096e7aabacf1399d0e0c029677d34c027b1cdcc6d8605f"
+        },
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-ai-director/references/prompt-style-guide.md",
+          "sha256": "b4fd33000d08ac60e347693e2ec1eed2eb5773c1f390a778d207242b6fbb5e30"
+        },
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-ai-production-coordinator/SKILL.md",
+          "sha256": "9a0356a7bc2474c4b55e80643a4fdb54ca6123d89880ab304b7d7449dba931d1"
+        },
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-editing-director/SKILL.md",
+          "sha256": "67ed37618a07cf5d2e822a9f0cf6d47268235dd3164fff34759b08ea11bf9fbd"
+        }
+      ],
+      "adaptation_note": "时间化动作、素材职责、声音与连续性；供应商适配和执行为本产品代码。"
+    },
+    {
+      "id": "ads-video-plan-review",
+      "display_name": "Ads Video Plan Review",
+      "version": "1.14.0",
+      "stages": [
+        "direction_review",
+        "plan_review",
+        "script_review",
+        "alignment_review"
+      ],
+      "mode": "review",
+      "resources": [
+        "SKILL.md",
+        "references/direction-review.md",
+        "references/plan-review.md",
+        "references/script-review.md",
+        "references/alignment-review.md"
+      ],
+      "runtime_status": "active",
+      "source_refs": [
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-ai-director/references/tvc-quality-bar.md",
+          "sha256": "73884723e71e92916cac3522236b6c488e6a962073ff5497e08b3e25dbf58879"
+        },
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-storyboard-writer/SKILL.md",
+          "sha256": "ecaee13dbfb58ea4e99edcedc75d9b62dd9db02c7b1ad02ca0622f2ac466a0d9"
+        },
+        {
+          "source_id": "tvc-director-local",
+          "path": "references/treatment.md",
+          "sha256": "9692d6efab17b8311d870a9811211c24c218a98f187a268a6d1057fd80ec6cd3"
+        }
+      ],
+      "adaptation_note": "先据实际画面与声音判断可接收信息，再核对事实、价值、创作意图和影片概念；同次最小修订候选及窄范围图片观察纠正，商家事实冻结，不增加模型阶段或循环。",
+      "stage_resources": {
+        "direction_review": [
+          "SKILL.md",
+          "references/direction-review.md"
+        ],
+        "script_review": [
+          "SKILL.md",
+          "references/script-review.md"
+        ],
+        "alignment_review": [
+          "SKILL.md",
+          "references/alignment-review.md"
+        ],
+        "plan_review": [
+          "SKILL.md",
+          "references/plan-review.md"
+        ]
+      }
+    },
+    {
+      "id": "ads-video-video-review",
+      "display_name": "Ads Video Video Review",
+      "version": "1.0.1",
+      "stages": [
+        "video_review"
+      ],
+      "mode": "review",
+      "resources": [
+        "SKILL.md"
+      ],
+      "runtime_status": "pending",
+      "source_refs": [
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-editing-director/SKILL.md",
+          "sha256": "67ed37618a07cf5d2e822a9f0cf6d47268235dd3164fff34759b08ea11bf9fbd"
+        },
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-ai-production-coordinator/SKILL.md",
+          "sha256": "9a0356a7bc2474c4b55e80643a4fdb54ca6123d89880ab304b7d7449dba931d1"
+        },
+        {
+          "source_id": "tvc-ai-director-local",
+          "path": "tvc-client-review-interpreter/SKILL.md",
+          "sha256": "162b8a2955bbf33e9b0a2db9c988003e54a84138895be884c482bd7405da1e89"
+        }
+      ],
+      "adaptation_note": "连续性验收、版本定位和最小返工；媒体测量、ASR、声纹等能力须另行实现。"
+    },
+    {
+      "id": "ads-video-voiceover-draft",
+      "display_name": "Ads Video Voiceover Draft",
+      "version": "1.0.0",
+      "stages": [
+        "speech_draft"
+      ],
+      "mode": "model",
+      "resources": [
+        "SKILL.md"
+      ],
+      "runtime_status": "active",
+      "source_refs": [],
+      "adaptation_note": "映作自写：显式试验开关下的整段产品旁白初稿，仅替换原起稿调用；默认关闭，完整方向和保护继续由导演及审核处理。"
+    }
+  ],
+  "shared_references": [
+    {
+      "id": "product-evidence",
+      "path": "shared/product-evidence.md",
+      "version": "1.1.0",
+      "stages": [
+        "strategy",
+        "direction_review"
+      ]
+    },
+    {
+      "id": "ad-form-contract",
+      "path": "shared/ad-form-contract.md",
+      "version": "1.1.0",
+      "stages": [
+        "strategy",
+        "direction_review"
+      ]
+    },
+    {
+      "id": "script-expression",
+      "path": "shared/script-expression.md",
+      "version": "1.3.0",
+      "stages": [
+        "ad_script",
+        "storyboard",
+        "plan_refinement",
+        "plan_review",
+        "content_draft"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,281 @@
+{
+  "version": "1.2.0",
+  "description": "原创中文创意规则。方法参考公开资料，不代表任何广告已经验证有效。",
+  "production_constraints": [
+    "复用商品原图；一张场景图，有出镜角色时每位一张组合四视图；不生成逐镜关键帧或首尾帧",
+    "角色和声音形式在方向中确定；后续一起编排画面与中文原生声音，不默认固定女声旁白",
+    "不强制字幕或独立结尾文字",
+    "允许人物动作、反应与互动；角色对白只交给已确认说话人，音色和口型须检查成片；根据时长简化表演",
+    "允许明确的广告情境演绎；不虚构商品功效、真实证言、销量或转化表现"
+  ],
+  "sources": [
+    {
+      "id": "corey_creative",
+      "repository": "coreyhaines31/marketingskills",
+      "commit": "5b2c0007766c6a1cf1d53fd8fc73e979e0821022",
+      "license": "MIT",
+      "purpose": "概念先于镜头形式、事实来源与开场承诺的兑现"
+    },
+    {
+      "id": "motion_strategy",
+      "repository": "motion-team/creative-strategy-skills",
+      "commit": "8e467a3547dcd2118e4d08fa58099553677d52ff",
+      "license": "MIT",
+      "purpose": "区分受众、情境、角度和表达机制，避免只改运镜"
+    },
+    {
+      "id": "creatify_anatomy",
+      "repository": "Creatify-AI/video-ad-reverse-engineer",
+      "commit": "d5704e992393546da73bb173dab39867f30b28f6",
+      "license": "MIT",
+      "purpose": "逐段记录画面功能、声音和收束，区分观察与推断"
+    }
+  ],
+  "category_selection": {
+    "food": [
+      "sensory_detail",
+      "everyday_context",
+      "appearance_reveal"
+    ],
+    "appliance": [
+      "appearance_reveal",
+      "everyday_context",
+      "operation_walkthrough",
+      "problem_solution"
+    ],
+    "general": [
+      "appearance_reveal",
+      "everyday_context",
+      "operation_walkthrough"
+    ]
+  },
+  "uncertainty_patterns": [
+    "待确认|未验证|未核实|未知|不确定|不清楚|无法确认|假设|听说|据说|可能|尚无|尚未|未经|未经过",
+    "没有.{0,12}(?:证据|数据|测试|验证|检测)",
+    "不能|无法|不可|不支持|不具备|请勿|不得|不要|不保证|并非"
+  ],
+  "citation_qualifier_patterns": [
+    "不能|不可|无法|不支持|不具备|不得|不应|不要|请勿|切勿|禁止|严禁|并非|并不|不是|不含|没有|不保证",
+    "未验证|未证实|未核实|未测试|未检测|尚未|未经|未经过|尚无|无证据|待确认|待核实|未知|不确定|不清楚|存疑|可能|也许|或许|假设|据说|听说"
+  ],
+  "rules": [
+    {
+      "id": "sensory_detail",
+      "version": "1.1.0",
+      "sources": [
+        "https://github.com/coreyhaines31/marketingskills/blob/5b2c0007766c6a1cf1d53fd8fc73e979e0821022/skills/ad-creative/references/hook-system.md",
+        "https://github.com/Creatify-AI/video-ad-reverse-engineer/blob/d5704e992393546da73bb173dab39867f30b28f6/references/output-template.md"
+      ],
+      "categories": [
+        "food",
+        "general"
+      ],
+      "label": "感官细节",
+      "mechanism": "让商品的可见质地、形态或有依据的动作引起感官好奇，并组织成有推进和落点的观看过程。可用直接演示、人物关注或生活互动承接这种吸引，不必始终盯住同一个部位。概要先说明发生什么、观众期待什么；不把三个外观部位当作三个创意，也不把视觉吸引当成未知口味、成分或性能的证明。",
+      "prerequisites": {
+        "min_facts": 1,
+        "merchant_patterns_all": [],
+        "description": "至少一条可追溯的外观观察或商家原话；味道、配方、触感需要商家另行说明"
+      },
+      "shot_functions": [
+        "用一个具体动作、情境或视觉发现建立观看期待，让商品尽早参与",
+        "通过有意义的动作或信息变化推进同一创意；特写帮助看清，不替代故事发展",
+        "兑现开场期待，让观众记住商品及该次感官体验的表达；不用无关细节或尾字解释"
+      ],
+      "must_not_claim": [
+        "仅凭图片断言口味、原料、营养或新鲜程度",
+        "虚构拉丝、爆浆或内部结构",
+        "把人物情境表演冒充真实试吃证言或效果证明"
+      ]
+    },
+    {
+      "id": "everyday_context",
+      "version": "1.2.0",
+      "sources": [
+        "https://github.com/motion-team/creative-strategy-skills/blob/8e467a3547dcd2118e4d08fa58099553677d52ff/creative-strategy-engine/SKILL.md",
+        "https://github.com/coreyhaines31/marketingskills/blob/5b2c0007766c6a1cf1d53fd8fc73e979e0821022/skills/ad-creative/references/creative-roadmap.md"
+      ],
+      "categories": [
+        "food",
+        "appliance",
+        "general"
+      ],
+      "label": "生活情境",
+      "mechanism": "把商品放进观众能理解的生活处境，写出具体人物或对象的行动、互动与落点，让商品自然引起或承接这段经历。可以通过熟悉感、期待、人与人的影响等形成不同创意，不必为每条故事寻找独家商品性能。拟议人物与情节记录为创意设定，不写成真实消费者调研或证言；已确认的商品主张与用户指定场景保持不变。",
+      "prerequisites": {
+        "min_facts": 1,
+        "merchant_patterns_all": [],
+        "description": "至少一条可追溯商品事实；人物、活动和受众心理可以列作情境假设，不用它们证明未知商品效果"
+      },
+      "shot_functions": [
+        "开场以具体人物动作或情境线索建立生活片刻及观看动机",
+        "让商品参与行动或人物互动，推进这段故事；区分拟议情境与已有商品事实",
+        "完成故事中的行动、选择或感受，让观众明白商品与这一时刻的关系；不把情绪变化宣称为已证实功效"
+      ],
+      "must_not_claim": [
+        "把虚构场景写成真实客户经历",
+        "借人物反应暗示未经确认的性能、健康或使用效果",
+        "冒充真实顾客亲历推荐，或声称尚未生成的角色口型已经验证"
+      ]
+    },
+    {
+      "id": "appearance_reveal",
+      "version": "1.2.0",
+      "sources": [
+        "https://github.com/motion-team/creative-strategy-skills/blob/8e467a3547dcd2118e4d08fa58099553677d52ff/creative-mechanics/SKILL.md",
+        "https://github.com/coreyhaines31/marketingskills/blob/5b2c0007766c6a1cf1d53fd8fc73e979e0821022/skills/ad-creative/references/hook-system.md"
+      ],
+      "categories": [
+        "food",
+        "appliance",
+        "general"
+      ],
+      "label": "外观揭示",
+      "mechanism": "围绕商品的真实外观、身份或已知用途组织具体视觉发现。可由光影、形态、运动关系与画面变化构成完整产品视觉概念，也可由情境中的发现展开；不强制制造谜题、人物故事或惊喜反转。核心画面应让人辨认商品特点，单纯局部拉远或换三个部位不自动构成三个创意。",
+      "prerequisites": {
+        "min_facts": 1,
+        "merchant_patterns_all": [],
+        "description": "至少一条已知外观或商品识别事实，揭示后必须仍是同一商品"
+      },
+      "shot_functions": [
+        "用具体视觉关系或情境线索引入商品特点，建立观看期待",
+        "让已知特点在画面变化中更清楚；光影与形态关系可以承担表达，不必另造人物行动",
+        "以与已知特点相连的产品形象或认识收束；不用无关尾字解释，不伪造结构或功效"
+      ],
+      "must_not_claim": [
+        "用更换商品或编造结构制造惊喜",
+        "把运镜变化当作多个创意方向",
+        "依赖结尾大字才能解释开场"
+      ]
+    },
+    {
+      "id": "operation_walkthrough",
+      "version": "1.0.0",
+      "sources": [
+        "https://github.com/Creatify-AI/video-ad-reverse-engineer/blob/d5704e992393546da73bb173dab39867f30b28f6/references/output-template.md",
+        "https://github.com/coreyhaines31/marketingskills/blob/5b2c0007766c6a1cf1d53fd8fc73e979e0821022/skills/video/references/edit-anatomy.md"
+      ],
+      "categories": [
+        "food",
+        "appliance",
+        "general"
+      ],
+      "label": "操作讲解",
+      "mechanism": "围绕一个已确认操作顺序组织镜头，让观众看懂输入、操作与可见结果，优先拍商品与手部。",
+      "prerequisites": {
+        "min_facts": 1,
+        "merchant_patterns_all": [
+          "按下|长按|点击|旋转|拧开|打开|关闭|放入|取出|连接|插入|折叠|展开|安装|拆卸|调节|切换|充电|倒入|清洗|装入|取下|启动"
+        ],
+        "description": "引用至少一条商家明确描述的实际操作；图片或猜测不能证明功能"
+      },
+      "shot_functions": [
+        "开场交代操作目标",
+        "中段展示已确认的动作顺序",
+        "收束展示有依据的可见状态"
+      ],
+      "must_not_claim": [
+        "从按钮外观猜测功能",
+        "虚构操作效率、清洁能力或安全性能",
+        "编造商品没有的部件和使用方法"
+      ]
+    },
+    {
+      "id": "problem_solution",
+      "version": "1.0.0",
+      "sources": [
+        "https://github.com/motion-team/creative-strategy-skills/blob/8e467a3547dcd2118e4d08fa58099553677d52ff/creative-strategy-engine/SKILL.md",
+        "https://github.com/coreyhaines31/marketingskills/blob/5b2c0007766c6a1cf1d53fd8fc73e979e0821022/skills/ad-creative/references/creative-roadmap.md"
+      ],
+      "categories": [
+        "food",
+        "appliance",
+        "general"
+      ],
+      "label": "问题与解决",
+      "mechanism": "围绕一个具体需求，展示有依据的商品特点怎样回应它；场景变化必须与已知事实对应。",
+      "prerequisites": {
+        "min_facts": 1,
+        "merchant_patterns_all": [
+          "用于|可以|能够|支持|便于|适合|解决|减少|降低|避免|节省|省去|帮助|方便"
+        ],
+        "description": "引用商家明确陈述的用途或益处，不把目标愿望当成已实现功效"
+      },
+      "shot_functions": [
+        "开场建立具体需求",
+        "中段展示支持该需求的商品事实",
+        "收束只兑现已确认用途"
+      ],
+      "must_not_claim": [
+        "放大焦虑或编造使用前后效果",
+        "从外观推出健康、安全或性能结论",
+        "把拟议用途写成真实用户结果"
+      ]
+    },
+    {
+      "id": "evidence_comparison",
+      "version": "1.0.0",
+      "sources": [
+        "https://github.com/motion-team/creative-strategy-skills/blob/8e467a3547dcd2118e4d08fa58099553677d52ff/creative-mechanics/SKILL.md",
+        "https://github.com/coreyhaines31/marketingskills/blob/5b2c0007766c6a1cf1d53fd8fc73e979e0821022/skills/ad-creative/references/creative-roadmap.md"
+      ],
+      "categories": [
+        "food",
+        "appliance",
+        "general"
+      ],
+      "label": "有依据的对比",
+      "mechanism": "沿商家已说明的同一维度呈现两种状态，交代比较对象与条件；比较是表达已有资料，不是生成测试证据。",
+      "prerequisites": {
+        "min_facts": 1,
+        "merchant_patterns_all": [
+          "相比|相较|对比|比(?:旧款|老款|普通款|原来|之前|上一代|同类|[A-Za-z])",
+          "重量|体积|尺寸|容量|时间|速度|温度|功率|能耗|用量|价格|厚度|高度|长度|宽度|亮度|噪声|噪音|\\d+(?:\\.\\d+)?\\s*(?:秒|分钟|小时|克|千克|公斤|毫升|升|厘米|毫米|瓦|元|分贝|%|g|kg|ml|cm|mm|w)"
+        ],
+        "description": "同一条商家原话同时含比较对象与明确比较维度；不确定陈述和图片不作为比较依据"
+      },
+      "shot_functions": [
+        "开场交代比较对象和维度",
+        "中段在可比条件下呈现资料",
+        "收束重复有来源且有条件的差异"
+      ],
+      "must_not_claim": [
+        "模型画面就是实测证明",
+        "省略条件、编造对照或贬低未核实竞品",
+        "从浏览量或主观评分推导销量和转化"
+      ]
+    },
+    {
+      "id": "feature_value",
+      "version": "1.1.0",
+      "sources": [
+        "https://github.com/coreyhaines31/marketingskills/blob/5b2c0007766c6a1cf1d53fd8fc73e979e0821022/skills/ad-creative/references/creative-roadmap.md",
+        "https://github.com/motion-team/creative-strategy-skills/blob/8e467a3547dcd2118e4d08fa58099553677d52ff/creative-strategy-engine/SKILL.md"
+      ],
+      "categories": [
+        "food",
+        "appliance",
+        "general"
+      ],
+      "label": "特点与选择理由",
+      "mechanism": "围绕商家已明确的商品特点或功能，解释目标受众为什么关注、怎样认识和选择。已确认功能但未给参数时，仍可在该功能层级表达，不推导具体效果。按用户所选主要广告形式，采用产品展示与信息说明、商品参与的情境选择，或人物面向观众讲解；不强制操作教学、效果对照或人物短剧。 产品视觉方向可把已知功能转成具体的形态、节奏与视听概念，必要信息由声音补充；概念意象不冒充内部原理或性能演示，不因缺少参数就强迫拍使用教学。",
+      "prerequisites": {
+        "min_facts": 1,
+        "merchant_patterns_all": [],
+        "require_merchant": true,
+        "description": "至少引用一条商家明确且无否定或不确定限定的商品原话；图片和创意假设本身不足，具体商品主张仍须由所引原话支持，不要求数值、效果结论或操作步骤"
+      },
+      "shot_functions": [
+        "从目标受众的具体关注或认识问题进入，连接商家明确希望表达的特点",
+        "通过所选广告形式组织功能信息与正常使用情境，让观众理解该特点与自己的关系；已确认信息可由旁白或人物讲解补充，不要求画面逐字证明，也不把动作播报当广告文案",
+        "收束到已有事实支持的认识或选择理由，不用未经确认的性能结果收尾；三条方向可围绕同一特点形成不同的信息组织与观看期待"
+      ],
+      "must_not_claim": [
+        "把功能名称升级为未确认的参数、功效、机制或优于其他商品的结论",
+        "从图片猜操作步骤、按钮作用或绝对尺寸，或把生成演示当实测证据",
+        "为规避未知参数而删除全部用户主推特点，改成无关外观、拿放和运镜",
+        "仅引用一条商家原话就放行其中未包含的商品主张，或把需求愿望和受众假设当产品效果"
+      ]
+    }
+  ]
+}

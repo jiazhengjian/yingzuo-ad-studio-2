@@ -1,0 +1,436 @@
+{
+  "version": "1.3.0",
+  "provenance": "作者编写的文字测试输入，模拟识图完成后的事实；不包含用户图片，不验证图片识别，不是投放数据或爆款案例。示例商家事实只属于对应测试用例。",
+  "rubric": [
+    {
+      "criterion": "product_relevance",
+      "question": "实际台词和计划画面是否把已知商品特点连接到关注理由？不能靠purpose或商品出现自评通过，常用、放手边、收柜麻烦等泛用习惯不等于商品看点。"
+    },
+    {
+      "criterion": "audience_relevance",
+      "question": "是否有与这个受众、场景和商品有关的关注理由？审美和情境表达允许成立，不必强造痛点或功效。"
+    },
+    {
+      "criterion": "factual_support",
+      "question": "每项商品主张是否有本用例依据？是否把图片、未知项、创意假设升级成了口感、功效或体验证明？"
+    },
+    {
+      "criterion": "audiovisual_complement",
+      "question": "商品表达与演示是否各有作用、共同建立关注理由？必要操作说明合理，连续动作清点和稀疏泛用口号都不能通过。"
+    },
+    {
+      "criterion": "natural_speech",
+      "question": "话语是否自然完整、适合说出来？可跨同一beat连续镜头而不跨生成段；按信息任务安排字数，2.9字符只是待音频验证的工程上限，不是推荐语速。"
+    },
+    {
+      "criterion": "narrative_progression",
+      "question": "后续内容是否承接并兑现开场，保持同一个商品、情境和核心表达，结尾是否自然完成？"
+    }
+  ],
+  "baselines": [
+    {
+      "id": "historical_cake_saved_copy",
+      "kind": "historical_actual",
+      "provenance": "既有蛋糕方案台词，用户曾指出其主要在描述画面。仅保存无个人信息的短句，不包含项目数据或媒体。",
+      "narrations": [
+        "下午茶，停一下。",
+        "淋面正往下淌。",
+        "一层一层，全在。"
+      ],
+      "known_issue": "主要描述画面动作；缺少商品与办公室下午茶选择理由之间的连接。"
+    },
+    {
+      "id": "historical_cake_review_copy",
+      "kind": "historical_actual",
+      "provenance": "之前一次真实文本审稿试跑，未保存到用户项目，未据此生成媒体。",
+      "narrations": [
+        "办公室下午茶，停一下。",
+        "淋面正往下淌。",
+        "一层一层，这块蛋糕全在。"
+      ],
+      "known_issue": "补入商品名后仍以动作播报为主，不应仅凭包含商品名判定改善。"
+    },
+    {
+      "id": "constructed_incomplete_copy",
+      "kind": "constructed_negative_control",
+      "provenance": "作者编写的回归反例，不是模型运行结果。",
+      "narrations": [
+        "下午这个点，你正忙着。",
+        "这块蛋糕，"
+      ],
+      "expected_diagnostics": [
+        "incomplete_sentence"
+      ],
+      "known_issue": "末尾为逗号的未完成句，应在结构验收中拒绝。"
+    },
+    {
+      "id": "constructed_hairdryer_description",
+      "kind": "constructed_negative_control",
+      "provenance": "作者编写的回归反例，不是旧模型输出，不用于宣称新旧模型效果差异。",
+      "narrations": [
+        "圆形出风口，机身慢慢转。",
+        "按钮在这里，灯光扫过去。"
+      ],
+      "known_issue": "只描述画面；应由人工或审稿步骤检查广告表达，词法程序不能可靠判定。"
+    },
+    {
+      "id": "constructed_hairdryer_claims",
+      "kind": "constructed_negative_control",
+      "provenance": "作者编写的回归反例，不是旧模型输出。",
+      "narrations": [
+        "两分钟吹干，完全不伤发。"
+      ],
+      "expected_diagnostics": [
+        "unsupported_term_requires_review"
+      ],
+      "known_issue": "两个吹风机用例都没有这些性能与安全依据；关键词检查仅能提示本反例，不能证明一般事实正确。"
+    },
+    {
+      "id": "historical_hairdryer_generic_storage_copy",
+      "kind": "historical_actual",
+      "provenance": "用户本轮提供并批评缺少卖点的实际吹风机稿，仅收录这两句作为审稿回归反例，不含用户图片、私有项目记录或成片数据。",
+      "narrations": [
+        "出门前那几分钟，台面上总有个顺手的位置。",
+        "每天都要拿，收进柜子反而麻烦。"
+      ],
+      "expected_semantic_failures": [
+        "product_relevance",
+        "audience_relevance"
+      ],
+      "known_issue": "常用与收柜麻烦是泛用习惯，未把吹风机已知特点变成关注理由；purpose自称建立卖点、商品贯穿画面和字数合格均不能证明通过。语义失败由审稿或人工判断，词法检查不作效果证明。"
+    }
+  ],
+  "cases": [
+    {
+      "id": "cake_photo_only",
+      "label": "蛋糕：只有商品图和办公室下午茶需求",
+      "duration_seconds": 20,
+      "merchant_input": "这块蛋糕做20秒办公室下午茶广告。只有商品图，配料、口味和价格都没提供，具体思路由你决定。",
+      "original_asset_ids": [
+        "fixture_cake_photo"
+      ],
+      "evidence_sources": {
+        "fixture_merchant": "这块蛋糕做20秒办公室下午茶广告。只有商品图，配料、口味和价格都没提供，具体思路由你决定。"
+      },
+      "brief": {
+        "product_name": "蛋糕切块",
+        "category": "food",
+        "audience": "工作中的年轻人",
+        "scenario": "办公室下午茶",
+        "facts": [
+          {
+            "id": "cake_layers",
+            "text": "切面有深浅相间的多层结构",
+            "source_kind": "image",
+            "source_id": "fixture_cake_photo"
+          },
+          {
+            "id": "cake_top",
+            "text": "顶部有深色淋面和两颗深红色圆形装饰",
+            "source_kind": "image",
+            "source_id": "fixture_cake_photo"
+          }
+        ],
+        "unknowns": [
+          "配料",
+          "口味",
+          "价格",
+          "重量",
+          "新鲜程度"
+        ],
+        "assumptions": [
+          "工作中的年轻人为测试设定的目标受众",
+          "以外观吸引力和下午茶选择建立关注理由，不代表用户调研结果"
+        ]
+      },
+      "direction": {
+        "id": "cake_afternoon",
+        "rule_id": "everyday_context",
+        "label": "下午茶的一块蛋糕",
+        "audience": "工作中的年轻人",
+        "scenario": "办公室下午茶",
+        "angle": "把层次鲜明的蛋糕切块呈现为办公室下午茶可以考虑的选择，用外观吸引力引起关注。",
+        "hook": "用办公室里的下午茶选择引出蛋糕，避免空泛喊停。",
+        "development": "画面展示蛋糕已有的切面和顶部特征，台词连接选择它的生活情境。",
+        "payoff": "蛋糕留在同一办公室茶点位置，自然落回下午茶的选择。",
+        "evidence_ids": [
+          "cake_layers",
+          "cake_top"
+        ],
+        "reason": "外观可以从图中观察，情境由商家指定，无需虚构配料与口味。",
+        "production_notes": [
+          "保持办公室身份",
+          "使用画外音，不要求人物口型"
+        ]
+      },
+      "baseline_ids": [
+        "historical_cake_saved_copy",
+        "historical_cake_review_copy",
+        "constructed_incomplete_copy"
+      ],
+      "unsupported_terms": [
+        "纯动物奶油",
+        "入口即化",
+        "低糖",
+        "提神",
+        "当天现做"
+      ],
+      "manual_focus": [
+        "不要把顶部白色或深色物体推断成具体配料",
+        "不能只把原先台词补上蛋糕两个字",
+        "保持办公室下午茶而非改成家用厨房"
+      ]
+    },
+    {
+      "id": "cake_confirmed_facts",
+      "label": "蛋糕：商家提供成分与售卖规格",
+      "duration_seconds": 20,
+      "merchant_input": "商品是黑巧切块蛋糕，使用70%可可黑巧克力，按一人份切块售卖。给工作中的年轻人做20秒办公室下午茶广告，不宣称低糖或健康。",
+      "original_asset_ids": [
+        "fixture_cake_photo"
+      ],
+      "evidence_sources": {
+        "fixture_merchant": "商品是黑巧切块蛋糕，使用70%可可黑巧克力，按一人份切块售卖。给工作中的年轻人做20秒办公室下午茶广告，不宣称低糖或健康。"
+      },
+      "brief": {
+        "product_name": "黑巧切块蛋糕",
+        "category": "food",
+        "audience": "工作中的年轻人",
+        "scenario": "办公室下午茶",
+        "facts": [
+          {
+            "id": "cake_layers",
+            "text": "切面有深浅相间的多层结构",
+            "source_kind": "image",
+            "source_id": "fixture_cake_photo"
+          },
+          {
+            "id": "cake_chocolate",
+            "text": "使用70%可可黑巧克力",
+            "source_kind": "merchant",
+            "source_id": "fixture_merchant"
+          },
+          {
+            "id": "cake_portion",
+            "text": "按一人份切块售卖",
+            "source_kind": "merchant",
+            "source_id": "fixture_merchant"
+          }
+        ],
+        "unknowns": [
+          "糖含量",
+          "实际口感",
+          "营养数据",
+          "价格",
+          "新鲜程度"
+        ],
+        "assumptions": [
+          "把一人份规格与独自选下午茶的需求连接，是创意假设而非真实买家证言"
+        ]
+      },
+      "direction": {
+        "id": "cake_own_slice",
+        "rule_id": "everyday_context",
+        "label": "一个人的黑巧下午茶",
+        "audience": "工作中的年轻人",
+        "scenario": "办公室下午茶",
+        "angle": "围绕黑巧配料和一人份切块，给想选巧克力蛋糕作下午茶的人一个具体选择理由。",
+        "hook": "从下午茶想选巧克力蛋糕的需求开场。",
+        "development": "画面保留切面特征，台词说明已确认的黑巧配料与一人份规格。",
+        "payoff": "让一个人的下午茶选择落在这块蛋糕上，不增加功效承诺或优惠。",
+        "evidence_ids": [
+          "cake_layers",
+          "cake_chocolate",
+          "cake_portion"
+        ],
+        "reason": "商家提供了可说的配料和售卖规格，足以支持具体表达。",
+        "production_notes": [
+          "不从可可比例推断不甜或低糖",
+          "不把AI画面当成配方检测证明"
+        ]
+      },
+      "baseline_ids": [
+        "historical_cake_saved_copy",
+        "constructed_incomplete_copy"
+      ],
+      "unsupported_terms": [
+        "纯动物奶油",
+        "入口即化",
+        "低糖",
+        "提神",
+        "当天现做"
+      ],
+      "manual_focus": [
+        "已知事实应转成适合受众的表达，不能机械念参数",
+        "这组新增商家资料属于合成测试，不可用于实际用户蛋糕"
+      ]
+    },
+    {
+      "id": "hairdryer_photo_only",
+      "label": "吹风机：仅有外观图，功能参数未知",
+      "duration_seconds": 20,
+      "merchant_input": "这是吹风机商品图，做20秒中文广告。没有功能参数，先从外观切入，其他你决定。",
+      "original_asset_ids": [
+        "fixture_hairdryer_photo"
+      ],
+      "evidence_sources": {
+        "fixture_merchant": "这是吹风机商品图，做20秒中文广告。没有功能参数，先从外观切入，其他你决定。"
+      },
+      "brief": {
+        "product_name": "深灰色吹风机",
+        "category": "appliance",
+        "audience": "选购时也关注外观设计的人",
+        "scenario": "家中梳妆区",
+        "facts": [
+          {
+            "id": "dryer_shape",
+            "text": "深灰色机身，圆形出风口",
+            "source_kind": "image",
+            "source_id": "fixture_hairdryer_photo"
+          },
+          {
+            "id": "dryer_control",
+            "text": "手柄上有一个可见按钮",
+            "source_kind": "image",
+            "source_id": "fixture_hairdryer_photo"
+          }
+        ],
+        "unknowns": [
+          "吹干速度",
+          "温控效果",
+          "噪声",
+          "按钮功能",
+          "材质",
+          "价格"
+        ],
+        "assumptions": [
+          "受众关注设计和梳妆区场景均为创意设定，可修改，不代表调查结论"
+        ]
+      },
+      "direction": {
+        "id": "dryer_design",
+        "rule_id": "everyday_context",
+        "label": "也看看吹风机的样子",
+        "audience": "选购时也关注外观设计的人",
+        "scenario": "家中梳妆区",
+        "angle": "面向选择日常用品时关注样子的人，把深灰配圆形轮廓作为这台吹风机的审美看点。",
+        "hook": "从选吹风机也会关注外观的偏好开场。",
+        "development": "用梳妆区的商品陈列和细节展示支撑设计偏好，不演示未知功能。",
+        "payoff": "让同一台吹风机的整体外观在场景中落定，供观众判断是否喜欢。",
+        "evidence_ids": [
+          "dryer_shape",
+          "dryer_control"
+        ],
+        "reason": "只有外观依据，采用外观选择角度，不编造性能。",
+        "production_notes": [
+          "不将可见按钮解释成档位功能",
+          "没有真人吹干效果对比"
+        ]
+      },
+      "baseline_ids": [
+        "constructed_hairdryer_description",
+        "constructed_hairdryer_claims",
+        "historical_hairdryer_generic_storage_copy"
+      ],
+      "unsupported_terms": [
+        "两分钟吹干",
+        "完全不伤发",
+        "恒温护发",
+        "三档",
+        "静音",
+        "负离子"
+      ],
+      "manual_focus": [
+        "可讲设计偏好，不得把颜色当作金属材质证据",
+        "不为了表达购买理由而补造性能",
+        "实际反例中的常用与收柜麻烦不构成商品看点；审核narration和visual_role，不能用purpose自评补足。"
+      ]
+    },
+    {
+      "id": "hairdryer_confirmed_facts",
+      "label": "吹风机：商家提供操作与收纳功能",
+      "duration_seconds": 20,
+      "merchant_input": "吹风机有三档风速，按手柄上的风速键切换。机身自带挂环，可挂起收纳。给家中洗漱台空间有限的人做20秒广告，没有快干和护发测试。",
+      "original_asset_ids": [
+        "fixture_hairdryer_photo"
+      ],
+      "evidence_sources": {
+        "fixture_merchant": "吹风机有三档风速，按手柄上的风速键切换。机身自带挂环，可挂起收纳。给家中洗漱台空间有限的人做20秒广告，没有快干和护发测试。"
+      },
+      "brief": {
+        "product_name": "三档风速吹风机",
+        "category": "appliance",
+        "audience": "家中洗漱台空间有限的人",
+        "scenario": "家中洗漱区，使用与收纳吹风机",
+        "facts": [
+          {
+            "id": "dryer_shape",
+            "text": "深灰色机身，圆形出风口",
+            "source_kind": "image",
+            "source_id": "fixture_hairdryer_photo"
+          },
+          {
+            "id": "dryer_speed",
+            "text": "吹风机有三档风速，按手柄上的风速键切换",
+            "source_kind": "merchant",
+            "source_id": "fixture_merchant"
+          },
+          {
+            "id": "dryer_storage",
+            "text": "机身自带挂环，可挂起收纳",
+            "source_kind": "merchant",
+            "source_id": "fixture_merchant"
+          }
+        ],
+        "unknowns": [
+          "吹干速度",
+          "温控效果",
+          "噪声",
+          "价格",
+          "材质"
+        ],
+        "assumptions": [
+          "用可挂起收纳连接台面空间需求，不承诺实际节省面积或效率"
+        ]
+      },
+      "direction": {
+        "id": "dryer_use_store",
+        "rule_id": "operation_walkthrough",
+        "label": "风速自己选，用完挂起来",
+        "audience": "家中洗漱台空间有限的人",
+        "scenario": "家中洗漱区，使用与收纳吹风机",
+        "angle": "把按键选风速和用后挂起连成一段日常操作，让观众看懂这台吹风机已确认的使用与收纳方式。",
+        "hook": "从用吹风机时想自己选择风速的操作需求切入。",
+        "development": "展示商家确认的按键切换动作，避免虚构吹干前后效果。",
+        "payoff": "用完通过挂环收纳，回到洗漱区台面空间的实际情境。",
+        "evidence_ids": [
+          "dryer_shape",
+          "dryer_speed",
+          "dryer_storage"
+        ],
+        "reason": "商家提供了明确的操作步骤，足以支撑简单手部展示。",
+        "production_notes": [
+          "不演示未经证实的快干护发",
+          "保留商品原有结构，不额外发明配件"
+        ]
+      },
+      "baseline_ids": [
+        "constructed_hairdryer_description",
+        "constructed_hairdryer_claims",
+        "historical_hairdryer_generic_storage_copy"
+      ],
+      "unsupported_terms": [
+        "两分钟吹干",
+        "完全不伤发",
+        "恒温护发",
+        "静音",
+        "负离子"
+      ],
+      "manual_focus": [
+        "必要的按键操作台词合理，不应被一概判为画面复述",
+        "避免三个功能清单割裂，使用到收纳应连贯",
+        "实际反例中的常用与收柜麻烦不构成商品看点；审核narration和visual_role，不能用purpose自评补足。"
+      ]
+    }
+  ]
+}

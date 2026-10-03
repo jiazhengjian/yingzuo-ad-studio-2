@@ -1,0 +1,123 @@
+{
+  "schema_version": "1.0.0",
+  "purpose": "第一阶段入口验收场景，期望行为由人工结合对话与持久化结果核对；不是已执行结果。",
+  "origin": "author_constructed_inputs",
+  "execution_status": "not_run",
+  "cases": [
+    {
+      "id": "explicit_tvc", "product_id": "hairdryer", "initial_ad_form": null,
+      "user_turns": ["做20秒TVC广告大片，重点拍商品质感。"],
+      "expected_ad_form": "brand_tvc", "expected_behavior": ["记录明确选择，不再次询问广告类型。", "仍保留商品事实的缺口，不把大片、质感等风格词写成功能。"],
+      "must_not": ["自动改为剧情片", "将金属质感当成材质事实"], "scope": "stage1"
+    },
+    {
+      "id": "explicit_story", "product_id": "cake", "initial_ad_form": null,
+      "user_turns": ["做一个办公室下午茶的场景广告，有个小故事。"],
+      "expected_ad_form": "scene_story", "expected_behavior": ["保存剧情／场景倾向。", "人物与情节可作为创作设定，配料、口感仍受输入事实限制。"],
+      "must_not": ["把有故事自动等同人物对白", "声称剧情已通过质量审核"], "scope": "stage1"
+    },
+    {
+      "id": "explicit_presenter", "product_id": "hairdryer", "initial_ad_form": null,
+      "user_turns": ["让一个人面对镜头讲解这台吹风机，做人物口播。"],
+      "expected_ad_form": "presenter_pitch", "expected_behavior": ["保存人物口播倾向。", "文本倾向与实际口型、人物一致性能力分开记录；不能承诺尚未实测的成片质量。"],
+      "must_not": ["默默替换成旁白剧情", "保存广告类型后就宣称数字人已可用"], "scope": "stage1"
+    },
+    {
+      "id": "explicit_auto", "product_id": "cake", "initial_ad_form": null,
+      "user_turns": ["广告类型你来推荐，20秒就好。"],
+      "expected_ad_form": "auto", "expected_behavior": ["保存用户授权推荐，不重复强制选择类型。", "区分用户选了auto与用户明确选择某一类。"],
+      "must_not": ["将系统建议伪装成用户明确偏好"], "scope": "stage1"
+    },
+    {
+      "id": "card_skip_means_auto", "product_id": "cake", "initial_ad_form": null,
+      "user_turns": [], "ui_actions": [{"type": "clarification_skip", "question_id": "ad_form"}],
+      "expected_ad_form": "auto", "expected_behavior": ["跳过表示交给系统推荐，保存auto。", "澄清卡与统一输入框使用同一份选择状态。"],
+      "must_not": ["跳过后重新弹出同一问题", "新增重复表单或额外确认弹窗"], "scope": "stage1"
+    },
+    {
+      "id": "persist_card_choice", "product_id": "hairdryer", "initial_ad_form": null,
+      "user_turns": [], "ui_actions": [{"type": "clarification_select", "question_id": "ad_form", "value": "brand_tvc"}, {"type": "submit"}, {"type": "reload_project"}],
+      "expected_ad_form": "brand_tvc", "expected_behavior": ["提交后刷新仍读到brand_tvc。", "下游brief与项目选择一致。"],
+      "must_not": ["只在界面本地保存", "刷新恢复成未选择"], "scope": "stage1"
+    },
+    {
+      "id": "inherit_during_other_edit", "product_id": "cake", "initial_ad_form": "brand_tvc",
+      "user_turns": ["把时长改成30秒，背景暖一点。"],
+      "expected_ad_form": "brand_tvc", "expected_behavior": ["局部修改不抹除原广告倾向。", "时长和视觉偏好各自更新，不混入商品事实。"],
+      "must_not": ["因暖色或30秒自动改成剧情", "重新询问已知类型"], "scope": "stage1"
+    },
+    {
+      "id": "explicit_change", "product_id": "cake", "initial_ad_form": "scene_story",
+      "user_turns": ["这次不要剧情了，改成一个人对镜头讲解的口播广告。"],
+      "expected_ad_form": "presenter_pitch", "expected_behavior": ["明确改选覆盖旧选择，并传到下游brief。", "旧方案和媒体保持可访问，尚未产生新方案不能当成已完成修改。"],
+      "must_not": ["仍继承旧scene_story", "只更新卡片文字而不持久化"], "scope": "stage1"
+    },
+    {
+      "id": "negation_is_not_selection", "product_id": "hairdryer", "initial_ad_form": null,
+      "user_turns": ["不要TVC大片。"],
+      "expected_ad_form": null, "expected_behavior": ["将TVC记为否定约束，其他选择仍未明确。", "允许继续澄清或由用户明确授权推荐，不凭排除一项推断另一项。"],
+      "must_not": ["因命中TVC字样选择brand_tvc", "武断设为scene_story或presenter_pitch"], "scope": "stage1"
+    },
+    {
+      "id": "negated_old_form_needs_resolution", "product_id": "cake", "initial_ad_form": "scene_story",
+      "user_turns": ["不要剧情了，另外两种我还没想好。"],
+      "expected_ad_form": null, "expected_behavior": ["旧剧情选择不再有效，保留用户否定。", "其他类型尚未决定，提供可继续选择的澄清。"],
+      "must_not": ["继续按原剧情执行", "把没想好解释成明确授权推荐"], "scope": "stage1"
+    },
+    {
+      "id": "voiceover_not_presenter_form", "product_id": "cake", "initial_ad_form": null,
+      "user_turns": ["加旁白就行，不要人物对着镜头说话。"],
+      "expected_ad_form": null, "expected_behavior": ["记录声音与出镜限制，广告倾向仍未确定。", "旁白可以服务不同广告形式，不把它等同口播类型。"],
+      "must_not": ["把旁白选成presenter_pitch", "仅因无人对镜头说话就断定TVC"], "scope": "stage1"
+    },
+    {
+      "id": "question_not_choice", "product_id": "cake", "initial_ad_form": null,
+      "user_turns": ["人物口播和TVC有什么区别？我先了解一下。"],
+      "expected_ad_form": null, "expected_behavior": ["解释差异，保留未选择状态。"],
+      "must_not": ["按先出现或最后出现的词自动选类型", "未经选择启动制作"], "scope": "stage1"
+    },
+    {
+      "id": "conditional_not_choice", "product_id": "hairdryer", "initial_ad_form": "brand_tvc",
+      "user_turns": ["如果以后做人物口播，能换男声吗？现在这条先不改。"],
+      "expected_ad_form": "brand_tvc", "expected_behavior": ["回答条件问题，不修改当前广告倾向。"],
+      "must_not": ["把假设讨论当作改选"], "scope": "stage1"
+    },
+    {
+      "id": "explicit_last_correction", "product_id": "hairdryer", "initial_ad_form": null,
+      "user_turns": ["原来想做TVC，算了，这次明确做人物口播。"],
+      "expected_ad_form": "presenter_pitch", "expected_behavior": ["采用用户明确的最终决定。"],
+      "must_not": ["按第一个关键词选择TVC", "因提到两种类型就忽略明确的改口"], "scope": "stage1"
+    },
+    {
+      "id": "image_only_no_parameters", "product_id": "hairdryer", "initial_ad_form": null,
+      "user_turns": [""], "attachments": [{"id": "synthetic_image_only", "kind": "image_placeholder", "observations": ["圆形出风口", "手柄可见按钮"]}],
+      "input_boundary": "只传图片。本用例不继承reference_samples中同类商品的任何合成商家参数；observations是作者预置识图结果，未验证识图。",
+      "expected_ad_form": null, "expected_behavior": ["不因没有文字报错，进入必要的需求澄清。", "保持已上传素材关联，仅提取可见外观。"],
+      "must_not": ["推断三档风速、护发、静音或材质", "把其他吹风机用例事实复制过来", "从图片自动推断广告倾向"], "scope": "stage1"
+    },
+    {
+      "id": "facts_not_reasked", "product_id": "cake", "initial_ad_form": null,
+      "user_turns": ["做20秒办公室剧情广告，一人份切块，用70%可可黑巧克力，不知道糖含量，不要说低糖。"],
+      "expected_ad_form": "scene_story", "expected_behavior": ["记录时长、情境、倾向、商家事实和糖含量缺口。", "仅询问影响当前工作且仍缺失的信息。"],
+      "must_not": ["再次问时长或广告类型", "把70%解读成整块蛋糕可可比例", "因为未提供糖含量就无法继续任何策划"], "scope": "stage1"
+    },
+    {
+      "id": "desired_claim_is_unverified", "product_id": "hairdryer", "initial_ad_form": null,
+      "user_turns": ["我想拍出两分钟吹干的感觉，但没有测过，先做TVC。"],
+      "expected_ad_form": "brand_tvc", "expected_behavior": ["保存TVC偏好。", "将两分钟吹干记录为待证实的诉求或限制，不升级成商品事实；可提出不含该承诺的表达方向。"],
+      "must_not": ["生成已确认两分钟快干事实", "用视觉暗示绕过没有依据的定量承诺"], "scope": "stage1"
+    },
+    {
+      "id": "conflicting_fact_correction", "product_id": "hairdryer", "initial_ad_form": "brand_tvc",
+      "user_turns": ["更正一下，前面三档说错了，实际是两档，其他不变。"],
+      "expected_ad_form": "brand_tvc", "expected_behavior": ["新输入的两档取代当前有效三档事实，保留更正来源。", "旧计划不能静默当作已依据两档更新；不同时保存互相冲突的有效事实。"],
+      "must_not": ["保留三档作为仍可用事实", "改动广告倾向", "复制其他样稿的三档文案"], "scope": "stage1"
+    },
+    {
+      "id": "unrecognized_form_free_text", "product_id": "cake", "initial_ad_form": null,
+      "user_turns": ["我想做定格动画的广告，但不一定有剧情。"],
+      "expected_ad_form": null, "expected_behavior": ["保留自定义风格，不因未知词报结构错误。", "动画是画面形式，仍需明确主广告倾向或推荐授权。"],
+      "must_not": ["把定格动画丢弃", "未经判断强制映射剧情向"], "scope": "stage1"
+    }
+  ]
+}

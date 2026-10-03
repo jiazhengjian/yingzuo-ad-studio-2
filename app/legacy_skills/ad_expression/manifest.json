@@ -1,0 +1,63 @@
+{
+  "id": "ad_expression",
+  "version": "1.3.0",
+  "resources": [
+    "SKILL.md",
+    "references/director_methods.md",
+    "references/examples.md"
+  ],
+  "sources": [
+    "https://github.com/coreyhaines31/marketingskills/blob/5b2c0007766c6a1cf1d53fd8fc73e979e0821022/skills/ad-creative/references/creative-roadmap.md",
+    "https://github.com/coreyhaines31/marketingskills/blob/5b2c0007766c6a1cf1d53fd8fc73e979e0821022/skills/ad-creative/references/hook-system.md",
+    "https://github.com/motion-team/creative-strategy-skills/blob/8e467a3547dcd2118e4d08fa58099553677d52ff/creative-strategy-engine/SKILL.md",
+    "https://github.com/motion-team/creative-strategy-skills/blob/8e467a3547dcd2118e4d08fa58099553677d52ff/creative-mechanics/SKILL.md",
+    "local-snapshot:tvc-ai-director-local-82e4c9b51ddbc9d0"
+  ],
+  "local_source_snapshots": [
+    {
+      "id": "tvc-ai-director-local-82e4c9b51ddbc9d0",
+      "kind": "user_supplied_local_snapshot",
+      "source_label": "TVC AI Director Skill Suite / tvc-ai-director-main",
+      "reviewed_at": "2026-09-30",
+      "remote_url": null,
+      "commit": null,
+      "license": "MIT",
+      "license_notice": "docs/THIRD_PARTY_NOTICES.md",
+      "adaptation": "本地文档方法经重新编写后进入映作广告表达、导演视觉契约及提示词规则；不是第三方运行时执行、原脚本或完整仓库引入。",
+      "files": [
+        {
+          "path": "LICENSE",
+          "sha256": "e557607fdf95b9592a88a08660287d0ad4f3e1d8ee6020a1fb5962a4a5bd8097"
+        },
+        {
+          "path": "tvc-concept-developer/SKILL.md",
+          "sha256": "c15c7e335e23a9600433601021ee99a1d7a5c8269c0fafff02a8975e8ec33e36"
+        },
+        {
+          "path": "tvc-director-treatment/SKILL.md",
+          "sha256": "825eb1c48a8383e055cf596a448e1d2f267899c16c546784edb8f5525b4c3738"
+        },
+        {
+          "path": "tvc-director-treatment/references/visual-development.md",
+          "sha256": "3dae76263c8b73c334f8cb9bafb0ab3719b3ccd6d8078e99c3caf34b22a71db9"
+        },
+        {
+          "path": "tvc-storyboard-writer/SKILL.md",
+          "sha256": "ecaee13dbfb58ea4e99edcedc75d9b62dd9db02c7b1ad02ca0622f2ac466a0d9"
+        },
+        {
+          "path": "tvc-ai-shot-prompter/references/video-prompt-method.md",
+          "sha256": "80d0baeec4b6a66355096e7aabacf1399d0e0c029677d34c027b1cdcc6d8605f"
+        },
+        {
+          "path": "tvc-ai-director/references/prompt-style-guide.md",
+          "sha256": "b4fd33000d08ac60e347693e2ec1eed2eb5773c1f390a778d207242b6fbb5e30"
+        },
+        {
+          "path": "tvc-ai-director/references/tvc-quality-bar.md",
+          "sha256": "73884723e71e92916cac3522236b6c488e6a962073ff5497e08b3e25dbf58879"
+        }
+      ]
+    }
+  ]
+}

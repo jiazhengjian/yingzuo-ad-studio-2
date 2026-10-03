@@ -1,0 +1,15 @@
+---
+name: ads-video-script-planning
+description: 将已选产品展示、剧情场景或人物讲解方向展开为内容稿，落实必要商品信息、观看过程与实际话语。按当前草稿格式组织内容，供分镜继续协调，不重新选择创意。
+---
+
+# Ads Video Script Planning
+
+读取商品事实、用户明确要求、已选方向、受众、目标时长与 `production`。按共同加载的 [分类脚本与声音表达](../shared/script-expression.md) 区分事实、固定原句、创意含义和作者解释。保留所选方向的核心与必要商品信息；选中概要不等于锁定其措辞或逐项镜头表。
+
+与 Dialogue Writing 同次写出观众实际看见和听见的内容，不把内部初稿标为审定稿。当前格式决定本次职责：
+
+- `draft_format=content_only`：使用 [内容初稿](references/content-draft.md)，只写内容段落的实际台词、画面任务和事实引用。动作估时、镜头与完整方案由下一阶段负责。
+- 完整内容稿：使用 [完整内容稿与动作容量](references/timed-script.md)，同时交接动作状态与联合容量。
+
+只按本轮 Schema 输出，不增加分析稿、额外调用或前置确认。两种路径都由分镜继续协调，程序编排后独立审核实际方案。

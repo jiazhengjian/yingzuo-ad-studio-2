@@ -1,0 +1,65 @@
+{
+  "schema_version": "1.0.0",
+  "purpose": "保留实际观察与构造语义反例。期望是人工判定依据，不是关键词拒绝规则。",
+  "execution_status": "not_run",
+  "sources": [
+    {"id": "historical_hairdryer_review", "kind": "sanitized_historical_observation", "description": "2026-10-02既有研究current-case.json中两句实际台词及审核结论。此处只保存短句及问题，省略项目ID、数据库路径、原始素材和回执。"},
+    {"id": "existing_cake_baseline", "kind": "existing_repository_fixture", "path": "tests/fixtures/ad_expression_cases.json", "entry_id": "historical_cake_saved_copy"},
+    {"id": "user_reported_cake_contradiction", "kind": "user_reported_issue", "description": "用户指出蛋糕已吃完仍从蛋糕上取樱桃。下方是按该问题写的最小反例，不冒充原始模型逐字分镜。"},
+    {"id": "author", "kind": "constructed_negative_or_boundary_case", "description": "作者编写，用于讨论判定边界，不是运行日志。"}
+  ],
+  "cases": [
+    {
+      "id": "historical_dryer_action_voiceover", "product_id": "hairdryer", "source_id": "historical_hairdryer_review", "origin": "historical_actual_excerpt",
+      "observed_text": ["晴晴洗完头，顺手拿起来。", "风圈转向湿发，原来是吹风机。"],
+      "visual_context": "对应画面分别为人物拿起商品、把风口转向湿发并开机。",
+      "observed_review": "既有审核把声画互补与自然口语判为通过，并称未重复播报。",
+      "expected_review": "应指出第一句主要重复动作；第二句的揭晓功能需结合全片判断，但不能凭揭晓就将整条判为声画互补。",
+      "checks": ["audiovisual_complement", "review_evidence"], "phase": "shared_later_quality_gate"
+    },
+    {
+      "id": "historical_cake_action_voiceover", "product_id": "cake", "source_id": "existing_cake_baseline", "origin": "historical_actual_excerpt",
+      "observed_text": ["下午茶，停一下。", "淋面正往下淌。", "一层一层，全在。"],
+      "visual_context": "画面已展示淋面与层次；完整商品依据应按原夹具读取，不能套用本组新增合成配料。",
+      "expected_review": "定位重复展示的信息和缺少的选择理由；仅补商品名、加语气词不能视为修复。",
+      "checks": ["product_relevance", "audiovisual_complement"], "phase": "shared_later_quality_gate"
+    },
+    {
+      "id": "cake_state_reversal", "product_id": "cake", "source_id": "user_reported_cake_contradiction", "origin": "constructed_from_reported_issue",
+      "observed_text": ["镜头一：人物把这块蛋糕全部吃完，盘子空了。", "镜头二：同一人物从同一块蛋糕上取下顶部樱桃。"],
+      "visual_context": "没有补充另一块蛋糕或倒叙，且顶部装饰是否樱桃也未证实。",
+      "expected_review": "同时指出物体状态矛盾和未经证实的配料；应修复动作或依据，不能只调整连接词。",
+      "checks": ["narrative_progression", "factual_support"], "phase": "shared_later_quality_gate"
+    },
+    {
+      "id": "invented_dryer_performance", "product_id": "hairdryer", "source_id": "author", "origin": "constructed_negative_control",
+      "observed_text": ["两分钟吹干，完全不伤发。"], "visual_context": "商品事实没有时间或护发测试，画面展示吹发也不能补足证据。",
+      "expected_review": "拒绝将两项性能主张列为已确认事实，不能用画面漂亮或事实ID存在来放行。",
+      "checks": ["factual_support"], "phase": "stage1_fact_boundary"
+    },
+    {
+      "id": "cocoa_scope_error", "product_id": "cake", "source_id": "author", "origin": "constructed_negative_control",
+      "observed_text": ["整块蛋糕百分之七十都是可可，所以低糖。"], "visual_context": "已知只是使用70%可可黑巧克力，没有整体比例或糖含量。",
+      "expected_review": "分别指出原料比例适用对象错误与低糖推断无依据。",
+      "checks": ["factual_support"], "phase": "stage1_fact_boundary"
+    },
+    {
+      "id": "reading_stand_health_claim", "product_id": "reading_stand", "source_id": "author", "origin": "constructed_negative_control",
+      "observed_text": ["保护颈椎，各种平板厚书都稳稳撑住。"], "visual_context": "只有指定薄册演示，缺少健康、承重和其他设备适用证据。",
+      "expected_review": "识别健康与适用范围两类证据缺口，不用双档角度事实替代。",
+      "checks": ["factual_support"], "phase": "stage1_fact_boundary"
+    },
+    {
+      "id": "necessary_instruction_allowed", "product_id": "hairdryer", "source_id": "author", "origin": "constructed_positive_boundary",
+      "observed_text": ["这颗键切换三档风速。"], "visual_context": "讲解者指向真实风速键；本合成商家输入明确确认了按键作用与三档。",
+      "expected_review": "允许必要的操作说明；不能因为包含按键动作而一概认定旁白退化，仍需检查整条广告分工。",
+      "checks": ["audiovisual_complement", "factual_support"], "phase": "shared_later_quality_gate"
+    },
+    {
+      "id": "negative_claim_is_not_promise", "product_id": "cake", "source_id": "author", "origin": "constructed_positive_boundary",
+      "observed_text": ["没有低糖数据，这次不要写低糖。"], "visual_context": "这是商家限制输入，不是将播放的广告台词。",
+      "expected_review": "记录证据缺口和禁用承诺；不能因命中低糖两字就当成商家确认，也不能把商家限制照抄成成片文案。",
+      "checks": ["factual_support", "input_role"], "phase": "stage1_fact_boundary"
+    }
+  ]
+}

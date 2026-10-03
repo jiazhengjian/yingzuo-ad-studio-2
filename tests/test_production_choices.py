@@ -1,0 +1,178 @@
+"""Approved physical identity and cast survive planning and paid request boundaries."""
+import asyncio
+from copy import deepcopy
+import hashlib
+import shutil
+import pytest
+
+from app.production import (ProductionPlan, required_designs, validate_production_plan,
+                            validate_production_sources, validate_design_assets)
+from app.providers.gateway import Gateway, SubmissionError
+from test_providers import settings, source, plan
+
+
+def production(mode="voiceover"):
+    return {"version": "1.0.0", "product_constraints": [{"text": "仅为切块，不能变成整只蛋糕", "evidence_ids": ["form"]}],
+            "characters": [{"id": "char_a", "name": "同事", "description": "成年短发女性，白衬衫、黑裤"}],
+            "speech_mode": mode, "speaker_id": "char_a" if mode == "character_dialogue" else "",
+            "voice_description": "普通话，轻松自然的青年女性声音" if mode != "none" else ""}
+
+
+def prepared_plan(mode="voiceover"):
+    prod = production(mode)
+    return {"production": prod, "strategy": {"brief": {"facts": [{"id": "form", "text": "一块蛋糕"}]},
+            "directions": [{"id": "d", "production": deepcopy(prod)}], "selected_direction_id": "d"},
+            "script": "", "segments": [{"shots": [{"id": "s1", "character_ids": ["char_a"]},
+                {"id": "s2", "character_ids": ["char_a"]}], "speech_spans": []}]}
+
+
+@pytest.mark.parametrize("field,value", [("speaker_id", "char_stranger"), ("voice_description", "")])
+def test_dialogue_requires_existing_speaker_and_actual_direction(field, value):
+    prod = production("character_dialogue"); prod[field] = value
+    with pytest.raises(ValueError): ProductionPlan.model_validate(prod)
+
+
+def test_unknown_product_source_cannot_become_physical_constraint():
+    with pytest.raises(ValueError, match="已有事实"):
+        validate_production_sources(production(), [{"id": "unrelated"}])
+
+
+@pytest.mark.parametrize("source", ["script", "narration", "shot", "ad_script", "span"])
+def test_silent_plan_cannot_retain_hidden_narration(source):
+    candidate = prepared_plan("none")
+    if source == "script": candidate["script"] = "旧台词"
+    elif source == "narration": candidate["segments"][0]["narration"] = "旧台词"
+    elif source == "shot": candidate["segments"][0]["shots"][0]["narration"] = "旧台词"
+    elif source == "ad_script": candidate["ad_script"] = {"beats": [{"narration": "旧台词"}]}
+    else: candidate["segments"][0]["speech_spans"] = [{"text": "旧台词"}]
+    with pytest.raises(ValueError, match="无人声"): validate_production_plan(candidate)
+
+
+def test_selected_cast_and_voice_choices_are_not_directors_to_replace():
+    candidate = prepared_plan()
+    candidate["production"]["voice_description"] = "另一个人"
+    with pytest.raises(ValueError, match="已选方向"): validate_production_plan(candidate)
+
+
+def test_new_plan_cannot_omit_approved_production_and_downgrade_to_legacy():
+    candidate = prepared_plan("character_dialogue")
+    candidate.pop("production")
+    with pytest.raises(ValueError, match="不能省略已选方向"):
+        validate_production_plan(candidate)
+    # A genuinely historical plan with no such contract stays compatible.
+    candidate["strategy"]["directions"][0].pop("production")
+    validate_production_plan(candidate)
+
+
+def test_dialogue_stays_with_approved_visible_speaker_through_window():
+    candidate = prepared_plan("character_dialogue")
+    candidate["segments"][0]["speech_spans"] = [{"speaker_id": "char_a", "shot_ids": ["s1", "s2"]}]
+    validate_production_plan(candidate)
+    candidate["segments"][0]["shots"][1]["character_ids"] = []
+    with pytest.raises(ValueError, match="说话窗口"): validate_production_plan(candidate)
+
+
+def design_assets(source):
+    scene = {**source, "id": "scene", "kind": "scene", "metadata": {
+        "generated": True, "provider_url": "https://cdn.example/scene.png"}}
+    character = {**source, "id": "character", "kind": "character", "metadata": {
+        "generated": True, "provider_url": "https://cdn.example/char.png",
+        "character_id": "char_a", "character_name": "同事", "view_layout": "four_view"}}
+    return [source, scene, character]
+
+
+@pytest.mark.parametrize("problem", ["missing", "wrong", "duplicate", "not_four_view"])
+def test_confirmation_needs_exact_cast_not_just_any_scene(source, problem):
+    candidate, assets = prepared_plan(), design_assets(source)
+    if problem == "missing": assets.pop()
+    elif problem == "wrong": assets[-1]["metadata"]["character_id"] = "char_other"
+    elif problem == "duplicate": assets.append(deepcopy(assets[-1]))
+    else: assets[-1]["metadata"]["view_layout"] = "portrait"
+    with pytest.raises(ValueError): validate_design_assets(candidate, assets)
+
+
+def request_segment(plan, source):
+    return {**deepcopy(plan["segments"][0]), "audio_strategy": "native", "production": production(),
+            "reference_asset_ids": [source["id"], "scene", "character"],
+            "reference_roles": [{"index": 1, "role": "product"}, {"index": 2, "role": "scene"},
+                                {"index": 3, "role": "character", "character_id": "char_a", "name": "同事"}]}
+
+
+def frozen(gateway, segment):
+    return {"model": "test", "prompt": "冻结请求", "duration": 10, "aspect_ratio": "9:16", "resolution": "720p",
+            "skill_trace": [], "prompt_sha256": hashlib.sha256("冻结请求".encode()).hexdigest(),
+            "input_sha256": gateway._video_input_hash(segment)}
+
+
+def test_actual_video_request_sends_approved_character_in_frozen_order(settings, source, plan, monkeypatch):
+    gateway, received = Gateway(settings), []
+    segment, assets = request_segment(plan, source), design_assets(source)
+    async def original(asset): return "https://cdn.example/product.png"
+    async def reference(asset): return asset["metadata"]["provider_url"]
+    async def public(url): return "1.1.1.1"
+    async def submit(path, payload): received.append(payload); return "task"
+    monkeypatch.setattr(gateway, "_original_reference_url", original)
+    monkeypatch.setattr(gateway, "_scene_reference_url", reference)
+    monkeypatch.setattr("app.providers.gateway.public_url", public)
+    monkeypatch.setattr(gateway, "_submit", submit)
+    asyncio.run(gateway.submit_video(segment, list(reversed(assets)), "test", prepared_request=frozen(gateway, segment)))
+    assert received[0]["images"] == ["https://cdn.example/product.png", "https://cdn.example/scene.png", "https://cdn.example/char.png"]
+
+
+def test_multiple_product_angles_keep_scene_and_cast_indices(settings, source, plan, monkeypatch):
+    gateway, received = Gateway(settings), []
+    segment, assets = request_segment(plan, source), design_assets(source)
+    second = {**source, "id": "other_angle"}
+    assets.insert(1, second)
+    segment["reference_asset_ids"].insert(1, second["id"])
+    segment["reference_roles"] = [{"index": 1, "role": "product"}, {"index": 2, "role": "product"},
+        {"index": 3, "role": "scene"}, {"index": 4, "role": "character", "character_id": "char_a"}]
+    async def original(asset): return "https://cdn.example/"+asset["id"]+".png"
+    async def reference(asset): return asset["metadata"]["provider_url"]
+    async def public(url): return "1.1.1.1"
+    async def submit(path, payload): received.append(payload); return "task"
+    monkeypatch.setattr(gateway, "_original_reference_url", original)
+    monkeypatch.setattr(gateway, "_scene_reference_url", reference)
+    monkeypatch.setattr("app.providers.gateway.public_url", public)
+    monkeypatch.setattr(gateway, "_submit", submit)
+    asyncio.run(gateway.submit_video(segment, list(reversed(assets)), "test", prepared_request=frozen(gateway, segment)))
+    assert received[0]["images"] == ["https://cdn.example/"+source["id"]+".png",
+        "https://cdn.example/other_angle.png", "https://cdn.example/scene.png", "https://cdn.example/char.png"]
+
+
+@pytest.mark.parametrize("problem", ["missing", "wrong_order", "wrong_identity"])
+def test_no_paid_request_with_missing_or_misbound_character(settings, source, plan, monkeypatch, problem):
+    gateway = Gateway(settings)
+    segment, assets = request_segment(plan, source), design_assets(source)
+    if problem == "missing": assets.pop()
+    elif problem == "wrong_identity": assets[-1]["metadata"]["character_id"] = "char_other"
+    else: segment["reference_roles"][2]["index"] = 1
+    async def forbidden(*args, **kwargs): pytest.fail("Cannot contact provider before all reference checks pass")
+    monkeypatch.setattr(gateway, "_original_reference_url", forbidden)
+    monkeypatch.setattr(gateway, "_submit", forbidden)
+    with pytest.raises(SubmissionError):
+        asyncio.run(gateway.submit_video(segment, assets, "test", prepared_request=frozen(gateway, segment)))
+
+
+def test_one_contact_sheet_per_character_and_resume_never_redraws(settings, source, plan, tmp_path, monkeypatch):
+    gateway, requests, traces = Gateway(settings), [], []
+    plan = {**deepcopy(plan), "production": production()}
+    plan["production"]["characters"].append({"id": "char_b", "name": "另一位同事", "description": "成年短发男性，灰色针织衫"})
+    async def original(asset): return "https://cdn.example/product.png"
+    async def submit(route, payload): requests.append(payload); return "task_"+str(len(requests))
+    async def task(identifier): return {"status": "completed", "result": {"images": [{"url": "https://cdn.example/"+identifier+".png"}]}}
+    async def download(url, path): shutil.copy2(source["path"], path)
+    monkeypatch.setattr(gateway, "_original_reference_url", original)
+    monkeypatch.setattr(gateway, "_submit", submit)
+    monkeypatch.setattr(gateway, "_task", task)
+    monkeypatch.setattr(gateway, "download_video", download)
+    folder = tmp_path / "designs"
+    results = asyncio.run(gateway.create_designs({}, [source], plan, folder, on_skill=traces.append))
+    assert [item["kind"] for item in results] == ["scene", "character", "character"]
+    assert [item["metadata"].get("character_id") for item in results[1:]] == ["char_a", "char_b"]
+    assert all(item["metadata"]["view_layout"] == "four_view" for item in results[1:])
+    assert len(requests) == 3 and requests[0]["images"]
+    assert all("images" not in request and request["size"] == "16:9" for request in requests[1:])
+    assert {trace["compiled_resource"] for trace in traces} == {"references/scene-template.txt", "references/character-template.txt"}
+    repeated = asyncio.run(gateway.create_designs({}, [source], plan, folder))
+    assert len(requests) == 3 and repeated == results
