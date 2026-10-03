@@ -34,6 +34,7 @@ _METAPHOR = re.compile(
 _CLAIM_WORDS = ("根治", "治愈", "美白", "减肥", "抗衰", "医用", "治疗")
 _FORM_LABEL = {"brand_tvc": "产品展示", "scene_story": "剧情", "presenter_pitch": "人物讲解"}
 _HOLD_LINE = "机位停住，保持结束姿态，产品留在画面中，不出现字幕、Logo 或字卡。"
+_CONTINUE_LINE = "动作或运镜进行到切点，下一段从同一动作或同一机位方向接上。"
 
 
 class _ShotText(BaseModel):
@@ -341,8 +342,13 @@ def _motion_sentence(clause: str, *, index: int) -> str:
     return f"{lead}，变化限于本镜允许变化。"
 
 
-def shot_prompt_lines(shot, *, hold_tail: bool) -> list[str]:
-    """Same request, more specific time. Shots of 4 seconds or less stay one line."""
+def shot_prompt_lines(shot, *, hold_tail: bool, continue_tail: bool = False) -> list[str]:
+    """Same request, more specific time. Shots of 4 seconds or less stay one line.
+
+    hold_tail is the film's last shot. continue_tail is the last shot of an
+    earlier generation segment: it names the cut into the next segment and
+    does not add a hold.
+    """
     start = _tenths(shot["start"])
     end = _tenths(shot["end"])
     header = f"{shot['id']} | {shot['start']:g}–{shot['end']:g}秒 | {shot['description']}"
@@ -362,11 +368,15 @@ def shot_prompt_lines(shot, *, hold_tail: bool) -> list[str]:
                 text = _motion_sentence(clause, index=motion_index)
                 motion_index += 1
             lines.append(f"  {begin / 10:g}–{finish / 10:g}秒：{text}")
+        if continue_tail and not hold_tail:
+            lines.append(f"  段末：{_CONTINUE_LINE}")
         return lines
     duration = end - start
     if hold_tail and duration >= _tenths(HERO_HOLD_SECONDS):
         hold_at = end - _tenths(HERO_HOLD_SECONDS)
         lines.append(f"  {hold_at / 10:g}–{end / 10:g}秒：{_HOLD_LINE}")
+    elif continue_tail:
+        lines.append(f"  段末：{_CONTINUE_LINE}")
     return lines
 
 

@@ -135,8 +135,12 @@ def _compile_grouped_video(segment, template):
     lines.extend(_voice_lines(production, director, segment["speech_spans"], characters))
     from .shot_craft import shot_prompt_lines
     lines.append("画面镜头（切镜不打断连续表达）：")
+    closes_film = segment.get("closes_film", True) is not False
+    last_index = len(shots) - 1
     for index, shot in enumerate(shots):
-        lines.extend(shot_prompt_lines(shot, hold_tail=index == len(shots) - 1))
+        last = index == last_index
+        lines.extend(shot_prompt_lines(
+            shot, hold_tail=last and closes_film, continue_tail=last and not closes_film))
         if shot.get("character_ids"):
             if not set(shot["character_ids"]).issubset(characters):
                 raise ValueError("镜头引用了未绑定参考图的角色")

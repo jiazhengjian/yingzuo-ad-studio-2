@@ -20,10 +20,26 @@ from .directing import direction_context
 from .production import required_designs, validate_design_assets
 
 
+def _segment_closes_film(plan, segment) -> bool:
+    """True when this request is the film's last segment, or the plan has no segment list."""
+    segments = plan.get("segments") if isinstance(plan, dict) else None
+    if not isinstance(segments, list) or not segments or not isinstance(segment, dict):
+        return True
+    last = segments[-1]
+    if not isinstance(last, dict):
+        return True
+    segment_id = segment.get("id")
+    last_id = last.get("id")
+    if isinstance(segment_id, str) and segment_id and isinstance(last_id, str) and last_id:
+        return segment_id == last_id
+    return True
+
+
 def video_submission_spec(plan, segment, assets=None):
     """Freeze the same confirmed visual contract for every provider group."""
     spec = {**segment, "audio_strategy": plan["audio_strategy"],
-            "generation_strategy": plan.get("generation_strategy", "legacy_10s")}
+            "generation_strategy": plan.get("generation_strategy", "legacy_10s"),
+            "closes_film": _segment_closes_film(plan, segment)}
     from .ad_form_playbook import LEGACY_TENTH, speech_profile_for_strategy
     strategy = plan.get("strategy") if isinstance(plan, dict) else getattr(plan, "strategy", None)
     tenth = speech_profile_for_strategy(strategy).characters_per_tenth

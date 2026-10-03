@@ -103,6 +103,147 @@ def test_end_hold_and_even_cuts_are_advice():
     assert any("均分" in note for note in _notes(even))
 
 
+_HOLD_WORDS = ("定格", "停住", "不再运镜", "机位停", "固定机位", "保持不动", "镜头停")
+
+
+def _picture(prompt):
+    return prompt.split("画面镜头", 1)[1]
+
+
+def _compile_segment(shots, *, closes_film, duration):
+    segment = {
+        "duration_seconds": duration,
+        "generation_strategy": "continuity_v1",
+        "speech_spans": [],
+        "shots": shots,
+        "closes_film": closes_film,
+    }
+    prompt = compiled_video_request(segment)["prompt"]
+    assert "closes_film" not in prompt
+    return prompt
+
+
+def _shot(shot_id, start, end, description):
+    return {"id": shot_id, "start": start, "end": end, "description": description}
+
+
+def test_only_the_films_last_segment_holds():
+    moving = _shot("move", 0, 3, "手把瓶身转向窗光，镜头仍在前推。")
+    ending = _shot("end", 0, 3, "瓶身留在窗光里。")
+    long_move = _shot("long", 0, 8, "手把瓶身转向窗光。镜头仍在前推。")
+    two = [
+        _picture(_compile_segment([moving], closes_film=False, duration=3)),
+        _picture(_compile_segment([ending], closes_film=True, duration=3)),
+    ]
+    assert "下一段" in two[0] and "段末" in two[0]
+    assert not any(word in two[0] for word in _HOLD_WORDS)
+    assert "停住" in two[1] and "下一段" not in two[1] and "分阶段" not in two[1]
+    three = [
+        _picture(_compile_segment([moving], closes_film=False, duration=3)),
+        _picture(_compile_segment([long_move], closes_film=False, duration=8)),
+        _picture(_compile_segment([ending], closes_film=True, duration=3)),
+    ]
+    assert "分阶段" in three[1] and "5.4–8秒" in three[1] and "下一段" in three[1]
+    assert not any(word in three[0] or word in three[1] for word in _HOLD_WORDS)
+    assert "停住" in three[2] and "下一段" not in three[2]
+    bare = _picture(compiled_video_request({
+        "duration_seconds": 3, "generation_strategy": "continuity_v1", "speech_spans": [],
+        "shots": [ending],
+    })["prompt"])
+    assert "停住" in bare and "下一段" not in bare
+    opened = _compile_segment([
+        _shot("a", 0, 2, "瓶口先入画。"),
+        _shot("b", 2, 4, "手把瓶身转向窗光。"),
+    ], closes_film=False, duration=4)
+    head, _, tail = _picture(opened).partition("b | 2–4秒")
+    assert "下一段" not in head and "段末" not in head
+    assert "下一段" in tail and not any(word in tail for word in _HOLD_WORDS)
+    closed = _compile_segment([
+        _shot("a", 0, 2, "瓶口先入画。"),
+        _shot("b", 2, 5, "瓶身留在窗光里。"),
+    ], closes_film=True, duration=5)
+    head, _, tail = _picture(closed).partition("b | 2–5秒")
+    assert "停住" not in head and "下一段" not in head
+    assert "停住" in tail and "下一段" not in tail
+
+
+def test_submission_spec_marks_only_the_last_segment():
+    from app.pipeline import video_submission_spec
+    segments = [{"id": f"seg_{index}", "duration_seconds": 10} for index in range(1, 4)]
+    plan = {"audio_strategy": "native", "segments": segments}
+    assert [video_submission_spec(plan, segment)["closes_film"] for segment in segments] == [False, False, True]
+    pair = segments[:2]
+    assert [video_submission_spec({"audio_strategy": "native", "segments": pair}, segment)["closes_film"]
+            for segment in pair] == [False, True]
+    lone = video_submission_spec({"audio_strategy": "native"}, {"reference_asset_ids": ["original"]})
+    assert lone["closes_film"] is True
+
+
+def _film_segments(groups):
+    segments = []
+    for group in groups:
+        cursor = 0.0
+        built = []
+        for index, shot in enumerate(group):
+            duration = shot["duration"]
+            built.append({
+                "id": shot["id"],
+                "start": round(cursor, 1),
+                "end": round(cursor + duration, 1),
+                "description": shot["description"],
+                "product_visible": shot["visible"],
+                "continuity": {
+                    "camera_move": shot["camera"],
+                    "start_state": "瓶身静置",
+                    "allowed_changes": "只改变机位",
+                    "end_state": "瓶身仍在转动",
+                },
+            })
+            cursor += duration
+        segments.append({"id": f"seg_{len(segments) + 1}", "shots": built})
+    return {
+        "video_flow": "先看到瓶口，再看到瓶身转向窗光。",
+        "strategy": {
+            "brief": {"ad_form": "brand_tvc", "facts": [{"id": "appearance", "text": "蓝瓶"}]},
+            "selected_direction_id": "d1",
+            "directions": [{"id": "d1", "big_idea": "桌角这一只", "hook": "先看见瓶口",
+                            "film_concept": {"structure": "product_visual"}}],
+        },
+        "visual_direction": {"scene": "办公桌", "lighting": "左侧窗光", "color_palette": "浅灰", "camera_style": "靠近瓶身"},
+        "segments": segments,
+    }
+
+
+def test_end_hold_check_names_only_the_films_last_shot():
+    from app.shot_craft import shot_rewrite_issues
+    pieces = [
+        {"id": "a", "duration": 4, "description": "手把瓶身转向窗光。", "visible": True, "camera": "近景，镜头前推"},
+        {"id": "b", "duration": 0.8, "description": "瓶肩掠过窗光。", "visible": True, "camera": "微距特写，镜头轻摇"},
+        {"id": "c", "duration": 3, "description": "瓶身仍在转向窗光。", "visible": True, "camera": "中景，镜头继续前推"},
+    ]
+    director = {
+        "video_flow": "先看到瓶口，再看到瓶身转向窗光。",
+        "shots": [
+            {"id": shot["id"], "description": shot["description"],
+             "continuity": {"camera_move": shot["camera"]}}
+            for shot in pieces
+        ],
+    }
+    for count, groups in ((2, [[pieces[0], pieces[1]], [pieces[2]]]),
+                          (3, [[pieces[0]], [pieces[1]], [pieces[2]]])):
+        plan = _film_segments(groups)
+        items = shot_suggestions(plan, plan["strategy"])
+        holds = [item for item in items if "结尾" in item["note"]]
+        assert len(holds) == 1
+        assert holds[0]["target"] == f"/segments/{count - 1}/shots/0/description"
+        assert "停住" in holds[0]["note"] and "1.5" not in holds[0]["note"]
+        assert not any("1.5" in item["note"] for item in items)
+        issues = shot_rewrite_issues(director, plan)
+        assert [item["shot_id"] for item in issues if "hold" in item["problems"]] == ["c"]
+        assert issues[-1]["needs_hold"] is True
+        assert all(item["shot_id"] == "c" or "hold" not in item["problems"] for item in issues)
+
+
 def test_phase_lines_stay_inside_one_request():
     short = shot_prompt_lines({"id": "a", "start": 0, "end": 3, "description": "瓶身直立。"}, hold_tail=False)
     assert short == ["a | 0–3秒 | 瓶身直立。"]
