@@ -391,6 +391,23 @@ def merchant_facing_error(exc):
     return present_exception(exc)
 
 
+def _submission_failure_result(exc, gateway=None, code=None):
+    """Status and a redacted excerpt for the step row. Never the merchant card."""
+    result = {}
+    if isinstance(code, str) and code:
+        result["error_code"] = code
+    status = getattr(exc, "status_code", None)
+    if type(status) is int:
+        result["provider_status"] = status
+    excerpt = getattr(exc, "excerpt", None)
+    if isinstance(excerpt, str) and excerpt:
+        result["provider_excerpt"] = excerpt[:180]
+    refusals = getattr(gateway, "_submission_refusals", None) if gateway is not None else None
+    if isinstance(refusals, list) and refusals:
+        result["submission_refusals"] = list(refusals)
+    return result or None
+
+
 def _review_binding_drift(exc: PlanStructureError) -> bool:
     return any("综合审核记录必须对应" in str(item.get("msg", "")) for item in exc.validation_errors or [])
 
@@ -471,6 +488,8 @@ class Pipeline:
                     "raw_output": {"check": "model"}, "validation_errors": _validation_details(exc)})
             message = merchant_facing_error(exc)
             changes = {"status": "failed", "error": message[:500], "lease_until": 0}
+            held_submission = getattr(exc, "error_code", None) in (
+                "provider_balance", "provider_auth", "provider_request_rejected")
             if job["kind"] == "plan":
                 progress = dict(self.store.get_job(job_id).get("progress") or {})
                 retryable = bool(getattr(exc, "retryable", False))
@@ -486,7 +505,11 @@ class Pipeline:
                     progress.update(issue_summary=getattr(exc, "issue_summary", [])[:8],
                         repair_attempts=getattr(exc, "repair_attempts", 0))
                 changes["progress"] = progress
-            if job["kind"] == "generate":
+            if job["kind"] == "generate" and held_submission:
+                progress = dict(self.store.get_job(job_id).get("progress") or {})
+                progress.update(error_code=exc.error_code, retryable=False, retry_action=None)
+                changes["progress"] = progress
+            elif job["kind"] == "generate":
                 recovery = self.store.video_retry_state(job_id)
                 if recovery["failed_segment_ids"]:
                     progress = dict(self.store.get_job(job_id).get("progress") or {})
@@ -931,6 +954,8 @@ class Pipeline:
             callback["on_asset"] = save_design
         if replace_keys and "replace_keys" in inspect.signature(create).parameters:
             callback["replace_keys"] = replace_keys
+        self.gateway._submission_busy_notice = lambda: self.store.add_event(
+            job["project_id"], job["id"], "step", "图片平台繁忙，正在自动重新提交")
         try:
             results = await create(project, assets, plan, folder,
                                    cancelled=lambda: self.store.is_cancelled(job["id"]) or
@@ -942,6 +967,8 @@ class Pipeline:
             if getattr(exc, "safe_to_display", False):
                 raise
             raise ValueError("视觉设计图生成失败，方案已保留；重试会优先恢复已记录的图片任务") from exc
+        finally:
+            self.gateway._submission_busy_notice = None
         self._guard(job["id"], require_current=True)
         if not results:
             raise ValueError("图片服务没有返回真实场景图；不能用商品上传图冒充")
@@ -976,7 +1003,7 @@ class Pipeline:
                    job.get("payload", {}).get("video_submission_budget", 6))
 
     async def _submit_video(self, job, spec, assets):
-        """Reserve once, POST once, then persist receipt; never poll or download here."""
+        """Reserve once, then POST the frozen request. Only a definite unpaid 4xx may be posted again."""
         jid, key = job["id"], f"video:{spec['id']}"
         self._guard(jid, require_current=True)
         frozen_spec = job.get("payload", {}).get("frozen_video_specs", {}).get(spec["id"])
@@ -1013,6 +1040,8 @@ class Pipeline:
             if not self.store.reserve_submission(jid, key, snapshot, self._submission_budget(job)):
                 raise SubmissionUnknown()
             self._phase(jid, "submitting_video", segment_id=spec["id"])
+            self.gateway._submission_busy_notice = lambda: self.store.add_event(
+                job["project_id"], jid, "step", "视频平台繁忙，正在自动重新提交")
             try:
                 kwargs = {"prepared_request": snapshot["video_request"]} if "video_request" in snapshot else {}
                 receipt = await self.gateway.submit_video(spec, assets, snapshot["idempotency_key"], **kwargs)
@@ -1020,22 +1049,37 @@ class Pipeline:
                 if not task_id:
                     raise SubmissionUnknown()
                 # The durable receipt precedes polling, cancellation handling, and downloads.
-                self.store.update_step(jid, key, state="submitted", task_id=str(task_id),
-                                       result={"provider": str(receipt.get("provider", "unknown")),
-                                           **{k: receipt[k] for k in ("skill_trace", "prompt_sha256") if k in receipt}})
+                result = {"provider": str(receipt.get("provider", "unknown")),
+                          **{k: receipt[k] for k in ("skill_trace", "prompt_sha256") if k in receipt}}
+                refusals = receipt.get("submission_refusals")
+                if not isinstance(refusals, list):
+                    refusals = getattr(self.gateway, "_submission_refusals", None)
+                if isinstance(refusals, list) and refusals:
+                    result["submission_refusals"] = refusals
+                self.store.update_step(jid, key, state="submitted", task_id=str(task_id), result=result)
                 self.store.add_event(job["project_id"], jid, "step", "视频任务已受理，回执已保存")
             except BaseException as exc:
                 if isinstance(exc, (asyncio.CancelledError, SubmissionUnknown)) or getattr(exc, "uncertain", True):
-                    self.store.update_step(jid, key, state="submitted_unknown", error="供应商受理结果未知")
+                    self.store.update_step(jid, key, state="submitted_unknown", error="供应商受理结果未知",
+                                           result=_submission_failure_result(exc))
                     if isinstance(exc, asyncio.CancelledError):
                         raise
                     raise SubmissionUnknown() from exc
-                code = "reference_image_unreadable" if getattr(exc, "error_code", None) == "reference_image_unreadable" else "provider_video_rejected"
-                message = "参考图片检查未通过，视频尚未提交" if code == "reference_image_unreadable" else "视频请求未获受理"
-                self.store.update_step(jid, key, state="rejected", error=message, result={"error_code": code})
+                code = getattr(exc, "error_code", None)
+                if code == "reference_image_unreadable":
+                    message = "参考图片检查未通过，视频尚未提交"
+                elif code in ("provider_balance", "provider_auth", "provider_request_rejected"):
+                    message = str(exc)
+                else:
+                    code = "provider_video_rejected"
+                    message = "视频请求未获受理"
+                self.store.update_step(jid, key, state="rejected", error=message,
+                                       result=_submission_failure_result(exc, self.gateway, code))
                 if getattr(exc, "safe_to_display", False):
                     raise
                 raise ValueError("供应商拒绝了视频请求；已保留提交记录，不自动重发") from exc
+            finally:
+                self.gateway._submission_busy_notice = None
             step = self.store.get_step(jid, key)
         if not step["task_id"]:
             raise SubmissionUnknown()

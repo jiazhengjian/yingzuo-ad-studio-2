@@ -28,7 +28,8 @@ SECRET = "TEST_ONLY_SECRET_DO_NOT_EXPOSE"
 def settings():
     return SimpleNamespace(tudou_api_key=SECRET, deepseek_api_key=SECRET,
                            planner_model="deepseek-flash", image_model="gpt-image-2-all", video_model="wan3.0",
-                           poll_seconds=0, provider_timeout_seconds=2, tts_voice="Tingting", ffmpeg_path="not-called")
+                           poll_seconds=0, provider_timeout_seconds=2, tts_voice="Tingting", ffmpeg_path="not-called",
+                           submission_retry_delays=())
 
 
 @pytest.fixture

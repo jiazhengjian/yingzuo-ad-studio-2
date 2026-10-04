@@ -43,6 +43,11 @@ export function recoveryForJob(job?: Job): JobRecovery | null {
     }
     return { kind: 'edit_plan' };
   }
+  if (job.progress.error_code === 'provider_balance'
+    || job.progress.error_code === 'provider_auth'
+    || job.progress.error_code === 'provider_request_rejected') {
+    return { kind: 'unavailable' };
+  }
   if (job.progress.error_code === 'voice_too_long' || /配音.*(?:长于|超过)|文案.*(?:过长|太长)|请缩短台词/.test(job.error || '')) return { kind: 'edit_voice' };
   if (/请重新上传商品图|还没有可用的商品图/.test(job.error || '')) return { kind: 'upload_product', label: '重新上传商品图' };
   if (/请重新选择时长|所选时长不一致/.test(job.error || '')) return { kind: 'edit_plan', label: '重新选择时长' };
@@ -104,6 +109,12 @@ export function cardMessage(job: Job, recovery: JobRecovery): string {
   }
   if (recovery.kind === 'continue_conversation') {
     return '这一步不能沿用刚才的进度，已保存的需求仍然保留。请按已保存的需求继续。';
+  }
+  if (code === 'provider_balance') {
+    return '账户余额或额度不足，已有方案和图片仍保留。请补充额度后再制作。';
+  }
+  if (code === 'provider_auth') {
+    return '生成账户的连接需要检查，已有方案和图片仍保留。';
   }
   if (recovery.kind === 'retry_planning' || recovery.kind === 'unavailable') return SYSTEM_FAILURE_COPY;
   if (/独立旁白方案的声音策略|视频段镜头时轴或素材结构无效/.test(job.error || '')) return SYSTEM_FAILURE_COPY;

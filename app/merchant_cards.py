@@ -16,6 +16,8 @@ from __future__ import annotations
 import re
 
 SYSTEM_CARD = "这是系统问题，已记录；你的方案和图片都还在。"
+BALANCE_CARD = "账户余额或额度不足，已有方案和图片仍保留。请补充额度后再制作。"
+AUTH_CARD = "生成账户的连接需要检查，已有方案和图片仍保留。"
 
 _TECHNICAL = re.compile(
     r"pydantic|validation|Value error|CreativeOption|请重新策划|请先重新策划|"
@@ -27,8 +29,7 @@ _TECHNICAL = re.compile(
 _MERCHANT_RULES = (
     (re.compile(r"请先上传至少一张真实商品图|尚未收到真实商品图|重新上传商品图"),
      "还没有可用的商品图，已有方案仍保留。请重新上传商品图。"),
-    (re.compile(r"余额|额度|配额"),
-     "账户余额或额度不足，已有方案和图片仍保留。请补充额度后再制作。"),
+    (re.compile(r"余额|额度|配额"), BALANCE_CARD),
     (re.compile(r"内容政策|内容审核|平台要求|违规"),
      "内容未通过平台要求，已有方案仍保留。请修改方案后再制作。"),
     (re.compile(r"配音.*(?:长于|超过)|文案.*(?:过长|太长)|请先精简文案|请缩短台词"),

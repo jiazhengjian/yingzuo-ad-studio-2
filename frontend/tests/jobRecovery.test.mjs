@@ -320,6 +320,32 @@ test('failure cards never show field names, pydantic, or validation wording', ()
   assert.doesNotMatch(kept, /speech_characters_per_tenth|validation/i);
 });
 
+test('a balance refusal is one merchant sentence and not a segment retry', () => {
+  const job = fixture({
+    error: '账户余额或额度不足，已有方案和图片仍保留。请补充额度后再制作。',
+    progress: { error_code: 'provider_balance', retryable: false, retry_action: 'retry_failed_segments', failed_segment_ids: ['seg_1'] },
+  });
+  assert.equal(recoveryForJob(job).kind, 'unavailable');
+  assert.equal(retryRequest(job), null);
+  const html = renderCard(job);
+  assert.match(html, /请补充额度后再制作/);
+  assert.match(html, /本次制作未完成/);
+  assert.doesNotMatch(html, /重试失败片段|视频片段未生成|继续制作|<button/);
+});
+
+test('an exhausted or permanent video refusal uses the system sentence', () => {
+  const job = fixture({
+    error: '这是系统问题，已记录；你的方案和图片都还在。',
+    progress: { error_code: 'provider_request_rejected', retryable: false, retry_action: 'retry_failed_segments', failed_segment_ids: ['seg_1'] },
+  });
+  assert.equal(recoveryForJob(job).kind, 'unavailable');
+  assert.equal(retryRequest(job), null);
+  const html = renderCard(job);
+  assert.match(html, /这是系统问题，已记录/);
+  assert.match(html, /方案和图片都还在/);
+  assert.doesNotMatch(html, /重试失败片段|视频片段未生成|继续制作|<button/);
+});
+
 test('the last-resort card button requests a restart from the saved brief', () => {
   const calls = [];
   const job = fixture({ kind: 'plan', progress: { error_code: 'planning_invalid_response', retryable: false,

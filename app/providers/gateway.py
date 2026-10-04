@@ -501,9 +501,145 @@ class ProviderResultError(ProviderError):
 
 
 class SubmissionError(ProviderError):
-    def __init__(self, message, uncertain=False):
+    def __init__(self, message, uncertain=False, *, status_code=None, excerpt=None):
         super().__init__(message)
         self.uncertain = uncertain
+        self.status_code = status_code
+        self.excerpt = excerpt
+
+
+_TRANSIENT_REFUSAL = re.compile(
+    r"busy|rate|limit|繁忙|稍后|timeout|queue|并发|上游|upstream|overloaded",
+    re.IGNORECASE)
+_SUBMISSION_URL = re.compile(r"(?i)\b(?:https?://|www\.)\S+")
+_SUBMISSION_SECRET = re.compile(
+    r"(?i)(?:api[_-]?key|authorization|bearer|token|secret|password)\s*[:=]\s*\S+")
+
+
+def _submission_credentials(settings):
+    values = []
+    for name in ("tudou_api_key", "deepseek_api_key"):
+        value = getattr(settings, name, None)
+        if isinstance(value, str) and len(value) >= 8:
+            values.append(value)
+    return values
+
+
+def _submission_excerpt(text, credentials):
+    """Short refusal text for local diagnostics. No keys and no URLs."""
+    if not isinstance(text, str) or not text:
+        return ""
+    value = text[:4000]
+    for credential in credentials:
+        value = value.replace(credential, "[redacted]")
+    value = _SUBMISSION_SECRET.sub("[redacted]", value)
+    value = _SUBMISSION_URL.sub("[redacted]", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value[:180]
+
+
+def _submission_route(path):
+    if isinstance(path, str) and path.startswith("/v1/videos/"):
+        return "video"
+    if isinstance(path, str) and path.startswith("/v1/images/"):
+        return "image"
+    return "submit"
+
+
+def _submission_retry_delays(settings):
+    raw = getattr(settings, "submission_retry_delays", (20, 60, 120))
+    if not isinstance(raw, (tuple, list)):
+        return (20, 60, 120)
+    delays = []
+    for item in list(raw)[:3]:
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            continue
+        delays.append(max(0.0, min(float(item), 600.0)))
+    return tuple(delays)
+
+
+def _classify_submission_refusal(status, excerpt):
+    """Definite HTTP refusal. Transient means the same unpaid request may be posted again."""
+    if status in (401, 402):
+        return "merchant"
+    if status in (408, 409, 429):
+        return "transient"
+    if status in (400, 403, 422) and _TRANSIENT_REFUSAL.search(excerpt or ""):
+        return "transient"
+    return "permanent"
+
+
+def _response_task_id(response):
+    try:
+        body = response.json()
+    except (ValueError, AttributeError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    data = body.get("data") if isinstance(body.get("data"), dict) else {}
+    task_id = data.get("id") or data.get("task_id") or body.get("id") or body.get("task_id")
+    if isinstance(task_id, str) and task_id.strip():
+        return task_id.strip()
+    return None
+
+
+def save_submission_diagnostic(settings, record):
+    """One definite provider response. No prompt, header, key, or URL."""
+    if not isinstance(record, dict):
+        return
+    data_root = getattr(settings, "data_root", None)
+    if data_root is None:
+        return
+    try:
+        directory = Path(data_root) / "diagnostics"
+    except TypeError:
+        return
+    route = record.get("route")
+    if route not in ("video", "image", "submit"):
+        route = "submit"
+    status = record.get("status")
+    if type(status) is not int or not 100 <= status <= 599:
+        return
+    excerpt = _submission_excerpt(record.get("excerpt") if isinstance(record.get("excerpt"), str) else "",
+                                  _submission_credentials(settings))
+    attempt = record.get("attempt")
+    if type(attempt) is not int or not 1 <= attempt <= 8:
+        attempt = 1
+    refusal = record.get("refusal")
+    if refusal not in ("transient", "merchant", "permanent", "uncertain"):
+        refusal = "permanent"
+    safe_record = {"kind": "submission_refusal", "route": route, "status": status,
+                   "excerpt": excerpt, "attempt": attempt, "refusal": refusal}
+    created = None
+    try:
+        content = json.dumps(safe_record, ensure_ascii=False).encode("utf-8")
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path = directory / f"{uuid.uuid4().hex}.json"
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        created = path
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+    except Exception:
+        if created is not None:
+            try:
+                created.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _refusal_error(status, excerpt, kind):
+    from app.merchant_cards import AUTH_CARD, BALANCE_CARD, SYSTEM_CARD
+    if status == 402:
+        message, code = BALANCE_CARD, "provider_balance"
+    elif status == 401:
+        message, code = AUTH_CARD, "provider_auth"
+    else:
+        message, code = SYSTEM_CARD, "provider_request_rejected"
+    error = SubmissionError(message, uncertain=False, status_code=status, excerpt=excerpt or None)
+    error.error_code = code
+    error.retryable = False
+    error.refusal_kind = kind
+    return error
 
 
 def atomic_json(path, value):
@@ -809,30 +945,67 @@ class Gateway:
         finally:
             verification.unlink(missing_ok=True)
 
+    def _remember_submission(self, path, status, excerpt, attempt, refusal):
+        record = {"route": _submission_route(path), "status": status, "excerpt": excerpt or "",
+                  "attempt": attempt, "refusal": refusal}
+        refusals = getattr(self, "_submission_refusals", None)
+        if not isinstance(refusals, list):
+            refusals = []
+            self._submission_refusals = refusals
+        refusals.append(dict(record))
+        save_submission_diagnostic(self.settings, record)
+
     async def _submit(self, path, payload):
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(90, connect=15), trust_env=False) as client:
-                response = await client.post("https://api.ai-tudou.net" + path, headers=self.tudou_headers, json=payload)
-        except (httpx.ConnectError, httpx.ConnectTimeout):
-            raise SubmissionError("无法连接土豆API，尚未收到任务编号", uncertain=False) from None
-        except httpx.HTTPError:
-            raise SubmissionError("提交连接中断，平台可能已接单；已暂停，避免重复计费", uncertain=True) from None
-        if response.status_code >= 500:
-            raise SubmissionError("平台提交返回服务器错误，接单状态未知；请核对平台任务", uncertain=True)
-        if response.status_code >= 400:
-            labels = {401: "Key无效", 403: "Key或模型权限不足", 402: "余额不足", 429: "请求过于频繁"}
-            raise SubmissionError(f"土豆API拒绝提交（{labels.get(response.status_code, str(response.status_code))}），请检查default分组与模型权限")
-        if response.status_code >= 300:
-            raise SubmissionError("平台提交返回重定向，接单状态未知；不会自动再次提交", uncertain=True)
-        try:
-            body = response.json()
-            data = body.get("data") or {}
-            task_id = data.get("id") or data.get("task_id") or body.get("id")
-        except (ValueError, AttributeError):
-            task_id = None
-        if not isinstance(task_id, str) or not task_id:
-            raise SubmissionError("平台未返回任务编号，接单状态未知；不会自动再次提交", uncertain=True)
-        return task_id
+        """POST a frozen request. Re-POST only a definite unpaid 4xx, never an uncertain acceptance."""
+        delays = _submission_retry_delays(self.settings)
+        credentials = _submission_credentials(self.settings)
+        self._submission_refusals = []
+        attempt = 0
+        while True:
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(90, connect=15), trust_env=False) as client:
+                    response = await client.post("https://api.ai-tudou.net" + path, headers=self.tudou_headers, json=payload)
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                raise SubmissionError("无法连接土豆API，尚未收到任务编号", uncertain=False) from None
+            except httpx.HTTPError:
+                raise SubmissionError("提交连接中断，平台可能已接单；已暂停，避免重复计费", uncertain=True) from None
+            status = response.status_code
+            if status < 300:
+                task_id = _response_task_id(response)
+                if not task_id:
+                    raise SubmissionError("平台未返回任务编号，接单状态未知；不会自动再次提交", uncertain=True)
+                return task_id
+            try:
+                raw = response.text[:4000]
+            except Exception:
+                raw = ""
+            excerpt = _submission_excerpt(raw, credentials)
+            if status >= 500:
+                self._remember_submission(path, status, excerpt, attempt + 1, "uncertain")
+                raise SubmissionError("平台提交返回服务器错误，接单状态未知；请核对平台任务", uncertain=True,
+                                      status_code=status, excerpt=excerpt or None)
+            if status >= 400:
+                # A task id on a refusal is not proof of a new bill, but it is not a clean non-acceptance.
+                if _response_task_id(response):
+                    self._remember_submission(path, status, excerpt, attempt + 1, "uncertain")
+                    raise SubmissionError("平台拒绝里带有任务编号，接单状态未知；不会自动再次提交", uncertain=True,
+                                          status_code=status, excerpt=excerpt or None)
+                kind = _classify_submission_refusal(status, excerpt)
+                self._remember_submission(path, status, excerpt, attempt + 1, kind)
+                if kind == "transient" and attempt < len(delays):
+                    notice = getattr(self, "_submission_busy_notice", None)
+                    if callable(notice):
+                        try:
+                            notice()
+                        except Exception:
+                            pass
+                    await asyncio.sleep(delays[attempt])
+                    attempt += 1
+                    continue
+                raise _refusal_error(status, excerpt, kind)
+            self._remember_submission(path, status, excerpt, attempt + 1, "uncertain")
+            raise SubmissionError("平台提交返回重定向，接单状态未知；不会自动再次提交", uncertain=True,
+                                  status_code=status, excerpt=excerpt or None)
 
     async def _task(self, task_id):
         # Only repeat a read of an already accepted task, never its paid POST.
@@ -2357,12 +2530,24 @@ class Gateway:
                 try:
                     receipt["task_id"] = await self._submit("/v1/images/generations/async", payload)
                     receipt["state"] = "submitted"
+                    refusals = getattr(self, "_submission_refusals", None)
+                    if isinstance(refusals, list) and refusals:
+                        receipt["submission_refusals"] = list(refusals)
                 except SubmissionError as exc:
                     receipt["state"] = "submitted_unknown" if exc.uncertain else "failed"
+                    if type(getattr(exc, "status_code", None)) is int:
+                        receipt["provider_status"] = exc.status_code
+                    if isinstance(getattr(exc, "excerpt", None), str) and exc.excerpt:
+                        receipt["provider_excerpt"] = exc.excerpt
+                    refusals = getattr(self, "_submission_refusals", None)
+                    if isinstance(refusals, list) and refusals:
+                        receipt["submission_refusals"] = list(refusals)
                     atomic_json(receipt_path, receipt)
                     if not exc.uncertain:
                         exc.retryable = False
-                        exc.error_code = "image_generation_failed"
+                        if getattr(exc, "error_code", None) not in (
+                                "provider_balance", "provider_auth", "provider_request_rejected"):
+                            exc.error_code = "image_generation_failed"
                     raise
                 atomic_json(receipt_path, receipt)
             deadline = time.monotonic() + self.settings.provider_timeout_seconds
@@ -2505,6 +2690,7 @@ class Gateway:
                 "input_sha256": self._video_input_hash(segment)}
 
     async def submit_video(self, segment, assets, idempotency_key, *, prepared_request=None):
+        self._submission_refusals = []
         prepared = prepared_request if prepared_request is not None else self.prepare_video_request(segment)
         if (prepared.get("input_sha256") != self._video_input_hash(segment)
                 or not isinstance(prepared.get("prompt"), str)
@@ -2560,8 +2746,12 @@ class Gateway:
         payload.update(images=image_urls, extra={"aspect_ratio": prepared["aspect_ratio"], "resolution": prepared["resolution"]})
         task_id = await self._submit("/v1/videos/generations", payload)
         # Official API has no documented idempotency guarantee; pipeline persists receipt before resuming.
-        return {"task_id": task_id, "status": "running", "provider": "tudou", "model": prepared["model"],
-                "skill_trace": prepared["skill_trace"], "prompt_sha256": prepared["prompt_sha256"]}
+        receipt = {"task_id": task_id, "status": "running", "provider": "tudou", "model": prepared["model"],
+                   "skill_trace": prepared["skill_trace"], "prompt_sha256": prepared["prompt_sha256"]}
+        refusals = getattr(self, "_submission_refusals", None)
+        if isinstance(refusals, list) and refusals:
+            receipt["submission_refusals"] = list(refusals)
+        return receipt
 
     async def poll_video(self, task_id):
         data = await self._task(task_id)

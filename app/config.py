@@ -39,6 +39,8 @@ class Settings:
     max_video_submissions: int = 6
     max_active_runs: int = 1
     poll_seconds: float = 5
+    # Unpaid HTTP refusals only. Empty disables the in-job re-POST.
+    submission_retry_delays: tuple = (20, 60, 120)
     provider_timeout_seconds: int = 1800
     tts_voice: str = "Tingting"
     ffmpeg_path: str = field(default_factory=imageio_ffmpeg.get_ffmpeg_exe)
