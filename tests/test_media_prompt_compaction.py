@@ -74,10 +74,11 @@ def test_voice_decision_and_actual_reference_order_are_preserved(directed_plan_d
     assert "private_fact_id" not in prompt and "@element" not in prompt
     assert "成年女性" not in prompt
     if mode == "character_dialogue":
-        assert "人物对白，由“同事（参考图3）”" in prompt and "与其画面口型配合" in prompt
-        assert "不生成真人对口型" not in prompt and "画面中的角色不对口型" not in prompt
+        assert "嘴型与每个字同步" in prompt and "从第一句" in prompt
+        assert "同事（参考图3）" in prompt
+        assert "不对口型" not in prompt and "声音方式：画外音" not in prompt
     elif mode == "voiceover":
-        assert "声音方式：画外音" in prompt and "画面中的角色不对口型" in prompt
+        assert "声音方式：画外旁白" in prompt and "不张嘴念词" in prompt
     else:
         assert "声音方式：无人声" in prompt and "本段无台词" in prompt
 

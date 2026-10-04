@@ -5,8 +5,8 @@ from copy import deepcopy
 from app.progressive_planning import compile_director, compose_refinement, director_schema
 from app.plan_review import validate_plan_review
 from app.runtime_skills import stage_skill_context
-from app.shot_craft import (apply_shot_rewrite, rewrite_shots_if_needed, shot_prompt_lines,
-                            shot_suggestions, with_shot_suggestions)
+from app.shot_craft import (apply_shot_rewrite, craft_refine_request, rewrite_shots_if_needed,
+                            shot_prompt_lines, shot_suggestions, with_shot_suggestions, _HOLD_LINE)
 from app.video_prompt import compiled_video_request
 from test_progressive_planning import accepted_review, chosen_strategy, director_output
 from test_providers import source
@@ -88,11 +88,54 @@ def test_screen_time_follows_the_playbook_and_skips_unmarked_shots():
     assert shot_suggestions(legacy, legacy["strategy"]) == []
 
 
+def _with_beats(plan):
+    for index, shot in enumerate(plan["segments"][0]["shots"]):
+        shot["beat_id"] = f"b{index}"
+        shot["beat_ids"] = [f"b{index}"]
+    plan["ad_script"] = {"beats": [{"id": f"b{index}"} for index in range(len(plan["segments"][0]["shots"]))]}
+    return plan
+
+
+def test_opening_and_short_ending_ask_for_one_narrow_refine():
+    hidden = _with_beats(_film([
+        {"duration": 3, "description": "人站在洗手台前。", "visible": False, "camera": "中近景，镜头固定"},
+        {"duration": 4, "description": "吹风机对着头发，机位停住。", "visible": True, "camera": "中景，机位停住"},
+    ], form="presenter_pitch"))
+    opening = craft_refine_request(hidden, hidden["strategy"])
+    assert opening["scope"]["shot_ids"] == ["s0"]
+    assert opening["scope"]["beat_ids"] == ["b0"]
+    assert "opening_product" in opening["issues"][("craft", "opening_product")] or "opening_product" in {
+        key[1] for key in opening["issues"]}
+    scene = _with_beats(_film([
+        {"duration": 4, "description": "早上有人皱眉。", "visible": False, "camera": "中近景，镜头固定"},
+    ], form="scene_story"))
+    assert "opening_product_window" in {key[1] for key in craft_refine_request(scene, scene["strategy"])["issues"]}
+    later = _with_beats(_film([
+        {"duration": 2, "description": "人皱眉。", "visible": False, "camera": "中近景，镜头固定"},
+        {"duration": 3, "description": "吹风机已经开着。", "visible": True, "camera": "近景，镜头轻推"},
+    ], form="scene_story"))
+    assert craft_refine_request(later, later["strategy"]) is None
+    short = _with_beats(_film([
+        {"duration": 4, "description": "吹风机在手里。", "visible": True, "camera": "中近景，镜头固定"},
+        {"duration": 1.5, "description": "商品一闪。", "visible": True, "camera": "中景，镜头定格"},
+    ], form="presenter_pitch"))
+    ending = craft_refine_request(short, short["strategy"])
+    assert ending["scope"]["shot_ids"] == ["s1"]
+    assert "b0" in ending["scope"]["beat_ids"] and "b1" in ending["scope"]["beat_ids"]
+    lowered = _with_beats(_film([
+        {"duration": 3, "description": "拿着吹风机讲。", "visible": True, "camera": "中近景，镜头固定"},
+        {"duration": 3, "description": "风停了，放下吹风机，机位停住。", "visible": True, "camera": "中景，机位停住"},
+    ], form="presenter_pitch"))
+    assert craft_refine_request(lowered, lowered["strategy"]) is None
+    assert any("手指" in note for note in _notes(lowered))
+    assert "人物和手都不再动" in _HOLD_LINE and "不放下" in _HOLD_LINE
+
+
 def test_end_hold_and_even_cuts_are_advice():
     held = _film([{"duration": 2.5, "description": "瓶身停在中轴，机位定格。", "visible": True}])
     assert not any("结尾" in note for note in _notes(held))
     short = _film([{"duration": 0.8, "description": "瓶身一闪。", "visible": True, "camera": "微距特写，镜头定格"}])
-    assert any("1.5" in note for note in _notes(short))
+    assert any("不到2秒" in note for note in _notes(short))
     loose = _film([{"duration": 2.5, "description": "瓶身仍在转动。", "visible": True, "camera": "微距特写，镜头缓慢推进"}])
     assert any("停住" in note for note in _notes(loose))
     even = _film([

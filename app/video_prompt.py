@@ -3,6 +3,7 @@
 Times are desired directing windows, never a claim of measured alignment.
 """
 import json
+import re
 from .production import cast_appearance_clause
 from .runtime_skills import compiler_template
 
@@ -91,8 +92,20 @@ def _character_labels(segment):
             for person in (segment.get("production") or {}).get("characters", [])}
 
 
-def _voice_lines(production, director, spans, characters):
+_HAND_PRODUCT = (
+    "拿起|举起|放下|放回|递|转动|翻转|按|换|插|收起|握"
+)
+_HAND_PRODUCT_LINE = (
+    "  手和商品：商品在画面里大而清楚，动作放慢；手简单握住商品，五指自然、不变形，商品形状和大小全程不变。"
+)
+
+
+def _voice_lines(production, director, spans, characters, *, ad_form=None):
     if not production:
+        # Historical segments keep the voiceover sentence. A new presenter plan
+        # must name its speech before any video request is built.
+        if ad_form == "presenter_pitch":
+            raise ValueError("人物讲解缺少声音制作约定，尚未提交视频")
         return [("旁白遵循已确认声音方向，用自然普通话表达；不依赖未提供的声纹或音频素材。"
                  if director.get("sound") else "自然亲切的成年女性普通话画外音，温暖克制，不播音腔。"),
                 "本版使用画外音，不生成真人对口型。"]
@@ -103,16 +116,38 @@ def _voice_lines(production, director, spans, characters):
         return ["声音方式：无人声，只保留已确认环境声与音乐。"]
     voice = production["voice_description"]
     if mode == "voiceover":
-        return [f"声音方式：画外音；{voice}。画面中的角色不对口型。"]
+        return [f"声音方式：画外旁白；{voice}。画面里的人物不说台词、不张嘴念词。"]
     if mode == "character_dialogue":
         speaker = next((item for item in production["characters"] if item["id"] == production["speaker_id"]), None)
         if speaker is None:
             raise ValueError("人物对白缺少已确认的说话角色")
+        name = characters[speaker["id"]]
         if production.get("speech_delivery") == "on_and_off_screen":
-            return [f"声音方式：同一人物“{characters[speaker['id']]}”说出全部台词，其余角色不说台词。声音：{voice}。",
-                "说话人可见开口时配合其口型；切到商品或仅有手、头发等局部且嘴部不可见的画面时，由同一人物画外延续，不能换成另一位旁白，也不为对口型增加露脸画面。声线和说话方式保持连贯，这是执行要求，不是已验证的声纹。"]
-        return [f"声音方式：人物对白，由“{characters[speaker['id']]}”说出下方台词，与其画面口型配合，其余角色不说台词。声音：{voice}。"]
+            return [
+                f"声音方式：同一人物{name}说全部台词。只要她的脸在画面里，就看着镜头亲口说，嘴型与字同步；"
+                f"只有切到看不见嘴的商品特写时，才由她本人在画外接着说。其余角色不说话。声音：{voice}。"
+                "声线保持连贯是执行要求，不是已验证的声纹。"
+            ]
+        return [
+            f"声音方式：人物出镜讲话。{name}面对镜头，亲口说出下方每一句台词，从第一句的第一个字开始就张嘴说话，"
+            f"嘴型与每个字同步，表情自然。这不是画外音，不另配旁白。声音：{voice}。"
+        ]
     raise ValueError("不支持的声音方式")
+
+
+def _speech_overlaps(shot, span):
+    return min(shot["end"], span["end"]) - max(shot["start"], span["start"]) > 1e-7
+
+
+def _hand_product_line(shot):
+    if shot.get("product_visible") is not True:
+        return None
+    texts = [shot.get("description") or ""]
+    continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else {}
+    texts.extend(continuity.get(key) or "" for key in ("start_state", "allowed_changes", "end_state", "camera_move"))
+    if re.search(_HAND_PRODUCT, " ".join(texts)):
+        return _HAND_PRODUCT_LINE
+    return None
 
 
 def compile_grouped_video(segment):
@@ -139,11 +174,19 @@ def _compile_grouped_video(segment, template):
         ])
     lines.extend(_director_lines(director, production))
     lines.extend(_product_lines(director, production))
-    lines.extend(_voice_lines(production, director, segment["speech_spans"], characters))
+    lines.extend(_voice_lines(production, director, segment["speech_spans"], characters,
+                              ad_form=segment.get("ad_form")))
     from .shot_craft import shot_prompt_lines
     lines.append("画面镜头（切镜不打断连续表达）：")
     closes_film = segment.get("closes_film", True) is not False
     last_index = len(shots) - 1
+    first_speaking_shot = None
+    spans = segment.get("speech_spans") or []
+    if production and production.get("speech_mode") == "character_dialogue" and spans:
+        for candidate in shots:
+            if _speech_overlaps(candidate, spans[0]):
+                first_speaking_shot = candidate["id"]
+                break
     for index, shot in enumerate(shots):
         last = index == last_index
         lines.extend(shot_prompt_lines(
@@ -152,10 +195,16 @@ def _compile_grouped_video(segment, template):
             if not set(shot["character_ids"]).issubset(characters):
                 raise ValueError("镜头引用了未绑定参考图的角色")
             lines.append("  出镜角色：" + "、".join(characters[cid] for cid in shot["character_ids"]))
-        if production and production.get("speech_delivery") == "on_and_off_screen":
-            speaking_here = any(min(shot["end"], span["end"]) - max(shot["start"], span["start"]) > 1e-7
-                                for span in segment["speech_spans"])
-            if speaking_here and production["speaker_id"] not in shot.get("character_ids", []):
+        if production and production.get("speech_mode") == "character_dialogue" and spans:
+            speaker_id = production.get("speaker_id")
+            speaking_here = any(_speech_overlaps(shot, span) for span in spans)
+            name = characters.get(speaker_id, "")
+            if speaking_here and speaker_id in shot.get("character_ids", []):
+                lines.append(f"  本镜{name}面向镜头说话，嘴型与台词同步。")
+                if shot.get("id") == first_speaking_shot:
+                    lines.append("  从本镜第一帧开口说话，不先闭嘴停顿。")
+            elif (speaking_here and production.get("speech_delivery") == "on_and_off_screen"
+                    and speaker_id not in shot.get("character_ids", [])):
                 lines.append("  本镜说话角色不入画，台词时窗内由上述同一人物画外延续，不补人物或嘴部。")
         partial = [person["id"] for person in (production or {}).get("characters", [])
                    if person.get("appearance") == "partial_only" and person["id"] in shot.get("character_ids", [])]
@@ -163,6 +212,9 @@ def _compile_grouped_video(segment, template):
             lines.append("  仅局部出镜、不增加露脸：" + "、".join(characters[cid] for cid in partial)
                          + "；依实际镜头拍摄其手、头发或其他已确认局部，不把身份参考的组合版式当成本镜构图。")
         lines.extend(_continuity_lines(shot.get("continuity"), shot["description"]))
+        hand_line = _hand_product_line(shot)
+        if hand_line:
+            lines.append(hand_line)
     lines.append("台词时间（每句仅说一次，同一表达可以连续跨越关联镜头）：")
     for span in segment["speech_spans"]:
         lines.append(f"{span['start']:g}–{span['end']:g}秒 | 关联镜头 {', '.join(span['shot_ids'])} | "

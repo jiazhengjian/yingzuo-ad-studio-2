@@ -262,7 +262,8 @@ def test_typed_plan_checks_speech_windows_at_its_own_rate(plan_data):
     assert "speech_characters_per_tenth" not in video_submission_spec(plan_data, plan_data["segments"][0])
     prepared = Gateway(Settings()).prepare_video_request(spec)
     assert "speech_characters_per_tenth" not in prepared["prompt"]
-    assert "不追加屏幕文字、随机字幕、价格、CTA、尾字卡或额外水印。" in prepared["prompt"]
+    assert "不在画面上加文字、字幕、价格、尾字卡或水印" in prepared["prompt"]
+    assert "CTA" not in prepared["prompt"]
     forged = deepcopy(spec)
     forged["speech_characters_per_tenth"] = 80
     with pytest.raises(SubmissionError, match="时轴无效"):

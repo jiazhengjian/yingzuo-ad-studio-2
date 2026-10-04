@@ -795,3 +795,30 @@ def test_fixed_line_is_also_protected_during_local_refinement(progressive_gatewa
     state.refinement_mutation = lambda value: value["ad_script"]["beats"][0].update(narration="改过的轮廓。")
     with pytest.raises(ProviderError): state.run()
     assert state.calls == ["ad_script", "storyboard", "plan_review", "plan_refinement"]
+
+
+def test_craft_refine_that_still_fails_is_accepted_and_the_job_continues(progressive_gateway):
+    state = progressive_gateway
+    raw = state.strategy.model_dump()
+    raw["brief"]["ad_form"] = "presenter_pitch"
+    state.strategy = StrategyRecord.model_validate(raw)
+
+    def show_product_late(value):
+        value["video_flow"] = "先看见吹风机，再讲完停住。"
+        for index, shot in enumerate(value["shots"]):
+            shot["product_visible"] = index != 0
+            shot["continuity"]["camera_move"] = "中近景，镜头缓慢推进" if index < 2 else "中景，机位停住"
+            if index == len(value["shots"]) - 1:
+                shot["description"] += "机位停住。"
+
+    state.first_director_mutation = show_product_late
+    state.refinement_mutation = lambda value: None
+    plan = state.run()
+    assert plan["plan_review"]["ready"] is True
+    repair = next(item for item in state.contexts if item["stage"] == "plan_refinement")
+    assert repair["repair_scope"]["shot_ids"] == ["shot_0"]
+    assert "b0" in repair["repair_scope"]["beat_ids"]
+    assert any(record.get("kind") == "craft_accept" for record in state.records())
+    assert "请重新策划" not in json.dumps(plan, ensure_ascii=False)
+    notes = [item.get("note", "") for item in plan["plan_review"].get("suggestions") or []]
+    assert any("建议" in note for note in notes)

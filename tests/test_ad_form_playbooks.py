@@ -5,7 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.ad_form_playbook import (
-    resolve_playbook_form, review_finding_disposition, speech_profile,
+    ending_policy, resolve_playbook_form, review_finding_disposition, speech_profile,
     speech_profile_for_strategy, tagline_policy,
 )
 from app.ad_script import script_context, validate_script
@@ -113,6 +113,9 @@ def test_validate_script_uses_the_type_cap_and_keeps_the_legacy_beat_limit():
     assert context["schedule_rules"]["max_beat_characters"] == 48
     assert any(item["id"] == "ad-form-playbook-presenter-pitch" for item in context["stage_skills"]["shared_references"])
     assert context["tagline_policy"]["enabled"] is False
+    assert "点下面" in context["ending_policy"]["instruction"]
+    assert "英雄定格" in ending_policy("brand_tvc")["instruction"]
+    assert "回扣开头" in ending_policy("scene_story")["instruction"]
 
 
 def test_tagline_stays_off_until_the_flag_is_set(monkeypatch):

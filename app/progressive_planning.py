@@ -852,6 +852,21 @@ def _review_capacity_gaps(review, plan, windows):
     return gaps
 
 
+def _accept_craft_issue(settings, request):
+    """Keep the current plan. The note stays in diagnostics, not on a failure card."""
+    try:
+        from .providers.gateway import save_craft_accept_diagnostic
+        names = []
+        for key in (request or {}).get("issues") or []:
+            name = key[1] if isinstance(key, tuple) and len(key) == 2 else key
+            if isinstance(name, str):
+                names.append(name)
+        save_craft_accept_diagnostic(settings, names)
+    except Exception:
+        return False
+    return True
+
+
 def _capacity_improved(previous, current, before, after):
     if not previous or not current or not set(current).issubset(previous):
         return False
@@ -895,7 +910,8 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                            draft_issues, duration, generation_strategy, assets, conversation,
                            merchant_request, current_plan, initial_brief=None, content_only=False,
                            speech_only=False, max_refinements=MAX_PLAN_REFINEMENTS,
-                           refinement_format="sparse_or_full"):
+                           refinement_format="sparse_or_full", diagnostic_settings=None,
+                           skip_review=False):
     from .av_review import review_execution_windows, review_speech_requirements, review_transition_boundaries
     from .beat_timing import script_capacity_budget
     from .line_quality import offending_lines, rewrite_director_if_needed
@@ -955,6 +971,8 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     review_response_repair_used = False
     jargon_rewrite_used = False
     shot_craft_used = False
+    craft_refine_used = False
+    craft_accepted = False
 
     def stop(message, issues, *, error_code="planning_content_failed"):
         raise ProgressivePlanningError(message + "。已有方案和素材已保留，尚未开始新的图片或视频生成",
@@ -1159,6 +1177,30 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                     else:
                         raw = replacement
                         continue
+        from .shot_craft import craft_refine_request
+        craft_request = craft_refine_request(plan, strategy)
+        if craft_request is not None and not craft_refine_used and not skip_review:
+            craft_refine_used = True
+            try:
+                revised = await refine(coordinated, craft_request["scope"], craft_request["feedback"],
+                                       craft_request["issues"])
+            except ProgressivePlanningError:
+                revised = None
+            if revised is None:
+                craft_accepted = _accept_craft_issue(diagnostic_settings, craft_request) or craft_accepted
+            else:
+                try:
+                    compile_director(revised, strategy, duration, generation_strategy,
+                                     [a["id"] for a in assets], locked)
+                except (ValueError, KeyError, TypeError):
+                    craft_accepted = _accept_craft_issue(diagnostic_settings, craft_request) or craft_accepted
+                else:
+                    raw = revised
+                    continue
+        elif craft_request is not None and craft_refine_used and not craft_accepted:
+            craft_accepted = _accept_craft_issue(diagnostic_settings, craft_request) or craft_accepted
+        if skip_review:
+            return plan
         progress("reviewing_plan")
         review_input = {"stage": "plan_review", "schema": compact_review_schema(plan_review_schema(plan)),
             "review_output_version": REVIEW_OUTPUT_VERSION, "review_policy_version": REVIEW_POLICY_VERSION,

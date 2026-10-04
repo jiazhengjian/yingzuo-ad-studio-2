@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+"""Re-plan a saved job without writing the database or calling image or video APIs.
+
+The selected direction stays as saved. Only the script, storyboard, local
+rewrites and plan review run again. Use a fake stage_call in tests.
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import sqlite3
+import sys
+from pathlib import Path
+
+
+MEDIA_METHODS = (
+    "submit_video", "create_designs", "upload_media", "_submit",
+    "_original_reference_url", "generate_image", "generate_video",
+)
+
+
+def stub_media(gateway):
+    """Replace paid media methods. A call is recorded and then refused."""
+    called = []
+
+    def make(name):
+        def wrapped(*args, **kwargs):
+            called.append(name)
+            raise RuntimeError("离线重排不会生成或上传图片和视频")
+        return wrapped
+
+    for name in MEDIA_METHODS:
+        if hasattr(gateway, name):
+            setattr(gateway, name, make(name))
+    gateway._offline_media_calls = called
+    return gateway
+
+
+def load_saved_job(db_path, job_id):
+    """Read one job, its project, messages and assets. The database stays read-only."""
+    path = Path(db_path).resolve()
+    uri = f"file:{path.as_posix()}?mode=ro"
+    connection = sqlite3.connect(uri, uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        job = connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if job is None:
+            raise SystemExit("找不到这个策划任务")
+        payload = json.loads(job["payload"] or "{}")
+        plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
+        if not isinstance(plan.get("strategy"), dict):
+            raise SystemExit("这个任务里没有已保存的方向")
+        project = connection.execute("SELECT * FROM projects WHERE id=?", (job["project_id"],)).fetchone()
+        if project is None:
+            raise SystemExit("找不到这个任务对应的项目")
+        assets = []
+        for row in connection.execute(
+                "SELECT * FROM assets WHERE project_id=? ORDER BY created_at, id", (job["project_id"],)):
+            metadata = row["metadata"]
+            if isinstance(metadata, str) and metadata:
+                try:
+                    metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    metadata = {}
+            assets.append({
+                "id": row["id"], "kind": row["kind"], "name": row["name"], "path": row["path"],
+                "metadata": metadata if isinstance(metadata, dict) else {},
+            })
+        messages = [{"role": row["role"], "content": row["content"]} for row in connection.execute(
+            "SELECT role, content FROM messages WHERE project_id=? ORDER BY created_at, id", (job["project_id"],))]
+        duration = project["duration_seconds"] if "duration_seconds" in project.keys() else None
+        return {
+            "job_id": job["id"],
+            "project_id": project["id"],
+            "brief": project["brief"],
+            "duration_seconds": duration if isinstance(duration, int) and duration > 0 else 20,
+            "plan": plan,
+            "assets": assets,
+            "messages": messages,
+        }
+    finally:
+        connection.close()
+
+
+def _order_assets(assets, production):
+    characters = (production or {}).get("characters") or []
+    order = {person.get("id"): index for index, person in enumerate(characters) if isinstance(person, dict)}
+
+    def key(asset):
+        kind = asset.get("kind")
+        rank = 0 if kind == "product" else 1 if kind == "scene" else 2
+        return (rank, order.get((asset.get("metadata") or {}).get("character_id"), len(order)))
+
+    return sorted([asset for asset in assets if asset.get("kind") in ("product", "scene", "character")], key=key)
+
+
+def _script_lines(plan):
+    rows = []
+    for beat in (plan.get("ad_script") or {}).get("beats") or []:
+        windows = []
+        for segment in plan.get("segments") or []:
+            for span in segment.get("speech_spans") or []:
+                if span.get("beat_id") == beat.get("id"):
+                    windows.append(f"{span['start']:g}–{span['end']:g}秒")
+            if not any(span.get("beat_id") == beat.get("id") for span in segment.get("speech_spans") or []):
+                for shot in segment.get("shots") or []:
+                    covered = shot.get("beat_ids") or ([shot["beat_id"]] if shot.get("beat_id") else [])
+                    if beat.get("id") in covered:
+                        windows.append(f"{shot['start']:g}–{shot['end']:g}秒")
+        rows.append({
+            "beat_id": beat.get("id"),
+            "time": "、".join(dict.fromkeys(windows)),
+            "text": beat.get("narration") or "",
+        })
+    return rows
+
+
+def _shots(plan):
+    rows = []
+    for segment in plan.get("segments") or []:
+        for shot in segment.get("shots") or []:
+            continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else {}
+            rows.append({
+                "id": shot.get("id"),
+                "start": shot.get("start"),
+                "end": shot.get("end"),
+                "product_visible": shot.get("product_visible"),
+                "character_ids": list(shot.get("character_ids") or []),
+                "description": shot.get("description") or "",
+                "camera_move": continuity.get("camera_move") or "",
+            })
+    return rows
+
+
+def _compiled_prompt(plan, assets):
+    from app.pipeline import video_submission_spec
+    from app.video_prompt import compiled_video_request
+    segments = plan.get("segments") or []
+    if not segments:
+        return "", ["没有可编译的视频段"]
+    segment = segments[-1]
+    ordered = _order_assets(assets, plan.get("production"))
+    notes = []
+    if segment.get("reference_roles") is None and ordered:
+        notes.append("新方案还没绑定参考图，已按商品、场景、角色的保存顺序补上。")
+    spec = video_submission_spec(plan, segment, ordered or None)
+    prompt = compiled_video_request(spec)["prompt"]
+    return prompt, notes
+
+
+async def replan_offline(*, job_id, db_path, stage_call, gateway=None, skip_review=False):
+    """Return the new script, shots, review and compiled prompt. Nothing is written back."""
+    from app.progressive_planning import progressive_plan
+    from app.strategy import StrategyRecord
+
+    if gateway is not None:
+        stub_media(gateway)
+    saved = load_saved_job(db_path, job_id)
+    plan = saved["plan"]
+    strategy = StrategyRecord.model_validate(plan["strategy"])
+    result = await progressive_plan(
+        stage_call=stage_call,
+        on_progress=None,
+        record_failure=lambda candidate: None,
+        strategy=strategy,
+        draft=plan.get("ad_script"),
+        draft_issues=[],
+        duration=saved["duration_seconds"],
+        generation_strategy=plan.get("generation_strategy") or "continuity_v1",
+        assets=saved["assets"],
+        conversation=saved["messages"],
+        merchant_request=saved["brief"],
+        current_plan=None,
+        skip_review=skip_review,
+    )
+    prompt, notes = _compiled_prompt(result, saved["assets"])
+    review = result.get("plan_review") or {}
+    return {
+        "job_id": job_id,
+        "direction_id": strategy.selected_direction_id,
+        "lines": _script_lines(result),
+        "shots": _shots(result),
+        "review": {
+            "ready": review.get("ready"),
+            "skipped": bool(skip_review),
+            "suggestions": review.get("suggestions") or [],
+        },
+        "prompt": prompt,
+        "notes": notes,
+        "media_calls": list(getattr(gateway, "_offline_media_calls", [])),
+    }
+
+
+def _print_report(report):
+    print(f"任务 {report['job_id']}，方向 {report['direction_id']}，没有写回数据库。")
+    print("台词：")
+    for line in report["lines"]:
+        print(f"  {line['beat_id']} {line['time']} {line['text']}")
+    print("镜头：")
+    for shot in report["shots"]:
+        visible = "商品在画面里" if shot["product_visible"] else "商品不在画面里" if shot["product_visible"] is False else "未标商品"
+        print(f"  {shot['id']} {shot['start']}–{shot['end']}秒 {visible} 角色={','.join(shot['character_ids']) or '无'}")
+        print(f"    {shot['description']}")
+        if shot["camera_move"]:
+            print(f"    运镜：{shot['camera_move']}")
+    review = report["review"]
+    if review["skipped"]:
+        print("审核：这次跳过了。")
+    else:
+        print("审核：" + ("可以通过" if review["ready"] else "还有问题"))
+        for item in review["suggestions"]:
+            print(f"  建议：{item.get('note', '')}")
+    for note in report["notes"]:
+        print(note)
+    print("视频提示词：")
+    print(report["prompt"])
+
+
+def _live_stage_call():
+    from app.config import Settings
+    from app.providers.gateway import Gateway
+    gateway = stub_media(Gateway(Settings()))
+
+    async def stage_call(system, data, assets, max_tokens=7000):
+        return await gateway._planner_json(system, data, assets, max_tokens=max_tokens)
+
+    return gateway, stage_call
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="离线重排一个已保存的策划任务，不写数据库，不提交图片或视频。")
+    parser.add_argument("--job", required=True)
+    parser.add_argument("--db", default="data/studio.sqlite3")
+    parser.add_argument("--skip-review", action="store_true")
+    parser.add_argument("--json", dest="json_path", default="")
+    args = parser.parse_args(argv)
+    gateway, stage_call = _live_stage_call()
+    report = asyncio.run(replan_offline(
+        job_id=args.job, db_path=args.db, stage_call=stage_call, gateway=gateway,
+        skip_review=args.skip_review))
+    _print_report(report)
+    if args.json_path:
+        Path(args.json_path).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

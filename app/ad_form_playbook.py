@@ -217,6 +217,34 @@ def structure_from_stage_data(data) -> str | None:
     return None
 
 
+def ending_policy(form: str | None) -> dict:
+    """How this ad type should land. Spoken only; nothing is painted on screen."""
+    instructions = {
+        "brand_tvc": (
+            "结尾约2秒产品英雄定格（产品不动、机位不动、占画面四到六成），"
+            "加一句不超过10字的品牌口播（品牌名或已确认的商品记忆点），不加画面文字。"
+            "也可以用收束句回扣开头。"
+        ),
+        "presenter_pitch": (
+            "结尾二选一：人物把商品稳稳拿在胸前、看镜头说一句引导，最后约2秒人和商品都不动；"
+            "或切到商品定格约2秒，她在画外说引导。"
+            "引导用「想要的话，点下面链接看看。」或「链接放下面了，去看看。」"
+            "只有确认在抖音时才说「左下角小黄车」。有资料确认的活动才提「现在有活动」，不编价格或限时。"
+            "也可以回扣开头。"
+        ),
+        "scene_story": (
+            "结尾人物反应还在，产品定格约2秒。可以加一句不超过10字的收尾话，或回扣开头。不加画面文字。"
+        ),
+    }
+    return {
+        "form": form if form in instructions else None,
+        "instruction": instructions.get(
+            form or "",
+            "结尾约2秒产品留在画面里并停住。可以回扣开头。不加画面文字。",
+        ),
+    }
+
+
 def tagline_policy() -> dict:
     """Optional closing spoken line. Default keeps the current no-slogan behaviour."""
     enabled = os.environ.get("AD_TAGLINE_ENABLED", "false").strip().lower() == "true"

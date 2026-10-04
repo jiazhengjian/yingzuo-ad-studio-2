@@ -61,7 +61,8 @@ def test_video_compiles_owned_direction_facts_and_each_shot_state(directed_plan_
     assert "入镜方式：开场建立画面" in prompt
     assert "入镜方式：延续上一镜状态与动作" in prompt
     assert "只执行本镜允许的状态变化" in prompt
-    assert "不追加屏幕文字、随机字幕、价格、CTA、尾字卡" in prompt
+    assert "不在画面上加文字、字幕、价格、尾字卡或水印" in prompt
+    assert "CTA" not in prompt
     assert "<node-asset>" not in prompt and "@product_reference" not in prompt
     assert segment == before
 

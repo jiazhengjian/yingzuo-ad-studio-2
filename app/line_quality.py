@@ -51,7 +51,10 @@ _ABSOLUTES = (
     ("最好", re.compile(r"最(?:好|强|佳|新|低|高|快|安全|有效|便宜|先进|专业)")),
     ("第一", re.compile(r"第一(?:品牌|名|位)|全网第一|销量第一")),
 )
-_PURCHASE = re.compile(r"购买|下单|优惠|限时|抢购")
+_HARD_PURCHASE = re.compile(r"购买|下单|抢购")
+_PROMO_WORDS = ("优惠", "限时", "活动")
+_SOFT_CTA = re.compile(r"点下面|下方链接|链接放|去看看|小黄车")
+_OPENING_DEICTIC = re.compile(r"^(?:就这|这么|这|那|它|转)")
 _CLAIM_WORDS = ("根治", "治愈", "美白", "减肥", "抗衰", "医用", "治疗")
 _LINE_STYLES = {
     "brand_tvc": "产品展示：少说，每句大约8到14字，感官、自信，指给观众看，不报参数。",
@@ -80,25 +83,69 @@ def line_style(form: str | None) -> str:
     return _LINE_STYLES.get(form or "", "说人话，不念策划说明，不报参数清单。")
 
 
-def line_offenses(text: str, *, tagline_enabled: bool | None = None) -> list[str]:
+_CATEGORY_NOUNS = (
+    "吹风机", "头发", "瓶", "包", "袋子", "蛋糕", "杯子", "耳机", "手机", "鞋", "面霜", "口红", "风筒",
+)
+
+
+def product_terms(strategy) -> list[str] | None:
+    """Product name and category words already in the brief. None when unknown."""
+    if strategy is None:
+        return None
+    try:
+        record = _strategy(strategy)
+    except (ValidationError, TypeError, ValueError, KeyError):
+        return None
+    name = (record.brief.product_name or "").strip()
+    blob = name + "".join(fact.text for fact in record.brief.facts)
+    terms = []
+    if len(name) >= 2:
+        terms.append(name)
+        for size in range(2, min(6, len(name)) + 1):
+            for index in range(0, len(name) - size + 1):
+                terms.append(name[index:index + size])
+    for word in _CATEGORY_NOUNS:
+        if word in blob:
+            terms.append(word)
+    return list(dict.fromkeys(term for term in terms if term))
+
+
+def _opening_unclear(text: str, product_terms_list: list[str] | None) -> bool:
+    if product_terms_list is None:
+        return False
+    stripped = text.lstrip(" \t“\"'「『")
+    if not _OPENING_DEICTIC.match(stripped):
+        return False
+    return not any(term and term in text for term in product_terms_list)
+
+
+def line_offenses(text: str, *, tagline_enabled: bool | None = None, role: str | None = None,
+                  product_terms_list: list[str] | None = None, facts_text: str = "") -> list[str]:
     """Names of planner, spec-sheet, absolute, or purchase problems in one line.
 
     A spoken closer is allowed only when the tagline switch is on, and even
     then it cannot ask the viewer to buy. ``tagline_enabled`` stays in the
     signature so callers can pass the policy they already resolved; it does
-    not relax this check.
+    not relax this check. A closing line may point at the link. Promo words
+    are allowed only when the same words are already in a confirmed fact.
     """
     _ = tagline_enabled
     if not isinstance(text, str) or not text.strip():
         return []
     found = [name for name, pattern in _JARGON if pattern.search(text)]
     found.extend(name for name, pattern in _ABSOLUTES if pattern.search(text))
-    if _PURCHASE.search(text):
+    if _HARD_PURCHASE.search(text):
         found.append("购买引导")
+    else:
+        promo = [word for word in _PROMO_WORDS if word in text]
+        if promo and not (isinstance(facts_text, str) and all(word in facts_text for word in promo)):
+            found.append("购买引导")
+    if role == "hook" and _opening_unclear(text, product_terms_list):
+        found.append("开场指代不清")
     return found
 
 
-def type_line_score(text: str, form: str | None, role: str) -> int:
+def type_line_score(text: str, form: str | None, role: str, hook_echo: str = "") -> int:
     """Higher means the line sounds more like this ad type. Not a pass/fail."""
     if not isinstance(text, str) or not text.strip():
         return -100
@@ -122,6 +169,8 @@ def type_line_score(text: str, form: str | None, role: str) -> int:
             score += 3
         if role == "hook" and "？" in text:
             score += 2
+        if role == "closing" and (_SOFT_CTA.search(text) or (hook_echo and hook_echo in text)):
+            score += 3
     if re.search(r"[。？！]$", text):
         score += 2
     if re.search(r"[，,、：:；;]$", text):
@@ -317,13 +366,36 @@ def prepare_speech_draft(raw: dict, strategy, duration_seconds: int, locked_line
     return draft
 
 
-def offending_lines(script: dict, *, tagline_enabled: bool | None = None, locked_lines=()) -> list[dict]:
+def _spoken_roles(script) -> dict:
+    spoken = [beat for beat in _beats(script)
+              if isinstance(beat, dict) and isinstance(beat.get("narration"), str) and beat["narration"].strip()]
+    roles = {}
+    if spoken:
+        roles[spoken[0].get("id")] = "hook"
+        if spoken[-1].get("id") != spoken[0].get("id"):
+            roles[spoken[-1].get("id")] = "closing"
+    return roles
+
+
+def offending_lines(script: dict, *, tagline_enabled: bool | None = None, locked_lines=(),
+                    strategy=None) -> list[dict]:
+    roles = _spoken_roles(script)
+    terms = product_terms(strategy)
+    facts_text = ""
+    if strategy is not None and terms is not None:
+        try:
+            record = _strategy(strategy)
+            facts_text = (record.brief.product_name or "") + "".join(fact.text for fact in record.brief.facts)
+        except (ValidationError, TypeError, ValueError, KeyError):
+            facts_text = ""
     beats = []
     for index, beat in enumerate(_beats(script)):
         narration = beat.get("narration") if isinstance(beat, dict) else None
         if not isinstance(narration, str) or not narration.strip() or _locked(narration, locked_lines):
             continue
-        offenses = line_offenses(narration, tagline_enabled=tagline_enabled)
+        role = roles.get(beat.get("id"), "line")
+        offenses = line_offenses(narration, tagline_enabled=tagline_enabled, role=role,
+                                 product_terms_list=terms, facts_text=facts_text)
         if offenses:
             beats.append({"beat_id": beat.get("id"), "index": index, "narration": narration,
                           "offenses": offenses})
@@ -369,7 +441,9 @@ def apply_line_rewrite(script: dict, raw, *, limits: dict, locked_lines=(), fact
         beat = by_id.get(line.beat_id)
         if beat is None or len(line.narration) > limits[line.beat_id]:
             return None
-        if line_offenses(line.narration):
+        role = _spoken_roles(script).get(line.beat_id, "line")
+        terms = product_terms(strategy)
+        if line_offenses(line.narration, role=role, product_terms_list=terms, facts_text=facts_text):
             return None
         source = (beat.get("narration") or "") + facts_text
         if any(word in line.narration and word not in source for word in _CLAIM_WORDS):
@@ -394,10 +468,12 @@ def apply_line_rewrite(script: dict, raw, *, limits: dict, locked_lines=(), fact
 
 LINE_REWRITE_SYSTEM = """你只重写列出的中文广告台词，只输出 schema 的 lines。
 这些句子现在像策划说明。按 line_style 改成能说出口的话：产品展示短、有感官；剧情是人物的来回；人物讲解对着镜头，钩子在第一句，带一个具体好处。
+开场句要单独听得懂：说出商品叫法或用当下动作指着它。
 承接 big_idea 和 hook 的意思，不要照抄策划词。只使用该句和 facts 里已经有的商品信息，不新增功效、数字、体验或比较。
 不写关注、呈现、兼顾、打造、采用某技术、高端质感、赋能、满足你对、卖点，也不写最、第一、根治、国家级、绝对、永久。
+不写购买、下单、抢购。优惠、限时、活动只在资料里已经有这些词时才能说。收束句可以指路，例如「想要的话，点下面看看」，不写催单。
 每句不超过该句 max_characters，标点也算。用户固定台词原样留在句子里。
-tagline_policy.enabled 为 false 时不加口号和购买引导。为 true 时只有收束句可以是不超过10字的口播，仍然不写购买引导。
+tagline_policy.enabled 为 false 时不加独立口号字卡。为 true 时只有收束句可以是不超过10字的口播，仍然不写购买、下单、抢购。
 不输出其他字段，不解释。"""
 
 
@@ -450,7 +526,7 @@ def _rewrite_payload(script, offenses, strategy, duration, locked_lines):
 async def rewrite_script_if_needed(stage_call, script, strategy, duration_seconds, locked_lines=()):
     """Return (called, script). Clean scripts do not call the model."""
     data = script.model_dump() if hasattr(script, "model_dump") else deepcopy(script)
-    offenses = offending_lines(data, locked_lines=locked_lines)
+    offenses = offending_lines(data, locked_lines=locked_lines, strategy=strategy)
     if not offenses:
         return False, script
     payload, limits, facts_text = _rewrite_payload(data, offenses, strategy, duration_seconds, locked_lines)
@@ -462,7 +538,7 @@ async def rewrite_script_if_needed(stage_call, script, strategy, duration_second
 
 async def rewrite_director_if_needed(stage_call, director: dict, strategy, duration_seconds, locked_lines=()):
     """Return (called, replacement). No call when every spoken line is clean."""
-    offenses = offending_lines(director.get("ad_script") or {}, locked_lines=locked_lines)
+    offenses = offending_lines(director.get("ad_script") or {}, locked_lines=locked_lines, strategy=strategy)
     if not offenses:
         return False, None
     payload, limits, facts_text = _rewrite_payload(

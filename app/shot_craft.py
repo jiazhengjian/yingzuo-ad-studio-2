@@ -18,7 +18,7 @@ from .review_policy import MAX_REVIEW_SUGGESTIONS
 
 SINGLE_MOTION_SECONDS = 4.0
 HERO_HOLD_SECONDS = 2.0
-HOLD_ADVICE_FLOOR = 1.5
+HOLD_ADVICE_FLOOR = 2.0
 EVEN_CUT_TENTHS = 2
 
 _FRAMING = re.compile(r"大特写|特写|中近景|近景|中景|全景|远景|微距|过肩")
@@ -33,7 +33,9 @@ _METAPHOR = re.compile(
 )
 _CLAIM_WORDS = ("根治", "治愈", "美白", "减肥", "抗衰", "医用", "治疗")
 _FORM_LABEL = {"brand_tvc": "产品展示", "scene_story": "剧情", "presenter_pitch": "人物讲解"}
-_HOLD_LINE = "机位停住，保持结束姿态，产品留在画面中，不出现字幕、Logo 或字卡。"
+_HOLD_LINE = "机位停住，人物和手都不再动，商品稳稳留在手里或原位、正面朝镜头，不放下、不移出画面，不出现字幕、Logo或字卡。"
+_PUT_DOWN = re.compile(r"放下|放回|收起|递")
+_COMPLEX_HAND = re.compile(r"换风嘴|按小按钮|两手交接|两手|快速放下|快速收起|快速转动|翻转|按键|换挡")
 _CONTINUE_LINE = "动作或运镜进行到切点，下一段从同一动作或同一机位方向接上。"
 
 
@@ -255,21 +257,28 @@ def shot_suggestions(plan, strategy=None) -> list[dict]:
               else f"/segments/{last_segment}/shots/{last_index}/continuity/camera_move")
     if last_duration is not None and quote:
         if last_duration < _tenths(HOLD_ADVICE_FLOOR):
-            item = _suggestion(3, target, quote, "结尾镜头不到1.5秒，英雄定格站不住。这是建议，不会为此重排时间。")
+            item = _suggestion(3, target, quote, "结尾镜头不到2秒，英雄定格站不住。这是建议，不会为此重排时间。")
             if item:
                 suggestions.append(item)
         elif not _hold_ok(description, camera):
             item = _suggestion(3, target, quote, "结尾镜头没有写机位停住。最后约2秒保持结束姿态，产品留在画面里，不要另加字卡。")
             if item:
                 suggestions.append(item)
+    _append_hand_suggestions(suggestions, rows)
+    _append_opening_suggestions(suggestions, rows, strategy)
     suggestions.sort(key=lambda item: (item["_rank"], item["target"]))
-    seen, result = set(), []
+    seen, result = {}, []
     for item in suggestions:
         identity = (item["kind"], item["target"], item["quote"])
         if identity in seen:
+            previous = seen[identity]
+            extra = item["note"]
+            if extra and extra not in previous["note"] and len(previous["note"]) + len(extra) <= 300:
+                previous["note"] = previous["note"] + extra
             continue
-        seen.add(identity)
-        result.append({key: value for key, value in item.items() if key != "_rank"})
+        kept = {key: value for key, value in item.items() if key != "_rank"}
+        seen[identity] = kept
+        result.append(kept)
     return result
 
 
@@ -302,6 +311,169 @@ def with_shot_suggestions(review, plan, strategy=None):
                                     require_visual_execution=True, require_review_policy=True)
     except (ValueError, KeyError, TypeError):
         return review
+
+
+def _shot_text(shot) -> str:
+    parts = [shot.get("description") or ""]
+    continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else {}
+    parts.extend(continuity.get(field) or "" for field in ("camera_move", "start_state", "allowed_changes", "end_state"))
+    return " ".join(part for part in parts if isinstance(part, str))
+
+
+def _append_hand_suggestions(suggestions, rows):
+    """Hand-and-product motion is advice. It never asks for another rewrite."""
+    note = "这一镜手和商品动作多，视频模型容易把手指和商品画变形。可以放慢、让商品拿稳，或拆成更简单的动作。这是建议。"
+    last_segment, last_index, last = rows[-1]
+    last_blob = _shot_text(last)
+    if _PUT_DOWN.search(last_blob):
+        quote = (last.get("description") or last_blob)[:240]
+        item = _suggestion(5, f"/segments/{last_segment}/shots/{last_index}/description", quote, note)
+        if item:
+            suggestions.append(item)
+    for segment_index, shot_index, shot in rows[:-1]:
+        blob = _shot_text(shot)
+        if not _COMPLEX_HAND.search(blob):
+            continue
+        if shot.get("product_visible") is False and not re.search(r"商品|产品|瓶|机", blob):
+            continue
+        quote = (shot.get("description") or blob)[:240]
+        item = _suggestion(5, f"/segments/{segment_index}/shots/{shot_index}/description", quote, note)
+        if item:
+            suggestions.append(item)
+
+
+def _append_opening_suggestions(suggestions, rows, strategy):
+    form = _form(strategy)
+    first_segment, first_index, first = rows[0]
+    quote = (first.get("description") if isinstance(first.get("description"), str) else "")[:240]
+    target = f"/segments/{first_segment}/shots/{first_index}/description"
+    if form == "presenter_pitch" and first.get("product_visible") is False and quote:
+        item = _suggestion(3, target, quote, "人物讲解的第一镜还没看见商品。这是建议，方案会继续。")
+        if item:
+            suggestions.append(item)
+    elif form in ("scene_story", "brand_tvc") and quote and _window_hides_product(rows):
+        item = _suggestion(3, target, quote, "前大约3秒还没看见商品或用法。这是建议，方案会继续。")
+        if item:
+            suggestions.append(item)
+
+
+def _window_hides_product(rows, seconds=3.0) -> bool:
+    window = []
+    for _, _, shot in rows:
+        try:
+            start = float(shot.get("start"))
+        except (TypeError, ValueError):
+            return False
+        if start < seconds + 1e-6:
+            window.append(shot)
+    if not window or any(shot.get("product_visible") is not False for shot in window):
+        return False
+    return True
+
+
+def _shot_beats(shot, plan):
+    beats = [item for item in (shot.get("beat_ids") or []) if isinstance(item, str) and item]
+    if not beats and isinstance(shot.get("beat_id"), str) and shot["beat_id"]:
+        beats = [shot["beat_id"]]
+    if beats:
+        return beats
+    script_beats = ((plan.get("ad_script") or {}).get("beats") or [])
+    if script_beats and isinstance(script_beats[0], dict) and script_beats[0].get("id"):
+        return [script_beats[0]["id"]]
+    return []
+
+
+def craft_refine_request(plan, strategy) -> dict | None:
+    """One narrow rewrite for opening, ending length, or a missing on-camera speaker.
+
+    Hand motion is not included. A missing request means this pass can continue.
+    """
+    if not isinstance(plan, dict) or not craft_enabled(plan):
+        return None
+    rows = _indexed_shots(plan)
+    if not rows:
+        return None
+    form = _form(strategy)
+    issues = []
+    beat_ids, shot_ids = [], []
+
+    def take(shot, *, beats=None):
+        shot_id = shot.get("id")
+        if isinstance(shot_id, str) and shot_id and shot_id not in shot_ids:
+            shot_ids.append(shot_id)
+        for beat_id in beats if beats is not None else _shot_beats(shot, plan):
+            if beat_id not in beat_ids:
+                beat_ids.append(beat_id)
+
+    first = rows[0][2]
+    if form == "presenter_pitch" and first.get("product_visible") is False:
+        issues.append("opening_product")
+        take(first)
+    elif form in ("scene_story", "brand_tvc") and _window_hides_product(rows):
+        issues.append("opening_product_window")
+        take(first)
+    last = rows[-1][2]
+    last_duration = _duration_tenths(last)
+    if last_duration is not None and last_duration < _tenths(HOLD_ADVICE_FLOOR):
+        issues.append("short_ending")
+        earlier = []
+        for beat in (plan.get("ad_script") or {}).get("beats") or []:
+            if isinstance(beat, dict) and isinstance(beat.get("id"), str):
+                earlier.append(beat["id"])
+        if not earlier:
+            earlier = []
+            for _, _, shot in rows:
+                earlier.extend(_shot_beats(shot, plan))
+        take(last, beats=earlier or _shot_beats(last, plan))
+    production = plan.get("production") if isinstance(plan.get("production"), dict) else {}
+    speaker_id = production.get("speaker_id") if production.get("speech_mode") == "character_dialogue" else ""
+    if speaker_id:
+        spans = [span for segment in plan.get("segments") or [] if isinstance(segment, dict)
+                 for span in (segment.get("speech_spans") or []) if isinstance(span, dict)]
+        first_shot_id = (spans[0].get("shot_ids") or [None])[0] if spans else None
+        spoken = next((shot for _, _, shot in rows if shot.get("id") == first_shot_id), None)
+        if spoken is not None and speaker_id not in (spoken.get("character_ids") or []):
+            issues.append("speaker_missing")
+            take(spoken)
+    if not issues or not shot_ids or not beat_ids:
+        return None
+    labels = {
+        "opening_product": "人物讲解的第一镜还没看见商品",
+        "opening_product_window": "前大约3秒还没看见商品或用法",
+        "short_ending": "结尾镜头不到2秒",
+        "speaker_missing": "第一句所在的镜头没有说话的人",
+    }
+    quote = ""
+    for _, _, shot in rows:
+        if shot.get("id") == shot_ids[0] and isinstance(shot.get("description"), str):
+            quote = shot["description"][:240]
+            break
+    return {
+        "scope": {
+            "beat_ids": beat_ids,
+            "shot_ids": shot_ids,
+            "adjacent_state_shot_ids": [],
+            "adjacent_state_beat_ids": [],
+            "allow_summary_update": False,
+        },
+        "feedback": {
+            "kind": "opening_ending_craft",
+            "issue": "；".join(labels[name] for name in issues),
+            "repair_contract": (
+                "只改列出的开头或结尾。人物讲解的第一镜要让商品清楚可认。"
+                "剧情和产品片可以先给处境，但前约3秒要看见商品或用法。"
+                "最后一镜至少2秒，机位停住，商品不动。可以缩短前面的台词给结尾留时间。"
+                "出镜讲解的第一句所在镜头要有说话人。改完仍不通过就保留当前稿继续。"
+            ),
+        },
+        "issues": {("craft", name): labels[name] for name in issues},
+        "suggestion": {
+            "kind": "shot_craft",
+            "target": f"/segments/0/shots/0/description",
+            "quote": quote,
+            "note": "开头或结尾还可以再清楚一点。这是建议，方案会继续。",
+        },
+    }
 
 
 def _clauses(description: str) -> list[str]:

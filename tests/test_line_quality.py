@@ -6,7 +6,7 @@ import pytest
 from app.ad_script import derive_script_evidence, script_stage_schema
 from app.line_quality import (
     apply_line_rewrite, line_offenses, line_style, narration_budget_ok,
-    offending_lines, prepare_script_lines, prepare_speech_draft,
+    offending_lines, prepare_script_lines, prepare_speech_draft, product_terms,
     rewrite_script_if_needed, type_line_score,
 )
 from app.runtime_skills import stage_skill_context
@@ -69,6 +69,28 @@ def test_purchase_stays_banned_when_a_spoken_closer_is_allowed(monkeypatch):
     assert line_offenses("就放在手边。", tagline_enabled=True) == []
     monkeypatch.setenv("AD_TAGLINE_ENABLED", "false")
     assert "购买引导" in line_offenses("限时优惠。", tagline_enabled=False)
+
+
+def _dryer():
+    strategy = typed("presenter_pitch")
+    raw = strategy.model_dump()
+    raw["brief"]["product_name"] = "徕芬吹风机"
+    return StrategyRecord.model_validate(raw)
+
+
+def test_opening_without_a_product_is_unclear_and_a_spoken_closer_can_point():
+    strategy = _dryer()
+    terms = product_terms(strategy)
+    assert "开场指代不清" in line_offenses("转这么快，我说话你听得到吧", role="hook", product_terms_list=terms)
+    assert line_offenses("吹头发的时候跟你说话，不用喊。", role="hook", product_terms_list=terms) == []
+    assert line_offenses("想要的话，点下面看看。", role="closing") == []
+    assert "购买引导" in line_offenses("赶紧下单")
+    assert "购买引导" in line_offenses("限时优惠。", facts_text="高速马达")
+    assert line_offenses("限时优惠。", facts_text="现在有限时优惠") == []
+    script = script_of(beat("转这么快，我说话你听得到吧"))
+    assert any("开场指代不清" in item["offenses"] for item in offending_lines(script, strategy=strategy))
+    assert type_line_score("想要的话，点下面看看。", "presenter_pitch", "closing") >= type_line_score(
+        "想要的话，点下面看看。", "presenter_pitch", "line") + 3
 
 
 def test_scores_follow_the_ad_type():

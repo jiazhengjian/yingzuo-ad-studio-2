@@ -397,6 +397,37 @@ def save_failed_planner_output(settings, stage_result):
                 pass
 
 
+def save_craft_accept_diagnostic(settings, issues):
+    """A directing check stayed after one automatic rewrite. No prompt or merchant error."""
+    data_root = getattr(settings, "data_root", None)
+    if data_root is None or not isinstance(issues, (list, tuple)):
+        return
+    codes = []
+    for item in issues:
+        if isinstance(item, str) and re.fullmatch(r"[a-z0-9_]{1,40}", item) and item not in codes:
+            codes.append(item)
+        if len(codes) == 8:
+            break
+    if not codes:
+        return
+    created = None
+    try:
+        directory = Path(data_root) / "diagnostics"
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        content = json.dumps({"kind": "craft_accept", "issues": codes}, ensure_ascii=False).encode("utf-8")
+        path = directory / f"{uuid.uuid4().hex}.json"
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        created = path
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+    except Exception:
+        if created is not None:
+            try:
+                created.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def save_planner_event_diagnostic(settings, record):
     """One interrupted attempt or checkpoint recompute. No prompt, body, or key."""
     if not isinstance(record, dict):
@@ -1559,11 +1590,12 @@ class Gateway:
                     skill_stage = "shot_craft_rewrite"
                 if skill_stage == "storyboard" and not getattr(self.settings, "progressive_planning_enabled", False):
                     skill_stage = "legacy_storyboard"
-                from app.ad_form_playbook import (resolve_playbook_form, speech_profile,
+                from app.ad_form_playbook import (ending_policy, resolve_playbook_form, speech_profile,
                                                    structure_from_stage_data, tagline_policy)
                 playbook_form = (resolve_playbook_form(data.get("ad_form"), structure_from_stage_data(data))
                                  if "ad_form" in data else None)
                 data["tagline_policy"] = tagline_policy()
+                data["ending_policy"] = ending_policy(playbook_form)
                 bundle = (stage_skill_context(skill_stage, playbook_form=playbook_form) if playbook_form
                           else stage_skill_context(skill_stage))
                 data["stage_skills"] = bundle
@@ -2032,7 +2064,8 @@ class Gateway:
                     current_plan=current_plan, initial_brief=initial_brief, content_only=lean_enabled,
                     speech_only=speech_only,
                     max_refinements=getattr(self.settings, "planner_max_refinements", MAX_PLAN_REFINEMENTS),
-                    refinement_format=getattr(self.settings, "planner_refinement_format", "sparse_or_full"))
+                    refinement_format=getattr(self.settings, "planner_refinement_format", "sparse_or_full"),
+                    diagnostic_settings=self.settings)
                 plan["skill_trace"] = copy.deepcopy(skill_trace)
                 return AgentDecision.model_validate({"kind": "plan",
                     "message": "广告方案已准备好，创意摘要和分镜见下方。需要修改，直接告诉我；确认后再准备图片。",
@@ -2627,6 +2660,9 @@ class Gateway:
 
     def prepare_video_request(self, segment):
         """Compile before the durable reservation, without contacting a supplier."""
+        production = segment.get("production") if isinstance(segment.get("production"), dict) else None
+        if production and production.get("speech_mode") == "character_dialogue" and segment.get("speech_spans") is None:
+            raise SubmissionError("人物讲解必须走逐句台词时间表，尚未提交视频")
         generation_strategy = segment.get("generation_strategy", "legacy_10s")
         continuous = generation_strategy == "continuity_v1"
         if generation_strategy not in ("legacy_10s", "continuity_v1"):
@@ -2669,15 +2705,15 @@ class Gateway:
                 shots = "\n".join(f"{shot['start']}–{shot['end']}秒：{shot['description']}" for shot in segment["shots"])
             reference_text = ("\n".join(_reference_lines(segment)) if segment.get("reference_roles") is not None
                               else "参考图1是用户上传的商品原图，锁定商品身份；参考图2仅锁定场景、色调和灯光。商品形状、颜色、商标和比例保持不变，不重设计商品。")
-            prompt = reference_text + "\n" + segment["prompt"] + "\n严格镜头计划：\n" + shots + "\n不生成屏幕文字、字幕、标价、CTA和额外水印。"
+            prompt = reference_text + "\n" + segment["prompt"] + "\n严格镜头计划：\n" + shots + "\n不生成屏幕文字、字幕、标价、文字按钮和额外水印。"
             if native:
-                prompt += "\n生成原生声音。统一声线：自然亲切的成年女性普通话画外音，像向朋友介绍，温暖克制、不播音腔、不夸张叫卖；不加外部旁白，不要文字/字幕/对口型，背景音乐低于人声，不得吞字、增改台词。"
+                prompt += "\n生成原生声音。统一声线：自然亲切的成年女性普通话画外旁白，像向朋友介绍，温暖克制、不播音腔、不夸张叫卖；不加外部旁白。不要屏幕文字或字幕。本版是画外旁白，画面人物不开口念台词。背景音乐低于人声，不得吞字、增改台词。"
                 prompt += "\n上方严格镜头计划的逐镜台词是唯一最终口播：只在对应start–end时段内逐字说完该句，与该镜头画面同步，不跨镜头或跨段延续半句话。若前面的视觉prompt提及其他台词，一律忽略。不要朗读秒数、镜头说明、运镜、字段名或这些执行指令。"
                 prompt += "\n以下本段合并台词仅用于完整性核对，不另行重复朗读：" + json.dumps(narration, ensure_ascii=False)
                 if not narration:
                     prompt += "\n本段不说话，仅保留自然环境余韵，不新增台词。"
             else:
-                prompt += "\n不设计对口型说话；成片将使用统一中文画外音。"
+                prompt += "\n本版使用统一中文画外旁白，画面人物不念台词。"
             if segment["duration_seconds"] < 10 and not continuous:
                 end = segment["duration_seconds"]
                 prompt += f"\n前{end}秒完成本段全部主体动作与内容，第{end}–10秒保持结尾画面，不新增动作或信息；合成只使用前{end}秒。"
