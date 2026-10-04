@@ -3,6 +3,8 @@
 These checks are offline. They do not score whether a real model wrote an
 attractive advertisement.
 """
+import logging
+
 import pytest
 from pydantic import ValidationError
 
@@ -31,6 +33,11 @@ def test_fresh_schema_requires_the_concept_and_six_sketches_historical_does_not(
         assert field in direction_schema["required"]
     assert direction_schema["properties"]["big_idea"]["maxLength"] == 28
     assert direction_schema["properties"]["hook_type"]["enum"][0] == "macro_detail"
+    presenter = strategy_decision_schema(new_directions=True, ad_form="presenter_pitch")
+    presenter_hooks = ["direct_question", "counterintuitive", "result_first"]
+    assert presenter["$defs"]["CreativeDirection"]["properties"]["hook_type"]["enum"] == presenter_hooks
+    assert presenter["$defs"]["ConceptSketch"]["properties"]["hook_type"]["enum"] == presenter_hooks
+    assert "macro_detail" not in presenter["$defs"]["ConceptSketch"]["properties"]["hook_type"]["enum"]
     assert fresh["properties"]["concept_pool"]["minItems"] == 6
     assert "concept_pool" in fresh["required"]
     historical = strategy_decision_schema()
@@ -96,15 +103,86 @@ def test_consumer_copy_rejects_planner_phrases_and_foreign_hooks(env):
         validate_direction_offer(scene, offer.directions, concept_pool_for(offer.directions))
 
 
-def test_expanded_directions_must_be_the_program_pick(env):
+def _presenter_offer(env):
+    offer = candidates_for(env)
+    brief = offer.brief.model_copy(update={"ad_form": "presenter_pitch"})
+    hooks = ("direct_question", "counterintuitive", "result_first")
+    directions = [direction.model_copy(update={
+        "hook_type": hooks[index],
+        "film_concept": direction.film_concept.model_copy(update={"structure": "presenter_explanation"}),
+    }) for index, direction in enumerate(offer.directions)]
+    return brief, directions
+
+
+def test_two_invalid_hook_sketches_do_not_fail_a_usable_offer(env, caplog):
+    brief, directions = _presenter_offer(env)
+    pool = concept_pool_for(directions)
+    pool[3]["hook_type"] = "macro_detail"
+    pool[4]["hook_type"] = "arresting_line"
+    with caplog.at_level(logging.WARNING, logger="app.strategy"):
+        corrected, kept = validate_direction_offer(brief, directions, pool)
+    assert [item.id for item in corrected] == [item.id for item in directions]
+    assert [item.hook_type for item in corrected] == ["direct_question", "counterintuitive", "result_first"]
+    assert {item.id for item in kept} == {"direction_0", "direction_1", "direction_2", "spare_2"}
+    assert "macro_detail" in caplog.text and "arresting_line" in caplog.text
+    assert "瓶身轮廓" not in caplog.text
+
+
+def test_distinct_non_top_trio_is_accepted_and_program_pick_is_only_a_metric(env, caplog):
+    offer = candidates_for(env)
+    pool = concept_pool_for(offer.directions)[:3]
+    pool.extend([
+        {"id": "alt_0", "rule_id": "appearance_reveal", "hook_type": "macro_detail", "brand_world": "functional",
+            "consumer_insight": "还没看清整只瓶子，就想先认出新的轮廓。", "big_idea": "先看见一条新轮廓",
+            "evidence_ids": ["appearance"]},
+        {"id": "alt_1", "rule_id": "everyday_context", "hook_type": "scale_shift", "brand_world": "identity",
+            "consumer_insight": "桌面已经很满，还想再给瓶子留一个位置。", "big_idea": "桌角又多了一处",
+            "evidence_ids": ["appearance"]},
+        {"id": "alt_2", "rule_id": "appearance_reveal", "hook_type": "silhouette", "brand_world": "sensory",
+            "consumer_insight": "光线一变，仍想认出还是不是同一只瓶子。", "big_idea": "另一束光里的瓶子",
+            "evidence_ids": ["appearance"]},
+    ])
+    program = select_concept_ids([ConceptSketch.model_validate(item) for item in pool])
+    assert program == ["direction_0", "direction_1", "direction_2"]
+    expanded = [direction.model_copy(update={"id": f"alt_{index}"}) for index, direction in enumerate(offer.directions)]
+    with caplog.at_level(logging.INFO, logger="app.strategy"):
+        corrected, _kept = validate_direction_offer(offer.brief, expanded, pool)
+    assert [item.id for item in corrected] == ["alt_0", "alt_1", "alt_2"]
+    assert "direction_0" in caplog.text and "alt_0" in caplog.text
+    outside = [direction.model_copy(update={"id": "missing"}) for direction in offer.directions]
+    with pytest.raises(ValueError, match="可用方向不足三个"):
+        validate_direction_offer(offer.brief, outside, pool)
+
+
+def test_mismatched_insight_is_copied_from_the_sketch(env):
     offer = candidates_for(env)
     pool = concept_pool_for(offer.directions)
-    validate_direction_offer(offer.brief, offer.directions, pool)
-    swapped = [offer.directions[0], offer.directions[1], offer.directions[1].model_copy(update={
-        "id": "spare_0", "label": "另一条", "angle": "先听见瓶子放下",
-        "big_idea": "听见它放下的声音", "development": "另一段展开", "payoff": "另一段收束"})]
-    with pytest.raises(ValueError, match="direction_0"):
-        validate_direction_offer(offer.brief, swapped, pool)
+    paraphrased = "这句话和短概念不一样，但仍然说得清。"
+    directions = [direction.model_copy(update={"consumer_insight": paraphrased}) for direction in offer.directions]
+    corrected, kept = validate_direction_offer(offer.brief, directions, pool)
+    sketches = {item.id: item for item in kept}
+    assert corrected[0].consumer_insight == sketches[corrected[0].id].consumer_insight
+    assert corrected[0].consumer_insight != paraphrased
+    decision = StrategyDecision.model_validate({
+        "kind": "directions", "message": "三个方向", "brief": offer.brief.model_dump(),
+        "directions": [item.model_dump() for item in directions], "concept_pool": pool,
+        "selected_direction_id": None,
+    })
+    assert decision.directions[0].consumer_insight == offer.directions[0].consumer_insight
+    assert decision.directions[0].big_idea == offer.directions[0].big_idea
+
+
+def test_disallowed_direction_hook_is_coerced_to_the_structure_playbook(env, caplog):
+    offer = candidates_for(env)
+    brief = offer.brief.model_copy(update={"ad_form": None})
+    directions = [direction.model_copy(update={
+        "film_concept": direction.film_concept.model_copy(update={"structure": "scene_action"}),
+    }) for direction in offer.directions]
+    with caplog.at_level(logging.WARNING, logger="app.strategy"):
+        corrected, _kept = validate_direction_offer(brief, directions, concept_pool_for(directions))
+    assert [item.hook_type for item in corrected] == ["awkward_moment", "situational_conflict", "arresting_line"]
+    assert "Coerced direction hook" in caplog.text
+    assert "macro_detail" in caplog.text and "awkward_moment" in caplog.text
 
 
 def test_review_keeps_the_idea_records_tension_and_can_rewrite_a_claim(env):

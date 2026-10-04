@@ -153,14 +153,19 @@ def test_exhaustion_is_durable_and_explicit_retry_reuses_completed_work(run_case
 
 @pytest.mark.parametrize("failure,code", [("invalid", "planning_invalid_response"),
                                          ("configuration", "planning_configuration_failed")])
-def test_content_or_configuration_errors_do_not_loop_or_offer_generic_retry(run_case, failure, code):
+def test_schema_failure_can_be_retried_and_configuration_failure_cannot(run_case, failure, code):
     client, store, pid, job, calls, _, control, execute = run_case
     control["failure"] = failure
     result = execute()
     assert result["status"] == "failed" and result["progress"]["error_code"] == code
-    assert result["progress"]["retryable"] is False
     assert calls == ["ad_script", "storyboard", "plan_review"]
-    assert client.post(f"/api/projects/{pid}/retry", json={"job_id": job["id"]}).status_code == 409
+    if failure == "invalid":
+        assert result["progress"]["retryable"] is True
+        assert result["progress"]["retry_action"] == "retry_planning"
+        assert client.post(f"/api/projects/{pid}/retry", json={"job_id": job["id"]}).status_code == 200
+    else:
+        assert result["progress"]["retryable"] is False
+        assert client.post(f"/api/projects/{pid}/retry", json={"job_id": job["id"]}).status_code == 409
     assert "PRIVATE" not in json.dumps(client.get(f"/api/projects/{pid}").json())
 
 

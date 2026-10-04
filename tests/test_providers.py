@@ -964,7 +964,8 @@ def test_schema_failure_has_safe_public_message_without_rewriting(settings, inst
     message = str(exc.value)
     assert "未通过结构校验" in message
     assert exc.value.error_code == "planning_invalid_response"
-    assert exc.value.retryable is False
+    assert exc.value.retryable is True
+    assert exc.value.retry_action == "retry_planning"
     assert "string_too_long" not in message and "segments.0" not in message
     assert "input" not in message and "ctx" not in message
     assert_redacted(exc.value)

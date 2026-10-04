@@ -314,9 +314,16 @@ class PlannerRequestError(ProviderError):
 
 
 class PlannerInvalidResponse(ProviderError):
+    """The reply parsed, then failed a structural check.
+
+    The planning session does not spend another automatic model call. The
+    merchant can retry the same text step from the workbench. Scope and input
+    changes still use PlanningSessionError with retryable false.
+    """
+
     error_code = "planning_invalid_response"
-    retryable = False
-    retry_action = "edit_plan"
+    retryable = True
+    retry_action = "retry_planning"
 
 
 class PlannerInterruptedResponse(ProviderError):
@@ -1229,9 +1236,12 @@ class Gateway:
         retain_direction_value = bool(existing_direction and (
             existing_direction.get("audience_value") or existing_direction.get("product_expression")))
         retain_direction_concept = bool(existing_direction and existing_direction.get("film_concept"))
+        from app.strategy import playbook_hook_ids
+        hook_form = project.get("ad_form") if "ad_form" in project else None
         decision_schema = production_authoring_schema(strategy_decision_schema(
             new_directions="directions" in allowed_decisions, retain_direction_story=retain_direction_story,
-            retain_direction_value=retain_direction_value, retain_direction_concept=retain_direction_concept))
+            retain_direction_value=retain_direction_value, retain_direction_concept=retain_direction_concept,
+            ad_form=hook_form))
         decision_schema["properties"]["kind"]["enum"] = allowed_decisions
         if choice_enabled:
             direction_schema = decision_schema["$defs"]["CreativeDirection"]
@@ -1257,6 +1267,8 @@ class Gateway:
             "current_plan": {key: value for key, value in current_plan.items() if key != "cta"} if current_plan else None,
             "schema": decision_schema,
         }
+        if "directions" in allowed_decisions:
+            context["allowed_hook_types"] = playbook_hook_ids(hook_form)
         if not choice_enabled:
             context["ad_expression_skill"] = load_ad_expression_skill()
         if choice_enabled:
@@ -1348,7 +1360,7 @@ class Gateway:
                             feedback = [{"type": "strategy_contract", "message": str(exc)[:500]}]
                         request_context = {**copy.deepcopy(context), "task_kind": "strategy_response_repair",
                             "previous_response": copy.deepcopy(raw), "validation_feedback": feedback,
-                            "repair_instruction": "上一份入口回复未通过程序校验，尚未向用户展示。根据原始需求重新判断 reply/clarify/directions/plan 路由，只返回修正后的完整 schema JSON。信息不足且用户未授权代定时先澄清；不要为凑三个方向选用不适用品类或缺少事实前提的规则。同一规则可用于实质不同的故事。若反馈指出应展开的三个短概念 id，只展开那三个，并沿用它们的机制、钩子、品牌世界、观众处境、一句话和事实编号。不得修改用户要求、伪造商品事实或绕过来源校验。"}
+                            "repair_instruction": "上一份入口回复未通过程序校验，尚未向用户展示。根据原始需求重新判断 reply/clarify/directions/plan 路由，只返回修正后的完整 schema JSON。信息不足且用户未授权代定时先澄清；不要为凑三个方向选用不适用品类或缺少事实前提的规则。同一规则可用于实质不同的故事。concept_pool的hook_type只能使用allowed_hook_types。无效短概念会被丢弃，至少保留三个有效短概念。展开的三个方向必须来自这些有效短概念，彼此在机制、钩子和品牌世界路径上至少有两种；不必改成程序记录的那一组。方向上的机制、钩子、品牌世界、观众处境、一句话和事实编号以对应短概念为准。不得修改用户要求、伪造商品事实或绕过来源校验。"}
                         if on_progress:
                             on_progress("deciding")
                 if decision.kind == "directions":

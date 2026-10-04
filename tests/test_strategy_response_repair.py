@@ -46,7 +46,11 @@ def repair_case(env, monkeypatch, isolated_skill_loader):
     valid = json.loads(json.dumps(valid, ensure_ascii=False).replace("瓶身", "机身").replace("瓶子", "吹风机"))
     valid["brief"]["category"] = "appliance"
     bad = deepcopy(valid)
-    bad["directions"][2].update(rule_id="sensory_detail", label="UNSHOWN_INVALID_DIRECTION")
+    # sensory_detail is not an appliance rule. Every sketch is then unusable,
+    # so the offer still fails after invalid sketches are dropped.
+    for sketch in bad["concept_pool"]:
+        sketch["rule_id"] = "sensory_detail"
+    bad["directions"][2]["label"] = "UNSHOWN_INVALID_DIRECTION"
     state = SimpleNamespace(client=client, app=app, pid=pid, asset=asset, store=app.state.store,
         settings=settings, valid=valid, first=bad, corrected=deepcopy(valid), contexts=[], bodies=[],
         interrupt_stage=None, interrupt_always=False, interrupted=False, stop_before_repair=None)
@@ -168,6 +172,9 @@ def test_second_invalid_response_stops_without_saving_offer_and_revalidates_sour
         case.corrected["brief"]["facts"][0]["source_id"] = "foreign-image-not-uploaded"
     else:
         case.corrected["directions"][2]["rule_id"] = "operation_walkthrough"
+        for sketch in case.corrected["concept_pool"]:
+            if sketch["id"] == case.corrected["directions"][2]["id"]:
+                sketch["rule_id"] = "operation_walkthrough"
     result = case.execute()
     assert result["status"] == "failed"
     assert case.stages() == ["strategy", "strategy"]

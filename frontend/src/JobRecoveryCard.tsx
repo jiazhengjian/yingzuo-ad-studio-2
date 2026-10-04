@@ -25,6 +25,10 @@ export default function JobRecoveryCard({ job, busy, canEditVoice, canShorten, h
     : recovery.kind === 'reconcile' ? '提交结果待核对' : retryingVideo ? '视频片段未生成' : '本次制作未完成';
   const message = planning && job.progress.error_code === 'planning_response_interrupted'
     ? '策划回复中途断开，已有内容仍然保留。可以重新尝试这一步。'
+    : planning && job.progress.error_code === 'planning_invalid_response'
+    ? recovery.kind === 'retry_planning'
+      ? '本次回复未能形成完整方案，已有内容仍然保留。可以重新尝试这一步。'
+      : '本次回复未能形成完整方案，原需求和已有内容仍然保留。'
     : recovery.kind === 'retry_planning'
     ? '当前步骤经过自动重试仍未完成，已保存本轮进度，可稍后重新尝试。'
     : recovery.kind === 'check_connection'
@@ -33,8 +37,6 @@ export default function JobRecoveryCard({ job, busy, canEditVoice, canShorten, h
     ? '本轮处理已达到次数上限，已停止继续尝试。原需求和已有内容仍然保留。'
     : incompleteCheck
     ? '系统未能完成这次方案检查，尚未采用本轮草稿。已保存的内容仍然保留。'
-    : job.progress.error_code === 'planning_invalid_response'
-    ? '本次回复未能形成完整方案，原需求和已有内容仍然保留。'
     : job.progress.error_code === 'reference_image_unreadable'
     ? '视频服务未能读取参考图片。'
     : job.error || (recovery.kind === 'reconcile' ? '平台可能已受理，暂不重复提交。' : '已完成的素材仍然保留。');

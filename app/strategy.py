@@ -8,6 +8,7 @@ from __future__ import annotations
 from copy import deepcopy
 from functools import lru_cache
 import json
+import logging
 from pathlib import Path
 import re
 from typing import Annotated, Literal
@@ -15,6 +16,8 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 from .production import ProductionPlan, validate_production_sources
 from .ad_form import AdForm
+
+logger = logging.getLogger(__name__)
 
 
 STRATEGY_VERSION = "1.3.0"
@@ -35,6 +38,25 @@ PLAYBOOK_HOOKS = {
     "brand_tvc": frozenset({"macro_detail", "silhouette", "signature_sound", "scale_shift"}),
     "scene_story": frozenset({"awkward_moment", "situational_conflict", "arresting_line"}),
     "presenter_pitch": frozenset({"direct_question", "counterintuitive", "result_first"}),
+}
+HOOK_IDS = (
+    "macro_detail", "silhouette", "signature_sound", "scale_shift",
+    "awkward_moment", "situational_conflict", "arresting_line",
+    "direct_question", "counterintuitive", "result_first",
+)
+# First allowed neighbor wins. Each hook lists one step toward the other playbooks
+# so a disallowed opening can move into the current ad form without a model call.
+_HOOK_NEIGHBORS = {
+    "macro_detail": ("direct_question", "result_first", "awkward_moment", "silhouette"),
+    "silhouette": ("macro_detail", "result_first", "arresting_line", "scale_shift"),
+    "signature_sound": ("arresting_line", "counterintuitive", "situational_conflict", "scale_shift"),
+    "scale_shift": ("counterintuitive", "macro_detail", "situational_conflict", "silhouette"),
+    "awkward_moment": ("direct_question", "situational_conflict", "macro_detail", "result_first"),
+    "situational_conflict": ("counterintuitive", "awkward_moment", "scale_shift", "direct_question"),
+    "arresting_line": ("result_first", "direct_question", "silhouette", "awkward_moment"),
+    "direct_question": ("awkward_moment", "counterintuitive", "macro_detail", "result_first"),
+    "counterintuitive": ("situational_conflict", "direct_question", "scale_shift", "result_first"),
+    "result_first": ("arresting_line", "direct_question", "macro_detail", "counterintuitive"),
 }
 EMOTIONAL_RULES = frozenset({
     "exaggeration", "contrast_humor", "identity_attitude", "ritual_sensory", "situational_conflict",
@@ -592,6 +614,24 @@ def allowed_hooks(ad_form: str | None, structure: str | None = None) -> frozense
     return frozenset().union(*PLAYBOOK_HOOKS.values())
 
 
+def playbook_hook_ids(ad_form: str | None) -> list[str]:
+    """Stable hook ids the current ad form may emit. Unknown forms keep the full set."""
+    if ad_form in PLAYBOOK_HOOKS:
+        allowed = PLAYBOOK_HOOKS[ad_form]
+        return [hook for hook in HOOK_IDS if hook in allowed]
+    return list(HOOK_IDS)
+
+
+def nearest_allowed_hook(hook: str, allowed: frozenset[str]) -> str | None:
+    """Map a disallowed opening onto the current ad form, or leave it unusable."""
+    if hook in allowed:
+        return hook
+    for candidate in _HOOK_NEIGHBORS.get(hook, ()):
+        if candidate in allowed:
+            return candidate
+    return None
+
+
 def consumer_jargon(text: str) -> str | None:
     """Return the first planner phrase in consumer-facing copy, if any."""
     for pattern in JARGON_PATTERNS:
@@ -642,24 +682,51 @@ def require_ad_concepts(directions: list[CreativeDirection], brief: ProductBrief
 
 
 def _validate_sketch(brief: ProductBrief, sketch: ConceptSketch) -> None:
+    issue = _sketch_issue(brief, sketch)
+    if issue is not None:
+        raise ValueError(_sketch_issue_message(sketch, issue))
+
+
+def _sketch_issue(brief: ProductBrief, sketch: ConceptSketch) -> str | None:
+    """Return a short reason code. Callers log the code, not the creative copy."""
     facts = {fact.id: fact for fact in brief.facts}
     rules = _rules_by_id()
     rule = rules.get(sketch.rule_id)
     if rule is None:
-        raise ValueError(f"未知策略规则：{sketch.rule_id}")
+        return "unknown_rule"
     if brief.category not in rule["categories"]:
-        raise ValueError(f"规则 {sketch.rule_id} 不适用于该商品品类")
+        return "category"
     if any(fact_id not in facts for fact_id in sketch.evidence_ids):
-        raise ValueError(f"短概念 {sketch.id} 引用了不存在的商品事实")
+        return "missing_fact"
     cited = [facts[fact_id] for fact_id in sketch.evidence_ids]
     if len(cited) < rule["prerequisites"]["min_facts"] or not _merchant_support(cited, rule["prerequisites"]):
-        raise ValueError(f"规则 {sketch.rule_id} 缺少前提：{rule['prerequisites']['description']}")
+        return "prerequisite"
     if sketch.hook_type not in allowed_hooks(brief.ad_form):
-        raise ValueError(f"短概念 {sketch.id} 的开场钩子不属于当前广告类型")
+        return "hook"
     for field in ("consumer_insight", "big_idea"):
-        phrase = consumer_jargon(getattr(sketch, field))
-        if phrase:
-            raise ValueError(f"短概念 {sketch.id} 的{field}要用观众听得懂的话，不要写「{phrase}」")
+        if consumer_jargon(getattr(sketch, field)):
+            return "jargon"
+    return None
+
+
+def _sketch_issue_message(sketch: ConceptSketch, issue: str) -> str:
+    if issue == "unknown_rule":
+        return f"未知策略规则：{sketch.rule_id}"
+    if issue == "category":
+        return f"规则 {sketch.rule_id} 不适用于该商品品类"
+    if issue == "missing_fact":
+        return f"短概念 {sketch.id} 引用了不存在的商品事实"
+    if issue == "prerequisite":
+        rule = _rules_by_id().get(sketch.rule_id) or {}
+        description = (rule.get("prerequisites") or {}).get("description", "")
+        return f"规则 {sketch.rule_id} 缺少前提：{description}"
+    if issue == "hook":
+        return f"短概念 {sketch.id} 的开场钩子不属于当前广告类型"
+    return f"短概念 {sketch.id} 的措辞要用观众听得懂的话"
+
+
+def _metric_id(value: str) -> str:
+    return value if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value) else "id"
 
 
 def _sketch_score(sketch: ConceptSketch, chosen: list[ConceptSketch]) -> tuple:
@@ -698,34 +765,83 @@ def select_concept_ids(sketches: list[ConceptSketch]) -> list[str]:
     return [item.id for item in chosen]
 
 
-def validate_direction_offer(brief: ProductBrief, directions: list[CreativeDirection], pool: list[ConceptSketch]) -> None:
-    """Check a six-sketch pool and the three directions expanded from it."""
+def validate_direction_offer(brief: ProductBrief, directions: list[CreativeDirection], pool: list[ConceptSketch]):
+    """Keep a usable trio from a six-sketch pool.
+
+    One invalid sketch, a non-greedy but still distinct expansion, or a
+    direction that paraphrases its sketch is not fatal. The returned
+    directions carry the sketch's canonical fields, with a disallowed
+    opening moved to the nearest hook for this ad form. The call fails
+    only when fewer than three directions remain usable.
+    """
     brief = ProductBrief.model_validate(brief)
     directions = [CreativeDirection.model_validate(value) for value in directions]
     pool = [ConceptSketch.model_validate(value) for value in pool]
     if len(pool) != 6:
         raise ValueError("新方向需要六个短概念，再展开其中三个")
     _require_unique([item.id for item in pool], "短概念 ID")
-    require_ad_concepts(directions, brief)
-    for sketch in pool:
-        _validate_sketch(brief, sketch)
-    chosen = select_concept_ids(pool)
-    if {direction.id for direction in directions} != set(chosen):
-        raise ValueError("展开的三个方向须是机制、钩子和品牌世界差异最大的一组：" + "、".join(chosen))
-    by_id = {item.id: item for item in pool}
-    for direction in directions:
-        sketch = by_id[direction.id]
-        if (direction.rule_id, direction.hook_type, direction.brand_world, direction.consumer_insight,
-                direction.big_idea, tuple(direction.evidence_ids)) != (
-                sketch.rule_id, sketch.hook_type, sketch.brand_world, sketch.consumer_insight,
-                sketch.big_idea, tuple(sketch.evidence_ids)):
-            raise ValueError(f"方向 {direction.id} 必须沿用对应短概念的机制、钩子、洞察、一句话和商品依据")
-    if len({direction.rule_id for direction in directions}) < 2:
+    valid: list[ConceptSketch] = []
+    dropped_hooks = False
+    for index, sketch in enumerate(pool):
+        issue = _sketch_issue(brief, sketch)
+        if issue is None:
+            valid.append(sketch)
+            continue
+        dropped_hooks = dropped_hooks or issue == "hook"
+        diagnostic = {"index": index, "reason": issue}
+        if issue == "hook" and sketch.hook_type in HOOK_IDS:
+            diagnostic["hook_type"] = sketch.hook_type
+        logger.warning("Dropped invalid concept sketch: %s", json.dumps(diagnostic, ensure_ascii=True))
+    if len(valid) < 3:
+        detail = "开场钩子不属于当前广告类型" if dropped_hooks else "短概念未通过规则、前提或措辞检查"
+        raise ValueError(f"有效短概念不足三个，{detail}")
+    program_pick = select_concept_ids(valid)
+    logger.info("Strategy concept pick: %s", json.dumps({
+        "program_pick": [_metric_id(item) for item in program_pick],
+        "expanded": [_metric_id(direction.id) for direction in directions],
+    }, ensure_ascii=True))
+    by_id = {item.id: item for item in valid}
+    usable: list[CreativeDirection] = []
+    for index, direction in enumerate(directions):
+        sketch = by_id.get(direction.id)
+        if sketch is None:
+            logger.warning("Dropped direction outside the valid sketches: %s", json.dumps(
+                {"index": index}, ensure_ascii=True))
+            continue
+        updated = direction.model_copy(update={
+            "rule_id": sketch.rule_id,
+            "hook_type": sketch.hook_type,
+            "brand_world": sketch.brand_world,
+            "consumer_insight": sketch.consumer_insight,
+            "big_idea": sketch.big_idea,
+            "evidence_ids": list(sketch.evidence_ids),
+        })
+        structure = updated.film_concept.structure if updated.film_concept is not None else None
+        allowed = allowed_hooks(brief.ad_form, structure)
+        if updated.hook_type not in allowed:
+            coerced = nearest_allowed_hook(updated.hook_type, allowed)
+            if coerced is None:
+                logger.warning("Dropped direction with disallowed hook: %s", json.dumps(
+                    {"index": index, "hook_type": updated.hook_type if updated.hook_type in HOOK_IDS else "hook"},
+                    ensure_ascii=True))
+                continue
+            logger.warning("Coerced direction hook: %s", json.dumps({
+                "index": index,
+                "from": updated.hook_type if updated.hook_type in HOOK_IDS else "hook",
+                "to": coerced,
+            }, ensure_ascii=True))
+            updated = updated.model_copy(update={"hook_type": coerced})
+        usable.append(updated)
+    if len(usable) < 3:
+        raise ValueError("可用方向不足三个")
+    require_ad_concepts(usable, brief)
+    if len({direction.rule_id for direction in usable}) < 2:
         raise ValueError("三个方向至少要使用两种创意机制")
-    if len({direction.hook_type for direction in directions}) < 2:
+    if len({direction.hook_type for direction in usable}) < 2:
         raise ValueError("三个方向至少要使用两种开场钩子")
-    if len({direction.brand_world for direction in directions}) < 2:
+    if len({direction.brand_world for direction in usable}) < 2:
         raise ValueError("三个方向至少要使用两种品牌世界路径")
+    return usable, valid
 
 
 def build_direction_candidates(brief, directions, recommended_id, rules, *, direction_review=None) -> DirectionCandidates:

@@ -21,6 +21,10 @@ export function recoveryForJob(job?: Job): JobRecovery | null {
   // Older planning jobs have no classification and are treated conservatively.
   if (job.kind === 'plan') {
     if (job.progress.error_code === 'planning_configuration_failed') return { kind: 'check_connection' };
+    if (job.progress.error_code === 'planning_invalid_response'
+      && job.progress.retry_action === 'retry_planning' && job.progress.retryable !== false) {
+      return { kind: 'retry_planning', label: '重新尝试' };
+    }
     if (['planning_invalid_response', 'planning_review_incomplete', 'planning_request_limit'].includes(job.progress.error_code as string)) {
       return { kind: 'continue_conversation' };
     }

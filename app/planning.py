@@ -12,8 +12,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .schemas import Question, shot_beat_ids, shot_beat_sequence
 from .ad_form import explicit_ad_form, strip_ad_form_declarations
-from .strategy import (ConceptSketch, CreativeDirection, ProductBrief, require_direction_stories,
-                       require_direction_value, require_direction_concepts, validate_direction_offer)
+from .strategy import (ConceptSketch, CreativeDirection, ProductBrief, playbook_hook_ids,
+                       require_direction_stories, require_direction_value, require_direction_concepts,
+                       validate_direction_offer)
 from .beat_timing import allocate_beat_ticks, beat_minimum_ticks, speech_ticks, visual_ticks
 
 
@@ -189,7 +190,8 @@ class StrategyDecision(BaseModel):
             require_direction_stories(self.directions)
             require_direction_value(self.directions)
             require_direction_concepts(self.directions, self.brief)
-            validate_direction_offer(self.brief, self.directions, self.concept_pool)
+            self.directions, self.concept_pool = validate_direction_offer(
+                self.brief, self.directions, self.concept_pool)
         elif self.kind == "plan":
             if self.concept_pool:
                 raise ValueError("继续所选方案时不重新竞选短概念")
@@ -210,7 +212,8 @@ class StrategyDecision(BaseModel):
 
 
 def strategy_decision_schema(*, new_directions: bool = False, retain_direction_story: bool = False,
-                             retain_direction_value: bool = False, retain_direction_concept: bool = False) -> dict:
+                             retain_direction_value: bool = False, retain_direction_concept: bool = False,
+                             ad_form: str | None = None) -> dict:
     """New offers require merchant-facing creative content; old plans stay valid.
 
     Storage uses the backwards-compatible model. The model request must expose
@@ -240,10 +243,9 @@ def strategy_decision_schema(*, new_directions: bool = False, retain_direction_s
         for field, limit in (("consumer_insight", 80), ("big_idea", 28)):
             direction["properties"][field]["minLength"] = 4
             direction["properties"][field]["maxLength"] = limit
-        direction["properties"]["hook_type"] = {"type": "string", "enum": [
-            "macro_detail", "silhouette", "signature_sound", "scale_shift",
-            "awkward_moment", "situational_conflict", "arresting_line",
-            "direct_question", "counterintuitive", "result_first"]}
+        hook_enum = playbook_hook_ids(ad_form)
+        for definition in ("CreativeDirection", "ConceptSketch"):
+            schema["$defs"][definition]["properties"]["hook_type"] = {"type": "string", "enum": hook_enum}
         direction["properties"]["brand_world"] = {"type": "string", "enum": ["functional", "identity", "sensory"]}
         pool = schema["properties"]["concept_pool"]
         pool["minItems"] = 6
@@ -311,7 +313,7 @@ STRATEGY_SELECTION_SYSTEM = """你是中文商品广告策划入口，只输出�
 先判断allowed_decisions允许的分支。普通问题用reply；无商品原图不进入directions或plan。必要澄清按Orchestrator执行，每轮最多3题；planning_requested=true或用户明确授权决定时可用保守创作假设继续，未知商品事实不能猜测。
 ad_form是服务端已保存偏好，与route不同。非空时原样继承到brief.ad_form，不重复询问；只可确认实际保存值，不能口头宣布另一类型。明确改类型但保存值未对应时用固定id=ad_form问题确认，不生成旧类型方向。空值且准备策划时询问该固定问题；普通reply不强塞问题。固定选项“根据商品推荐”合法，其他未知事实问题仍按Skill使用options=[]。auto保持auto，不代用户改值。
 kind=directions返回完整非null的brief，含本轮facts、unknowns、assumptions及creative_intent。每条fact包含id/text/source_kind/source_id；merchant的text必须是evidence_sources原话连续子串，不加来源标签；image的source_id只引用assets原图。方向的evidence_ids只能引用本次brief.facts。仅reply/clarify可按情况brief=null，不假设程序会补历史事实。
-direction_selection_required不豁免必要澄清。新提案先在concept_pool写恰好6个短概念，每个含id、rule_id、hook_type、brand_world、consumer_insight、big_idea、evidence_ids。程序按出现顺序贪心留下3个：相对已留下的，新rule_id加5分，新hook_type加3分，新brand_world加2分，机制族从信息换成情绪或从情绪换成信息加4分，一句话与已留下的重复减8分；同分先留情绪机制（exaggeration、contrast_humor、identity_attitude、ritual_sensory、situational_conflict），再留更靠前的。只把这3个写成完整directions，id与短概念一致，并沿用该短概念的机制、钩子、路径、洞察、一句话和evidence_ids。不要另选一组。selected_direction_id=null，最多通过根recommended_direction_id推荐一条，不在direction内增加recommended字段。每条须有完整production、film_concept，以及非空audience_value/product_expression/story_summary/attraction_mechanism/consumer_insight/big_idea/hook_type/brand_world。creative_intent与film_concept的语义依共享参考执行；story_summary为兼容字段名，表示创意展开。insight、big_idea、hook、story_summary用观众能说的话，不写关注、呈现、兼顾、纳入、打造、高端质感、满足你对。商品功能与效果必须由evidence_ids里的事实支撑；情绪、场景、夸张和幽默写入创意，不写成功效，也不必另找事实编号。hook_type必须属于本类型playbook。big_idea是一句话概念，不是画面口号或结尾字卡。
+direction_selection_required不豁免必要澄清。新提案先在concept_pool写恰好6个短概念，每个含id、rule_id、hook_type、brand_world、consumer_insight、big_idea、evidence_ids。hook_type只能使用本次context.allowed_hook_types以及schema里hook_type的enum；这些就是当前广告类型playbook允许的id，不得输出其他钩子。程序按出现顺序给短概念打多样性分并只记录得分最高的3个：相对已留下的，新rule_id加5分，新hook_type加3分，新brand_world加2分，机制族从信息换成情绪或从情绪换成信息加4分，一句话与已留下的重复减8分；同分先留情绪机制（exaggeration、contrast_humor、identity_attitude、ritual_sensory、situational_conflict），再留更靠前的。优先展开这3个。若展开另一组，这3个也必须来自有效短概念，且机制、钩子、品牌世界路径至少各有两种。方向id与短概念一致。程序会用短概念上的机制、钩子、路径、洞察、一句话和evidence_ids覆盖方向里写偏的同名字段。selected_direction_id=null，最多通过根recommended_direction_id推荐一条，不在direction内增加recommended字段。每条须有完整production、film_concept，以及非空audience_value/product_expression/story_summary/attraction_mechanism/consumer_insight/big_idea/hook_type/brand_world。creative_intent与film_concept的语义依共享参考执行；story_summary为兼容字段名，表示创意展开。insight、big_idea、hook、story_summary用观众能说的话，不写关注、呈现、兼顾、纳入、打造、高端质感、满足你对。商品功能与效果必须由evidence_ids里的事实支撑；情绪、场景、夸张和幽默写入创意，不写成功效，也不必另找事实编号。big_idea是一句话概念，不是画面口号或结尾字卡。
 rule_id须来自本轮strategy_rules，适用category且prerequisites由本次facts满足；不可改品类绕过限制。可复用同一合适规则与可靠事实，不输出三套脚本、逐镜时轴或媒体请求。
 existing_direction非空且未明确重开方向时，不重新三选；明确修改用kind=plan，仅返回沿用原id/rule_id的一条方向。已有价值、展开和概念字段保留或依授权更新，不删空；历史缺字段不强补。普通问题用reply，意图冲突无法确认时clarify。
 existing_creative_intent非空时，concept_revision_permissions限定可修改的意图字段，其余逐字保留；structure_preference和film_concept.structure仅在reference_intent获准变更时可更新。权限仅限定范围，不提供新事实；本轮明确固定要求与已选核心不能被旧AI执行建议替代。
