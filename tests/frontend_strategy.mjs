@@ -26,6 +26,7 @@ const strategy = loadSource('strategy.ts');
 const { creativeSummary, planningNotes, planningMessageText } = loadSource('planningDisplay.ts');
 const { PlanStrategySummary } = loadSource('App.tsx');
 const ProductionSummary = loadSource('ProductionSummary.tsx').default;
+const ConversationGate = loadSource('ConversationGate.tsx').default;
 
 function fixture() {
   return {
@@ -228,4 +229,66 @@ test('editing narration preserves strategy and shot evidence with an independent
   delete plan.strategy;
   const legacy = strategy.clonePlanForEditing(plan);
   assert.ok(!Object.hasOwn(legacy, 'strategy'), 'legacy edit must not synthesize strategy fields');
+});
+
+test('a direction card lets a merchant picture the ad, including why people stop', () => {
+  const production = { version: '1.0.0', product_constraints: [],
+    characters: [{ id: 'birthday', name: '寿星', description: '成年' }, { id: 'friend', name: '朋友', description: '成年' }],
+    speech_mode: 'character_dialogue', speaker_id: 'birthday', voice_description: '自然' };
+  const cake = {
+    id: 'cake', label: '先别切，等这勺巧克力落下来', rule_id: 'contrast_humor', hook_type: 'situational_conflict', recommended: true,
+    angle: '不应该出现的主打说明', audience_value: '不应该出现的受众价值', story_summary: '不应该出现的故事概要',
+    attraction_mechanism: '不应该出现的吸引方式', big_idea: '不应该出现的一句话创意', development: '不应该出现的展开',
+    product_expression: '把丝滑巧克力和停住的叉子绑在一起：酱还在滴，人先不动。',
+    consumer_insight: '切下去之前，总想再多看它一会儿。',
+    hook: '寿星按住朋友的手，樱桃还对着镜头。',
+    payoff: '第一块推到寿星面前，樱桃留在最上面。',
+    reason: '停一下的动作，让人想看酱到底落不落。',
+    film_concept: { structure: 'scene_action', key_visual: '叉子停在盘边，巧克力酱慢慢滴落。',
+      memory_anchor: '不应该出现的记忆点', sound_role: '不应该出现的声音任务' },
+    production, audience: '', scenario: '', evidence_ids: ['fact1'], production_notes: ['保持蛋糕原图外观。'],
+  };
+  const other = (id) => ({ ...cake, id, label: `备用${id}`, recommended: false, rule_id: 'not_a_rule', hook_type: 'not_a_hook',
+    product_expression: `备用核心${id}`, consumer_insight: '', hook: `备用开头${id}`, payoff: `备用结尾${id}`, reason: `备用理由${id}`,
+    film_concept: { structure: 'scene_action', key_visual: `备用中段${id}` } });
+  const current = { id: 'gate-cake', project_id: 'project-cake', job_id: 'job-cake', kind: 'direction', status: 'pending',
+    message: '请选一个方向', questions: [], answers: [], options: [cake, other('b'), other('c')],
+    revision: 0, context_version: 3, created_at: 10 };
+  const html = renderToStaticMarkup(React.createElement(ConversationGate, {
+    gate: current, busy: false, onSubmit: async () => {}, onCreativeSubmit: async () => {},
+    onDirectionSelect: async () => {}, onDirectionModify: async () => {},
+  }));
+  const start = html.indexOf('方向：先别切，等这勺巧克力落下来');
+  const card = html.slice(start, html.indexOf('方向：备用b'));
+  assert.ok(card.includes('反差幽默 · 小冲突开场'));
+  assert.ok(card.includes('class="direction-recommended"'));
+  const labels = ['核心创意', '洞察', '0–3秒', '中段', '结尾', '为什么吸引人'];
+  let cursor = 0;
+  for (const label of labels) {
+    const at = card.indexOf(`<dt>${label}</dt>`, cursor);
+    assert.ok(at > cursor, label);
+    cursor = at;
+  }
+  for (const text of [cake.product_expression, cake.consumer_insight, cake.hook, cake.film_concept.key_visual, cake.payoff, cake.reason,
+    '2 人出镜 · 寿星说话']) {
+    assert.ok(card.includes(text), text);
+  }
+  for (const hidden of ['一句话创意', '为什么能打', '核心画面', '怎么开头', cake.big_idea, cake.angle, cake.audience_value,
+    cake.story_summary, cake.attraction_mechanism, cake.development, cake.film_concept.memory_anchor, cake.film_concept.sound_role,
+    'scene_action', 'contrast_humor', 'situational_conflict', 'not_a_rule', 'not_a_hook', '保持蛋糕原图外观。']) {
+    assert.ok(!card.includes(hidden), hidden);
+  }
+  assert.ok(!html.includes('not_a_rule'));
+  assert.ok(!html.includes('not_a_hook'));
+  assert.ok(!html.includes('direction-film-details'));
+  const long = { ...cake, id: 'long', reason: '停一下，就想看这勺酱到底落不落。'.repeat(4),
+    product_expression: '把丝滑巧克力和停住的叉子绑在一起：酱还在滴，人先不动。这句后面是多出来的解释，商家卡片上不需要看完这一整段，屏幕上也放不下。' };
+  const longHtml = renderToStaticMarkup(React.createElement(ConversationGate, {
+    gate: { ...current, options: [long, other('b'), other('c')] }, busy: false,
+    onSubmit: async () => {}, onCreativeSubmit: async () => {}, onDirectionSelect: async () => {}, onDirectionModify: async () => {},
+  }));
+  assert.ok(!longHtml.includes(long.reason));
+  assert.ok(!longHtml.includes(long.product_expression));
+  assert.ok(longHtml.includes('停一下，就想看这勺酱到底落不落。停一下，就想看这勺酱到底落不落。'));
+  assert.ok(longHtml.includes('把丝滑巧克力和停住的叉子绑在一起：酱还在滴，人先不动。'));
 });

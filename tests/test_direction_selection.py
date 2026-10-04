@@ -350,11 +350,14 @@ def test_new_request_schema_drops_essays_and_revisions_keep_saved_stories():
         assert updating["properties"][field]["minLength"] == 1
         assert field not in historical["required"]
         assert historical["properties"][field]["default"] == ""
-    for field in ("audience_value", "product_expression"):
-        assert field not in fresh["properties"]
-        assert field not in updating["required"]
-    assert fresh["properties"]["big_idea"]["maxLength"] == 30
+    assert "audience_value" not in fresh["properties"]
+    assert "big_idea" not in fresh["properties"]
+    assert "product_expression" in fresh["required"]
+    assert fresh["properties"]["product_expression"]["maxLength"] == 60
+    assert "audience_value" not in updating["required"]
+    assert "product_expression" not in updating["required"]
     assert fresh["properties"]["hook"]["maxLength"] == 40
+    assert fresh["properties"]["reason"]["maxLength"] == 40
 
 
 def historical_candidates(env):
@@ -460,10 +463,11 @@ def test_real_gateway_pauses_then_uses_only_selected_direction(env, monkeypatch,
             assert context["orchestrator_skills"]["stage"] == "orchestrator"
             assert context["allowed_decisions"] == ["reply", "clarify", "directions"]
             required = context["schema"]["$defs"]["CreativeDirection"]["required"]
-            assert {"big_idea", "hook_type", "brand_world", "film_concept", "hook", "payoff"} <= set(required)
-            for dropped in ("story_summary", "attraction_mechanism", "audience_value", "product_expression", "consumer_insight"):
+            assert {"product_expression", "consumer_insight", "hook_type", "brand_world", "film_concept", "hook", "payoff", "reason"} <= set(required)
+            for dropped in ("story_summary", "attraction_mechanism", "audience_value", "big_idea", "angle", "development"):
                 assert dropped not in required
                 assert dropped not in context["schema"]["$defs"]["CreativeDirection"]["properties"]
+            assert context["schema"]["$defs"]["CreativeDirection"]["properties"]["product_expression"]["maxLength"] == 60
             return chat_output(strategy_response)
         if stage == "direction_review":
             assert context["immutable_brief"] == candidates.brief.model_dump()

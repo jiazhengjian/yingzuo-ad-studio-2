@@ -1693,7 +1693,7 @@ class Gateway:
                                                        include_input=False)[:10]]
                         else:
                             feedback = [{"type": "strategy_contract", "message": str(exc)[:500]}]
-                        repair_instruction = "上一份入口回复未通过程序校验，尚未向用户展示。根据原始需求重新判断 reply/clarify/directions/plan 路由，只返回修正后的完整 schema JSON。信息不足且用户未授权代定时先澄清；不要为凑三个方向选用不适用品类或缺少事实前提的规则。同一规则可用于实质不同的故事。concept_pool只写id、rule_id、hook_type、brand_world、evidence_ids，不写句子；hook_type只能使用allowed_hook_types。无效短概念会被丢弃，至少保留三个有效短概念。展开的三个方向必须来自这些有效短概念，彼此在机制、钩子和品牌世界路径上至少有两种；不必改成程序记录的那一组。方向上的机制、钩子、品牌世界和事实编号以对应短概念为准。一句话、核心画面、开头和收尾写在方向上，各约30字。不要补写受众价值、创意展开、记忆点或声音任务。不得修改用户要求、伪造商品事实或绕过来源校验。"
+                        repair_instruction = "上一份入口回复未通过程序校验，尚未向用户展示。根据原始需求重新判断 reply/clarify/directions/plan 路由，只返回修正后的完整 schema JSON。信息不足且用户未授权代定时先澄清；不要为凑三个方向选用不适用品类或缺少事实前提的规则。同一规则可用于实质不同的故事。concept_pool只写id、rule_id、hook_type、brand_world、evidence_ids，不写句子；hook_type只能使用allowed_hook_types。无效短概念会被丢弃，至少保留三个有效短概念。展开的三个方向必须来自这些有效短概念，彼此在机制、钩子和品牌世界路径上至少有两种；不必改成程序记录的那一组。方向上的机制、钩子、品牌世界和事实编号以对应短概念为准。核心创意不超过60字，洞察、0–3秒、中段、结尾和为什么吸引人各不超过40字。不要写big_idea，不要补写受众价值、创意展开、记忆点或声音任务。不得修改用户要求、伪造商品事实或绕过来源校验。"
                         if product_supplement:
                             repair_instruction = "上一份入口回复未通过程序校验，尚未向用户展示。本轮只是补充商品图或商品信息。kind只能是plan，沿用existing_direction的id与rule_id，把新的商品事实并进brief。不要返回clarify或directions，不要要求重选方向或重新确认需求。不得修改用户要求、伪造商品事实或绕过来源校验。"
                         request_context = {**copy.deepcopy(context), "task_kind": "strategy_response_repair",

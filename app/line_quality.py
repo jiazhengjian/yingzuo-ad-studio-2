@@ -229,7 +229,7 @@ def prepare_script_lines(script: dict, strategy, duration_seconds: int | None = 
     profile = speech_profile_for_strategy(strategy)
     form = script_form(strategy)
     selected = _selected(strategy)
-    big_idea = selected.big_idea or ""
+    big_idea = selected.product_expression or selected.big_idea or ""
     roles = []
     spoken = [beat for beat in _beats(raw) if isinstance(beat.get("narration"), str) and beat["narration"].strip()]
     if spoken:
@@ -279,7 +279,8 @@ def prepare_speech_draft(raw: dict, strategy, duration_seconds: int, locked_line
     limit = duration_seconds * profile.characters_per_tenth // 10
     form = script_form(strategy)
     strategy = _strategy(strategy)
-    big_idea = _selected(strategy).big_idea or ""
+    selected = _selected(strategy)
+    big_idea = selected.product_expression or selected.big_idea or ""
     parts = [part for part in re.split(r"(?<=[。？！])", narration) if part]
     if not parts:
         return draft
@@ -438,7 +439,7 @@ def _rewrite_payload(script, offenses, strategy, duration, locked_lines):
             "max_beat_characters": profile.max_beat_characters,
             "max_total_characters": duration * profile.characters_per_tenth // 10,
         },
-        "big_idea": selected.big_idea or "",
+        "big_idea": selected.product_expression or selected.big_idea or "",
         "hook": selected.hook,
         "facts": facts,
         "locked_lines": list(locked_lines or ()),

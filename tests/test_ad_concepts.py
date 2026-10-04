@@ -29,24 +29,28 @@ def test_fresh_direction_schema_stays_smaller_than_the_essay_contract():
     def packed(ad_form=None):
         return json.dumps(strategy_decision_schema(new_directions=True, ad_form=ad_form),
                            ensure_ascii=False, separators=(",", ":"))
-    # With a saved ad form the essay contract was 11425 characters on 2026-10-04.
+    # Essay contract was 11425, then the one-line card was 9842.
+    # This card adds the core idea, the insight and why people stop.
     typed = packed("brand_tvc")
-    assert len(typed) <= 9842
-    assert len(packed()) < 10200
+    assert len(typed) == 10109
+    assert len(packed()) == 10327
     direction = strategy_decision_schema(new_directions=True, ad_form="brand_tvc")["$defs"]["CreativeDirection"]["properties"]
     film = strategy_decision_schema(new_directions=True, ad_form="brand_tvc")["$defs"]["FilmConcept"]["properties"]
     assert "key_visual" in film and "memory_anchor" not in film
-    for field in ("story_summary", "attraction_mechanism", "audience_value", "product_expression", "consumer_insight"):
+    for field in ("story_summary", "attraction_mechanism", "audience_value", "big_idea"):
         assert field not in direction
+    assert direction["product_expression"]["maxLength"] == 60
+    assert direction["consumer_insight"]["maxLength"] == 40
+    assert direction["reason"]["maxLength"] == 40
 
 
 def test_fresh_schema_requires_the_pitch_and_six_id_sketches():
     fresh = strategy_decision_schema(new_directions=True)
     direction_schema = fresh["$defs"]["CreativeDirection"]
-    for field in ("big_idea", "hook_type", "brand_world"):
+    for field in ("product_expression", "consumer_insight", "hook_type", "brand_world", "hook", "payoff", "reason"):
         assert field in direction_schema["required"]
-    assert "consumer_insight" not in direction_schema["properties"]
-    assert direction_schema["properties"]["big_idea"]["maxLength"] == 30
+    assert "big_idea" not in direction_schema["properties"]
+    assert direction_schema["properties"]["product_expression"]["maxLength"] == 60
     assert "consumer_insight" not in fresh["$defs"]["ConceptSketch"]["properties"]
     assert "big_idea" not in fresh["$defs"]["ConceptSketch"]["properties"]
     assert direction_schema["properties"]["hook_type"]["enum"][0] == "macro_detail"
@@ -84,12 +88,21 @@ def test_selector_prefers_a_new_mechanism_hook_world_and_keeps_earlier_ties():
     assert set(emotional) == {"joke", "plain", "context"}
 
 
-def test_repeated_one_liner_is_rejected_on_the_directions(env):
+def test_repeated_core_idea_does_not_fail_when_mechanisms_still_differ(env, caplog):
     offer = candidates_for(env)
-    repeated = offer.directions[0].big_idea
-    directions = [direction.model_copy(update={"big_idea": repeated}) for direction in offer.directions]
-    with pytest.raises(ValueError, match="一句话概念"):
-        validate_direction_offer(offer.brief, directions, concept_pool_for(directions))
+    repeated = offer.directions[0].product_expression
+    long_reason = "停一下，就想看这勺酱到底落不落。" * 4
+    directions = [direction.model_copy(update={
+        "product_expression": repeated, "big_idea": repeated, "consumer_insight": "", "reason": long_reason,
+    }) for direction in offer.directions]
+    with caplog.at_level(logging.INFO, logger="uvicorn.error.planner"):
+        corrected, _kept = validate_direction_offer(offer.brief, directions, concept_pool_for(directions))
+    assert len(corrected) == 3
+    assert {item.hook_type for item in corrected} == {item.hook_type for item in offer.directions}
+    assert all(item.product_expression == repeated for item in corrected)
+    assert all(item.consumer_insight == "" for item in corrected)
+    assert all(len(item.reason) <= 40 and item.reason for item in corrected)
+    assert "strategy_salvage" in caplog.text
 
 
 def test_emotional_rules_stay_in_the_full_catalog_and_still_need_a_real_fact():
@@ -111,13 +124,13 @@ def test_planner_phrases_rewrite_to_plain_words_of_the_same_length():
     assert plain_consumer_wording("受众意义对应年轻女生生日送礼") == "顾客意义对应年轻女生生日送礼"
 
 
-def test_consumer_copy_rejects_planner_phrases_and_foreign_hooks(env):
+def test_consumer_copy_rewrites_planner_phrases_and_rejects_a_foreign_hook_pool(env):
     offer = candidates_for(env)
     assert consumer_jargon("采用等离子技术，关注秀发护理") == "关注"
     jargon = [direction.model_copy(update={"angle": "关注瓶身的轮廓关系"}) if direction.id == "direction_0" else direction
               for direction in offer.directions]
-    with pytest.raises(ValueError, match="不要写「关注」"):
-        validate_direction_offer(offer.brief, jargon, concept_pool_for(jargon))
+    corrected, _kept = validate_direction_offer(offer.brief, jargon, concept_pool_for(jargon))
+    assert corrected[0].angle == "在意瓶身的轮廓关系"
     scene = offer.brief.model_copy(update={"ad_form": "scene_story"})
     with pytest.raises(ValueError, match="开场钩子"):
         validate_direction_offer(scene, offer.directions, concept_pool_for(offer.directions))

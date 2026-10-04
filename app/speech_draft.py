@@ -76,7 +76,7 @@ def speech_draft_context(strategy, duration, initial_brief, merchant_request,
         f"原始商品依据（保留来源，功能和外观分别理解）：\n{facts}\n"
         f"尚不知道的信息：\n{encoded(brief.unknowns)}\n\n"
         f"已经选定产品视觉展示，核心画面如下：\n{selected.film_concept.key_visual}\n"
-        f"一句话创意：\n{selected.big_idea or selected.angle}\n"
+        f"核心创意：\n{selected.product_expression or selected.big_idea or selected.angle}\n"
         f"开头：\n{selected.hook}\n收尾：\n{selected.payoff}\n"
         f"观看过程：\n{selected.attraction_mechanism or '方向没有另写观看过程。按开头、核心画面和收尾，结合商品事实来写。'}\n"
         f"声音意图（保留配合要求，不是指定念出的措辞）：\n{selected.film_concept.sound_role or '方向没有另写声音任务。按 production 的声音形式配合画面，不复述动作。'}\n"

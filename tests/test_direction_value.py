@@ -30,14 +30,20 @@ def test_new_offers_do_not_require_the_old_value_essays(env, field, value):
 
 
 def test_schema_keeps_value_only_when_revising_a_direction_that_already_has_it():
+    fresh = strategy_decision_schema(new_directions=True)["$defs"]["CreativeDirection"]
+    review = direction_review_schema(8)["$defs"]["CreativeDirection"]
+    assert "audience_value" not in fresh["properties"]
+    assert "audience_value" not in review["properties"]
+    assert fresh["properties"]["product_expression"]["maxLength"] == 60
+    assert "product_expression" in fresh["required"]
+    assert review["properties"]["product_expression"]["maxLength"] == 60
+    assert "product_expression" in review["required"]
+    assert review["properties"]["consumer_insight"]["maxLength"] == 40
+    retained = strategy_decision_schema(retain_direction_value=True)["$defs"]["CreativeDirection"]
     for field in ("audience_value", "product_expression"):
-        fresh = strategy_decision_schema(new_directions=True)["$defs"]["CreativeDirection"]
-        assert field not in fresh["properties"]
-        retained = strategy_decision_schema(retain_direction_value=True)["$defs"]["CreativeDirection"]
         assert field in retained["required"] and retained["properties"][field]["minLength"] == 1
         assert "default" not in retained["properties"][field]
         assert field not in strategy_decision_schema(retain_direction_story=True)["$defs"]["CreativeDirection"]["required"]
-        assert field not in direction_review_schema(8)["$defs"]["CreativeDirection"]["properties"]
 
 
 def test_one_supported_value_can_have_three_executions_but_not_duplicate_development(env):

@@ -89,7 +89,9 @@
 .direction-card{border:1px solid #41354d;border-radius:12px;background:#28212f;padding:10px 12px;min-width:0}
 .direction-card.is-selected,.direction-card.is-submitting{border-color:#8b6db8;background:#30253f}
 .direction-card-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.direction-card-title{min-width:0}
 .direction-card-heading h4{font-size:12px;font-weight:600;line-height:1.6;color:#e9e1f1;margin:0;min-width:0}
+.direction-technique{margin:2px 0 0;font-size:10px;line-height:1.6;color:#b9a6c9}
 .direction-badges{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end;flex-shrink:0}
 .direction-recommended,.direction-chosen{display:inline-flex;align-items:center;gap:3px;font-size:9px;line-height:1.5;border-radius:5px;padding:2px 5px;white-space:nowrap}
 .direction-recommended{color:#c1acd9;background:#42304f;border:1px solid #62477a}

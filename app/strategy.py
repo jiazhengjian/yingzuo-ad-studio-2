@@ -87,7 +87,16 @@ JARGON_REPLACEMENTS = (
 CONSUMER_FIELDS = (
     "label", "angle", "audience_value", "product_expression", "story_summary",
     "attraction_mechanism", "hook", "development", "payoff", "consumer_insight", "big_idea",
+    "reason",
 )
+# Merchant-facing card lines. Storage still accepts older, longer text.
+CARD_LIMITS = {
+    "product_expression": 60,
+    "consumer_insight": 40,
+    "hook": 40,
+    "payoff": 40,
+    "reason": 40,
+}
 
 
 class _StrictModel(BaseModel):
@@ -124,9 +133,9 @@ PITCH_LINE = 40
 
 
 class FilmConcept(_StrictModel):
-    """Structure plus one picture. Memory and sound are filled in the script."""
+    """Structure plus the middle beat. Memory and sound are filled in the script."""
     structure: FilmStructure = Field(description="影片如何组织：产品视觉呈现/产品与场景交替/生活方式/剧情行动/人物讲解；不是三个候选必须各选一种")
-    key_visual: LongText = Field(description="核心画面：一句能想象的主体和变化，约30字，不超过40字")
+    key_visual: LongText = Field(description="中段，不超过40字。写这一拍的具体动作：剧情是转折，讲解是演示，产品片是产品高光。不是运镜清单")
     memory_anchor: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
         description="历史字段。新方向不写；脚本从核心画面和收尾推导观众留下的印象")
     sound_role: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
@@ -154,7 +163,7 @@ class ProductBrief(_StrictModel):
 
 class CreativeDirection(_StrictModel):
     film_concept: FilmConcept | None = Field(default=None, exclude_if=lambda value: value is None,
-        description="影片结构、核心画面、产品记忆点与声音任务；新提案必需，历史缺失不补写")
+        description="影片结构与中段动作；新提案必需，历史缺失不补写")
     production: ProductionPlan | None = Field(default=None, exclude_if=lambda value: value is None,
         description="本方向的商品形态与动作约束、出镜角色、声音形式；新创作必须明确，历史缺失不推断")
     id: Identifier
@@ -163,32 +172,32 @@ class CreativeDirection(_StrictModel):
     audience: ShortText
     scenario: ShortText
     angle: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
-        description="历史字段。新方向不写主打说明；卖点由一句话、核心画面和商品事实交给脚本展开")
+        description="历史字段。新方向不写主打说明；卖点由核心创意、中段和商品事实交给脚本展开")
     audience_value: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
         description="历史字段。新方向不写；脚本从已选方向和简报说明受众为何在意")
     product_expression: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
-        description="历史字段。新方向不写；脚本说明画面如何表达卖点")
+        description="核心创意，不超过60字。写成「把【已确认特点】和【一个动作或画面】绑在一起：……」。只绑已有事实，不写未确认功效")
     # Historical plans/gates predate these fields. Only newly authored offers
     # must provide them; reading or selecting a saved direction never invents
     # a synopsis from its old technical notes.
     story_summary: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
-        description="历史字段。新方向不写创意展开；脚本和分镜从一句话、核心画面、开头和收尾展开")
+        description="历史字段。新方向不写创意展开；脚本和分镜从核心创意、0–3秒、中段和结尾展开")
     attraction_mechanism: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
-        description="历史字段。新方向不写观看理由；脚本从开头和收尾组织观看过程")
+        description="历史字段。新方向不写观看理由；脚本从0–3秒、结尾和为什么吸引人组织观看过程")
     consumer_insight: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
-        description="历史字段。新方向不写观众处境长句；三个方向的差别用机制、钩子和品牌世界编号")
+        description="洞察，不超过40字。写成观众心里的一句话，说明为什么在意，不写他们正在做什么。这是创意假设，不是调研")
     big_idea: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
-        description="一句话创意，4到30字，观众听得懂。不是口号字卡，也不报功能名")
+        description="历史字段。新方向不写。脚本优先用核心创意 product_expression")
     hook_type: HookType | None = Field(default=None, exclude_if=lambda value: value is None,
         description="具名开场钩子，必须属于当前广告类型 playbook 允许的那一组")
     brand_world: BrandWorld | None = Field(default=None, exclude_if=lambda value: value is None,
         description="概念层的品牌世界路径：functional 功能环境、identity 身份态度、sensory 感官仪式。不是商品事实")
-    hook: LongText = Field(description="怎么开头：一句观众能懂的话，约30字，不超过40字。不是钩子编号的中文翻译")
+    hook: LongText = Field(description="0到3秒，不超过40字。写谁在做什么、看到或听到什么。不是钩子编号的中文翻译")
     development: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
-        description="历史字段。新方向不写中段展开；脚本从开头接到收尾")
-    payoff: LongText = Field(description="怎么收尾：一句画面或认识上的落点，约30字，不超过40字")
+        description="历史字段。新方向不写这段展开；中段写在 key_visual")
+    payoff: LongText = Field(description="结尾，不超过40字。写这一下具体落在什么画面或动作上")
     evidence_ids: list[Identifier] = Field(min_length=1, max_length=12)
-    reason: LongText = Field(description="创意依据：为什么这个方向能成立，写简短句子；不是消费者购买理由字段")
+    reason: LongText = Field(description="为什么吸引人，不超过40字。说明观众为什么会被吸引、停下来并记住。不承诺转化、销量或成片效果")
     production_notes: list[ShortText] = Field(min_length=1, max_length=8)
 
     @model_validator(mode="after")
@@ -712,6 +721,42 @@ def sanitize_direction_copy(direction: CreativeDirection) -> CreativeDirection:
     return direction.model_copy(update=updates)
 
 
+def clip_pitch(text: str, limit: int) -> str:
+    """Shorten one card line at a sentence boundary. Empty stays empty."""
+    cleaned = (text or "").strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    window = cleaned[:limit]
+    for mark in ("。", "！", "？", "；", "，"):
+        at = window.rfind(mark)
+        if at >= max(8, limit // 3):
+            return window[:at + 1].strip()
+    return window.strip()
+
+
+def clamp_direction_card(direction: CreativeDirection) -> CreativeDirection:
+    """Fit merchant-facing lines to the card. A long saved line is shortened, not rejected."""
+    updates = {}
+    for field, limit in CARD_LIMITS.items():
+        value = getattr(direction, field) or ""
+        clipped = clip_pitch(value, limit)
+        if clipped and clipped != value:
+            updates[field] = clipped
+    concept = direction.film_concept
+    if concept is not None and concept.key_visual:
+        clipped = clip_pitch(concept.key_visual, PITCH_LINE)
+        if clipped and clipped != concept.key_visual:
+            updates["film_concept"] = concept.model_copy(update={"key_visual": clipped})
+    if not updates:
+        return direction
+    return direction.model_copy(update=updates)
+
+
+def prepare_direction_card(direction: CreativeDirection) -> CreativeDirection:
+    """Replace planner words, then fit the card. The same object comes back when nothing changed."""
+    return clamp_direction_card(sanitize_direction_copy(direction))
+
+
 def require_consumer_language(directions: list[CreativeDirection]) -> None:
     """Reject planner phrasing in the copy later lines tend to repeat."""
     for direction in directions:
@@ -730,35 +775,36 @@ def _consumer_texts(direction: CreativeDirection) -> list[tuple[str, str]]:
 
 
 def require_pitch_lines(directions: list[CreativeDirection]) -> None:
-    """New cards are one sentence each. Saved directions may keep longer lines."""
+    """Card lines that are still too long were not clamped. Short historical lines stay."""
     for direction in directions:
         if len(direction.hook) > PITCH_LINE or len(direction.payoff) > PITCH_LINE:
             raise ValueError(f"方向 {direction.id} 的开头和收尾各不超过{PITCH_LINE}字")
+        if len(direction.reason) > PITCH_LINE:
+            raise ValueError(f"方向 {direction.id} 的为什么吸引人不超过{PITCH_LINE}字")
+        if len(direction.consumer_insight) > PITCH_LINE:
+            raise ValueError(f"方向 {direction.id} 的洞察不超过{PITCH_LINE}字")
+        if len(direction.product_expression) > 60:
+            raise ValueError(f"方向 {direction.id} 的核心创意不超过60字")
         concept = direction.film_concept
-        if concept is not None and not 4 <= len(concept.key_visual) <= PITCH_LINE:
-            raise ValueError(f"方向 {direction.id} 的核心画面用4到{PITCH_LINE}个字")
+        if concept is not None and len(concept.key_visual) > PITCH_LINE:
+            raise ValueError(f"方向 {direction.id} 的中段不超过{PITCH_LINE}字")
 
 
 def require_ad_concepts(directions: list[CreativeDirection], brief: ProductBrief | None = None) -> None:
-    """New offers need a one-line idea and a playbook hook.
+    """New offers need a playbook hook. Missing card lines do not fail the job.
 
-    Historical directions omit these fields and stay readable. This does not
-    judge whether the idea is good, only that the contract and wording are present.
+    Historical directions omit these fields and stay readable. Length is
+    clamped before this runs. This does not judge whether the idea is good.
     """
-    ideas = []
     for direction in directions:
-        if not direction.big_idea or direction.hook_type is None or direction.brand_world is None:
-            raise ValueError(f"方向 {direction.id} 必须写一句话创意、开场钩子和品牌世界路径")
-        if not 4 <= len(direction.big_idea) <= 30:
-            raise ValueError(f"方向 {direction.id} 的一句话创意用4到30个字")
+        if direction.hook_type is None or direction.brand_world is None:
+            raise ValueError(f"方向 {direction.id} 必须写开场钩子和品牌世界路径")
         structure = direction.film_concept.structure if direction.film_concept is not None else None
         form = brief.ad_form if brief is not None else None
         if direction.hook_type not in allowed_hooks(form, structure):
             raise ValueError(f"方向 {direction.id} 的开场钩子不属于当前广告类型")
-        ideas.append(_normal_form(direction.big_idea))
     require_consumer_language(directions)
     require_pitch_lines(directions)
-    _require_unique(ideas, "一句话概念")
 
 
 def _validate_sketch(brief: ProductBrief, sketch: ConceptSketch) -> None:
@@ -899,12 +945,17 @@ def validate_direction_offer(brief: ProductBrief, directions: list[CreativeDirec
             if (direction.rule_id, direction.hook_type, direction.brand_world,
                     tuple(direction.evidence_ids)) != canonical:
                 salvaged = True
-            updated = direction.model_copy(update={
+            updated = prepare_direction_card(direction.model_copy(update={
                 "rule_id": sketch.rule_id,
                 "hook_type": sketch.hook_type,
                 "brand_world": sketch.brand_world,
                 "evidence_ids": list(sketch.evidence_ids),
-            })
+            }))
+            if (updated.product_expression, updated.consumer_insight, updated.hook, updated.payoff,
+                    updated.reason, updated.film_concept.key_visual if updated.film_concept else "") != (
+                    direction.product_expression, direction.consumer_insight, direction.hook, direction.payoff,
+                    direction.reason, direction.film_concept.key_visual if direction.film_concept else ""):
+                salvaged = True
             structure = updated.film_concept.structure if updated.film_concept is not None else None
             allowed = allowed_hooks(brief.ad_form, structure)
             if updated.hook_type not in allowed:

@@ -9,37 +9,55 @@ import ProductionSummary from './ProductionSummary';
 
 type Props = Omit<ConversationGateProps, 'gate'> & { gate: DirectionGateData };
 
-function line(value?: string) {
-  return value?.trim() || '';
+const RULE_LABELS: Record<string, string> = {
+  sensory_detail: '感官细节', everyday_context: '生活情境', appearance_reveal: '外观揭示',
+  operation_walkthrough: '操作讲解', problem_solution: '问题与解决', evidence_comparison: '有依据的对比',
+  feature_value: '特点与选择理由', exaggeration: '夸张演绎', contrast_humor: '反差幽默',
+  identity_attitude: '身份与态度', ritual_sensory: '仪式与感官', situational_conflict: '情境冲突',
+};
+const HOOK_LABELS: Record<string, string> = {
+  macro_detail: '微距开场', silhouette: '剪影开场', signature_sound: '声音开场', scale_shift: '尺度开场',
+  awkward_moment: '尴尬开场', situational_conflict: '小冲突开场', arresting_line: '一句开场',
+  direct_question: '提问开场', counterintuitive: '反常识开场', result_first: '结果开场',
+};
+
+function clip(value: string | undefined, limit: number) {
+  const cleaned = value?.trim() || '';
+  if (cleaned.length <= limit) return cleaned;
+  const window = cleaned.slice(0, limit);
+  const earliest = Math.max(8, Math.floor(limit / 3));
+  for (const mark of ['。', '！', '？', '；', '，']) {
+    const at = window.lastIndexOf(mark);
+    if (at >= earliest) return window.slice(0, at + 1).trim();
+  }
+  return window.trim();
 }
 
-function openingAndEnding(option: DirectionOption) {
-  const hook = line(option.hook);
-  const payoff = line(option.payoff);
-  if (hook && payoff) return `${hook}；${payoff}`;
-  return hook || payoff;
+function techniqueTag(option: DirectionOption) {
+  const rule = RULE_LABELS[option.rule_id] || '';
+  const hook = option.hook_type ? HOOK_LABELS[option.hook_type] || '' : '';
+  if (rule && hook) return `${rule} · ${hook}`;
+  return rule || hook;
 }
 
 function PitchLines({ option }: { option: DirectionOption }) {
-  const seen = new Set<string>();
   const rows = [
-    ['一句话创意', line(option.big_idea)],
-    ['核心画面', line(option.film_concept?.key_visual)],
-    ['怎么开头、怎么收尾', openingAndEnding(option)],
-  ].filter(([, text]) => {
-    const key = text.replace(/\s+/g, ' ');
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+    ['核心创意', clip(option.product_expression, 60)],
+    ['洞察', clip(option.consumer_insight, 40)],
+    ['0–3秒', clip(option.hook, 40)],
+    ['中段', clip(option.film_concept?.key_visual, 40)],
+    ['结尾', clip(option.payoff, 40)],
+    ['为什么吸引人', clip(option.reason, 40)],
+  ].filter(([, text]) => text);
   if (!rows.length) return null;
   return <dl className="direction-film-main">{rows.map(([label, text]) => <div key={label}><dt>{label}</dt><dd>{text}</dd></div>)}</dl>;
 }
 
 function OptionContent({ option, selected, action }: { option: DirectionOption; selected?: boolean; action?: ReactNode }) {
+  const technique = techniqueTag(option);
   return <>
     <div className="direction-copy">
-    <div className="direction-card-heading"><h4>方向：{option.label}</h4><span className="direction-badges">
+    <div className="direction-card-heading"><div className="direction-card-title"><h4>方向：{option.label}</h4>{technique && <p className="direction-technique">{technique}</p>}</div><span className="direction-badges">
       {selected && <span className="direction-chosen"><Check size={12}/>已选择</span>}
       {option.recommended === true && <span className="direction-recommended">推荐</span>}
     </span></div>

@@ -21,7 +21,7 @@ description: 在用户所选表达方式与视觉意图内提出三个产品价�
 
 ## 输出与修订
 
-新三方向提供完整 brief、创作意图，以及每条方向的短提案：标题、一句不超过 30 字的 `big_idea`、一句不超过 40 字的 `key_visual`、一句开头 `hook`、一句收尾 `payoff`，加上 `production`。差别靠 `rule_id`、`hook_type`、`brand_world` 和 `evidence_ids`，不靠再写一遍处境或卖点。不要写 `audience_value`、`product_expression`、`story_summary`、`attraction_mechanism`、`consumer_insight`、`memory_anchor`、`sound_role`、`angle`、`development`。这些由选中后的脚本和分镜根据已选方向与简报展开。`label`、一句话、开头和收尾用观众能说的话，不写关注、呈现、兼顾、纳入、打造、高端质感。商品功能和效果的 `evidence_ids` 指向实际依据，情绪、场景、夸张和幽默不必另找事实编号，也不能写成功效。`reason` 一句即可，`production_notes` 只保留必要执行约束。
+新三方向提供完整 brief、创作意图，以及每条方向的短提案：`label`；`product_expression`（核心创意，不超过 60 字，写成「把【已确认特点】和【一个动作或画面】绑在一起：……」）；`consumer_insight`（洞察，不超过 40 字，观众心里为什么在意，不写他们正在做什么，是假设不是调研）；`hook`（0–3 秒，不超过 40 字，谁在做什么、看到或听到什么）；`key_visual`（中段，不超过 40 字的具体动作）；`payoff`（结尾，不超过 40 字）；`reason`（为什么吸引人，不超过 40 字，为什么被吸引、停下来并记住，不承诺转化）；再加上 `production`。中段按类型：剧情是起、转、合里的转，讲解是演示，产品片是产品高光。差别靠 `rule_id`、`hook_type`、`brand_world` 和 `evidence_ids`。不要写 `big_idea`、`audience_value`、`story_summary`、`attraction_mechanism`、`memory_anchor`、`sound_role`、`angle`、`development`。情绪走向、视觉调性和分镜由选中后的脚本展开。这些短句用观众能说的话，不写关注、呈现、兼顾、纳入、打造、高端质感。商品功能和效果的 `evidence_ids` 指向实际依据，情绪、场景、夸张和幽默不必另找事实编号，也不能写成功效。`production_notes` 只保留必要执行约束。
 
 新候选可推荐一项，但保持未选；只展开用户选中的方向。修订沿用方向 ID 与选择关系，不删除既有价值和核心概念，不借调整执行偷换路线。按来源重审旧备注与商品约束：保留用户固定要求，允许协调作者自拟的次序、重复动作与旧台词。历史缺少新字段不强补，具体字段权限服从本轮合同。
 

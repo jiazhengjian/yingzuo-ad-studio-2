@@ -413,8 +413,8 @@ def _selected_copy(strategy):
     if selected is None:
         return "", "", fact_text
     if isinstance(selected, dict):
-        return selected.get("big_idea") or "", selected.get("hook") or "", fact_text
-    return getattr(selected, "big_idea", "") or "", getattr(selected, "hook", "") or "", fact_text
+        return selected.get("product_expression") or selected.get("big_idea") or "", selected.get("hook") or "", fact_text
+    return getattr(selected, "product_expression", "") or getattr(selected, "big_idea", "") or "", getattr(selected, "hook", "") or "", fact_text
 
 
 def apply_shot_rewrite(director: dict, raw, issues: list[dict], *, facts_text: str = "") -> dict | None:

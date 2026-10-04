@@ -61,7 +61,7 @@ def test_ready_scene_story_review_keeps_text_fixes_and_canonical_fields():
     original = _scene_story_original(raw)
     review, reasons = salvage_direction_review(raw, original, select_rules(None), product_reference_count=1)
     assert review.ready is True
-    assert reasons == ["idea_field"]
+    assert reasons == ["idea_field", "pitch"]
     assert [direction.hook_type for direction in review.directions] == [
         direction.hook_type for direction in original.directions]
     assert [direction.brand_world for direction in review.directions] == [
@@ -141,7 +141,7 @@ def test_ready_cake_review_passes_when_only_the_note_says_audience():
         assert consumer_jargon(direction["film_concept"]["key_visual"]) is None
     review, reasons = salvage_direction_review(raw, original, select_rules(None), product_reference_count=1)
     assert review.ready is True
-    assert reasons == []
+    assert reasons == ["pitch"]
     assert review.checks[0].note == note
     assert review.summary == raw["summary"]
     assert review.directions[0].big_idea == raw["directions"][0]["big_idea"]
