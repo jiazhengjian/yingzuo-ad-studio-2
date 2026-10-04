@@ -152,7 +152,7 @@ def test_creative_option_uses_the_segment_rate_and_hides_pydantic_text(tmp_path)
     assert "validation error" in shown.lower() and "CreativeOption" in shown
     assert "validation error" not in merchant_facing_error(error.value).lower()
     assert "CreativeOption" not in merchant_facing_error(error.value)
-    assert merchant_facing_error(error.value) == "台词和时长没有对上，已保留图片。请点继续制作。"
+    assert merchant_facing_error(error.value) == "这是系统问题，已记录；你的方案和图片都还在。"
     stamped = deepcopy(plan["segments"][0])
     assert CreativeOption.model_validate(_creative_option(stamped)).segment.speech_characters_per_tenth == 48
     settings = Settings(data_root=tmp_path, deepseek_api_key="TEST_ONLY", tudou_api_key="TEST_ONLY")
@@ -282,3 +282,95 @@ def test_confirmed_or_submitted_jobs_keep_the_saved_character_sheet(tmp_path, ho
     assert sheet["id"] in resumed["segments"][0]["reference_asset_ids"]
     assert store.get_asset(scene["id"])["path"] == scene["path"]
     assert store.get_asset(sheet["id"])["path"] == sheet["path"]
+
+
+def _ready_review(plan):
+    from app.ad_script import CHECK_CRITERIA
+    spans, shots = [], []
+    for segment in plan["segments"]:
+        for span in segment.get("speech_spans") or []:
+            spans.append({"segment_id": segment["id"], "span_id": span["id"], "passed": True,
+                          "speaker_visibility": "not_applicable", "note": "完整台词与当前画面相容。"})
+        for shot in segment["shots"]:
+            shots.append({"segment_id": segment["id"], "shot_id": shot["id"], "passed": True,
+                          "visual_execution": {"verdict": "clear", "source": "description",
+                              "quote": shot["description"][:240], "explanation": "离线夹具审查当前镜头，画面与摄影变化相容。"},
+                          "temporal_omission": "no_omission", "note": "动作位于对应时窗。",
+                          "pacing": {"action_seconds_required": 1, "action_timing_passed": True,
+                                     "cut_necessity_passed": True, "note": "动作加辨认估计一秒。"}})
+    return {"ready": True,
+            "checks": [{"criterion": criterion, "passed": True, "note": "最终台词与画面共同说明已知商品。"}
+                       for criterion in CHECK_CRITERIA],
+            "execution_check": {"action_capacity": True, "state_continuity": True,
+                                "note": "动作窗口足够，商品状态前后一致。"},
+            "alignment": {"ready": True, "ad_expression_passed": True, "summary": "最终计划按已确认台词呈现商品。",
+                          "spans": spans, "shots": shots}}
+
+
+def test_reviewed_presenter_plan_stays_valid_after_the_speech_rate_is_stamped(tmp_path):
+    """A review saved before the server wrote the speech rate must still resume.
+
+    The recorded 20-second presenter job failed here: spans were already timed,
+    then speech_characters_per_tenth was stamped and the old fingerprint no
+    longer matched. Regenerating an unconfirmed character sheet must not turn
+    that into a card asking the merchant to plan again.
+    """
+    from app.ad_form_playbook import stamp_plan_speech_rate
+    from app.plan_review import validate_plan_review
+    store, project, plan, scene, _sheet, job = _saved_presenter_job(tmp_path, {
+        "generated": True, "character_id": "char_host", "character_name": "讲解人", "view_layout": "four_view"})
+    payload = store.get_job(job["id"])["payload"]
+    reviewed = deepcopy(payload["plan"])
+    for segment in reviewed["segments"]:
+        segment.pop("speech_characters_per_tenth", None)
+        segment.pop("reference_roles", None)
+        segment["reference_asset_ids"] = [item for item in segment["reference_asset_ids"] if item != scene["id"]]
+        segment["reference_asset_ids"] = [item for item in segment["reference_asset_ids"]
+                                          if store.get_asset(item)["kind"] == "product"]
+    bound = validate_plan_review(_ready_review(reviewed), reviewed).model_dump()
+    reviewed["plan_review"] = bound
+    stamp_plan_speech_rate(reviewed)
+    for segment in reviewed["segments"]:
+        segment["reference_roles"] = [{"asset_id": segment["reference_asset_ids"][0], "role": "product"}]
+        segment["reference_asset_ids"] = list(dict.fromkeys([*segment["reference_asset_ids"], scene["id"], _sheet["id"]]))
+    assert Plan.model_validate(reviewed).plan_review["reviewed_plan_sha256"] == bound["reviewed_plan_sha256"]
+    payload["plan"] = reviewed
+    store.update_job(job["id"], payload=payload, status="queued", error=None, phase="queued")
+    gateway = _HostSheet()
+    result = asyncio.run(Pipeline(store, gateway, _production_settings(tmp_path)).execute(job["id"]))
+    assert result["status"] == "awaiting_input", result.get("error")
+    assert "请重新策划" not in (result.get("error") or "")
+    assert "pydantic" not in (result.get("error") or "").lower()
+    assert gateway.calls == [["character_char_host"]]
+    assert scene["id"] in result["payload"]["plan"]["segments"][0]["reference_asset_ids"]
+    assert _sheet["id"] not in result["payload"]["plan"]["segments"][0]["reference_asset_ids"]
+
+
+def test_a_real_review_mismatch_is_refreshed_once_inside_the_job(tmp_path):
+    store, project, _plan, _scene, _sheet, job = _saved_presenter_job(tmp_path, {
+        "generated": True, "character_id": "char_host", "character_name": "讲解人", "view_layout": "four_view"})
+    payload = store.get_job(job["id"])["payload"]
+    from app.plan_review import validate_plan_review
+    reviewed = deepcopy(payload["plan"])
+    reviewed["plan_review"] = validate_plan_review(_ready_review(reviewed), reviewed).model_dump()
+    reviewed["plan_review"]["reviewed_plan_sha256"] = "0" * 64
+    payload["plan"] = reviewed
+
+    class _Once(_HostSheet):
+        def __init__(self):
+            super().__init__()
+            self.reviews = 0
+
+        async def review_saved_plan(self, candidate):
+            self.reviews += 1
+            return candidate
+
+    store.update_job(job["id"], payload=payload, status="queued", error=None, phase="queued")
+    gateway = _Once()
+    result = asyncio.run(Pipeline(store, gateway, _production_settings(tmp_path)).execute(job["id"]))
+    assert gateway.reviews == 1
+    assert result["status"] == "failed"
+    assert "请重新策划" not in (result.get("error") or "")
+    assert "pydantic" not in (result.get("error") or "").lower()
+    assert "validation" not in (result.get("error") or "").lower()
+    assert any(event["label"] == "已自动校正，继续制作中" for event in store.events_after(project["id"])["events"])

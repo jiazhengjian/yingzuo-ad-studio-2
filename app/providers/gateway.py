@@ -651,12 +651,12 @@ class Gateway:
                 # Narrow completeness guard, not a semantic quality score. The
                 # model must not silently turn an ad into comma-ended fragments.
                 if review_expression and any(re.search(r"[，,、：:；;]$", text.strip()) for text in words):
-                    raise ProviderError("广告台词存在未完成的句子，尚未保存方案或开始制作；请重新策划")
+                    raise ProviderError("广告台词存在未完成的句子，尚未保存方案或开始制作。请在对话里改台词后再继续。")
                 excess = [(index, len(text), slot["max_characters"]) for index, (text, slot) in enumerate(zip(words, slots))
                           if len(text) > slot["max_characters"]]
                 if excess:
                     details = "；".join(f"镜头{index + 1}为{count}字，上限{maximum}字" for index, count, maximum in excess[:3])
-                    raise ProviderError("口播未通过单次精简校验：" + details + "。尚未保存方案或开始制作，请重新策划")
+                    raise ProviderError("口播还没有收到达标字数，尚未保存方案或开始制作。请在对话里缩短台词后再继续。" + details)
                 for slot, narration in zip(slots, words):
                     revised["segments"][slot["segment_index"]]["shots"][slot["shot_index"]]["narration"] = narration
                 for segment in revised["segments"]:
@@ -667,10 +667,10 @@ class Gateway:
                     raise ValueError()
                 revised["script"] = edit["script"]
             if len(revised["script"]) > limit:
-                raise ProviderError(f"口播未通过单次精简校验：全文{len(revised['script'])}字，上限{limit}字。尚未保存方案或开始制作，请重新策划")
+                raise ProviderError(f"口播还没有收到达标字数：全文{len(revised['script'])}字，上限{limit}字。尚未保存方案或开始制作。请在对话里缩短台词后再继续。")
             return Plan.model_validate(revised, context={"require_shot_narration": native}).model_dump()
         except (KeyError, IndexError, ValueError, TypeError, AttributeError):
-            raise ProviderError("口播未通过单次精简结构与镜头对齐校验；没有截断台词或改动已确认方案，请重新策划") from None
+            raise ProviderError("口播没有通过结构与镜头对齐，没有截断台词或改动已确认方案。请在对话里说明要改的地方。") from None
 
     @property
     def tudou_headers(self):
@@ -1639,7 +1639,7 @@ class Gateway:
                    for direction in decision.directions):
                 raise ValueError("本方案商品、场景与角色参考图合计超过模型上限")
             if not choice_enabled and decision.kind in ("plan", "directions") and not sources:
-                raise ProviderError("尚未收到真实商品图，请上传后继续；没有保存方案或开始制作")
+                raise ProviderError("还没有可用的商品图，已有方案仍保留。请重新上传商品图。")
             if decision.kind not in allowed_decisions:
                 raise ValueError("请遵守 allowed_decisions；没有商品原图时先回复或澄清，未选择方向时不能直接生成方案")
             if decision.brief is not None:
@@ -2239,6 +2239,30 @@ class Gateway:
         if decision["kind"] != "plan":
             raise ProviderError("还需要商品信息才能确定广告方向，请通过对话继续补充；尚未开始制作")
         return decision["plan"]
+
+    async def review_saved_plan(self, plan):
+        """One fresh plan review for a saved film whose binding no longer matches.
+
+        The plan text is not rewritten. A review that is not ready, or a call
+        that cannot be checked, stays off the card as a recorded system issue.
+        """
+        from app.merchant_cards import SYSTEM_CARD
+        from app.plan_review import lower_failed_plan_verdicts, validate_plan_review
+        from app.progressive_planning import PLAN_REVIEW_SYSTEM, saved_plan_review_request
+        try:
+            raw = await self._planner_json(PLAN_REVIEW_SYSTEM, saved_plan_review_request(plan), [], max_tokens=7000)
+            review = validate_plan_review(lower_failed_plan_verdicts(raw, plan), plan,
+                                          require_speaker_visibility=True, require_temporal_omission=True,
+                                          require_temporal_omission_evidence=True, require_visual_execution=True,
+                                          require_review_policy=True)
+        except Exception as exc:
+            log_planner_guard_failure(exc)
+            raise ValueError(SYSTEM_CARD) from None
+        if not review.ready:
+            raise ValueError("方案检查没有通过，已有图片仍保留。请修改方案后再制作。")
+        updated = copy.deepcopy(plan)
+        updated["plan_review"] = review.model_dump()
+        return updated
 
     @staticmethod
     def _character_receipt_should_retire(receipt) -> bool:

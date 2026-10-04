@@ -124,22 +124,32 @@ def _validated_review_subject(plan: Plan | dict) -> Plan:
     return Plan.model_validate(data)
 
 
-def _fingerprint_validated_plan(plan: Plan, reviewed_references: _ReviewedReferences | None = None) -> str:
+# Written by the server after a review, or while preparing media. They must not
+# make a saved review look like the merchant changed the film.
+_SERVER_SEGMENT_FIELDS = ("speech_characters_per_tenth", "reference_roles")
+
+
+def _fingerprint_validated_plan(plan: Plan, reviewed_references: _ReviewedReferences | None = None, *,
+                                include_server_fields: bool = False) -> str:
     # Review opinions and skill execution provenance do not change the subject.
-    # All actual Plan fields (including facts, script, directing, production,
-    # original reference IDs, shots and speech timing) remain covered. Later
-    # media preparation may append references, with ownership/content checked
-    # by the existing picture gate. They are not part of this text-plan review.
+    # Merchant-visible content stays covered: facts, script, directing,
+    # production, original reference IDs, shots and speech timing. Speech rate
+    # and reference-role maps are server stamps. Later media preparation may
+    # append references; the picture gate still checks ownership and content.
     content = plan.model_dump(mode="json", exclude={
         "plan_review", "script_review", "alignment_review", "skill_trace"})
-    if reviewed_references is not None:
-        if set(reviewed_references) != {segment.id for segment in plan.segments}:
-            raise ValueError("综合审核的原图引用绑定须完整对应当前最终方案各段")
-        for segment in content["segments"]:
-            original_ids = reviewed_references[segment["id"]]
-            if segment["reference_asset_ids"][:len(original_ids)] != original_ids:
-                raise ValueError("综合审核的原图引用须作为当前最终方案的完整有序前缀保留")
-            segment["reference_asset_ids"] = list(original_ids)
+    if reviewed_references is not None and set(reviewed_references) != {segment.id for segment in plan.segments}:
+        raise ValueError("综合审核的原图引用绑定须完整对应当前最终方案各段")
+    for segment in content["segments"]:
+        if not include_server_fields:
+            for field in _SERVER_SEGMENT_FIELDS:
+                segment.pop(field, None)
+        if reviewed_references is None:
+            continue
+        original_ids = reviewed_references[segment["id"]]
+        if segment["reference_asset_ids"][:len(original_ids)] != original_ids:
+            raise ValueError("综合审核的原图引用须作为当前最终方案的完整有序前缀保留")
+        segment["reference_asset_ids"] = list(original_ids)
     wire = json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(wire.encode("utf-8")).hexdigest()
 
@@ -177,8 +187,14 @@ def validate_plan_review(raw: PlanReview | dict, plan: Plan | dict, *,
     if references is None:
         references = {segment.id: list(segment.reference_asset_ids) for segment in subject.segments}
     fingerprint = _fingerprint_validated_plan(subject, references)
-    if review.reviewed_plan_sha256 is not None and review.reviewed_plan_sha256 != fingerprint:
-        raise ValueError("综合审核记录必须对应当前最终方案；修改后须清除旧审核并重新审核")
+    stored_hash = review.reviewed_plan_sha256
+    if stored_hash is not None and stored_hash != fingerprint:
+        # Reviews saved before server fields were left out of the fingerprint
+        # still name this same film. Rebind to the canonical hash. A real
+        # script, shot, timing or fact change matches neither hash.
+        legacy = _fingerprint_validated_plan(subject, references, include_server_fields=True)
+        if stored_hash != legacy:
+            raise ValueError("综合审核记录必须对应当前最终方案；修改后须清除旧审核并重新审核")
     # New provider verdicts must complete the current review fields. Bound
     # records predating them remain readable without invented evidence.
     review.alignment = validate_av_review(review.alignment, subject, require_pacing=True,

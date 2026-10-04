@@ -369,14 +369,14 @@ def validate_plan(plan, duration_seconds=None, *, settings=None):
     requested = duration_seconds if duration_seconds is not None else sum(durations)
     segment_durations(requested)  # Validates the product's 10–60 second selection.
     if (strategy == "legacy_10s" and durations != segment_durations(requested)) or sum(durations) != requested:
-        raise ValueError("方案分段与项目所选时长不一致，请重新策划；没有自动改时长")
+        raise ValueError("方案与所选时长不一致，已有内容仍保留。请重新选择时长后再制作。")
     if plan.get("audio_strategy") not in ("voiceover", "native"):
         raise ValueError("不支持的音频策略")
     if plan.get("production") is not None or any(segment.get("speech_spans") is not None for segment in plan["segments"]):
         try:
             Plan.model_validate(plan)
         except ValidationError as error:
-            _fail_plan_structure(settings, "独立旁白方案的声音策略、内容或跨段对应无效，请重新策划",
+            _fail_plan_structure(settings, "独立旁白方案的声音策略、内容或跨段对应无效",
                                  _validation_details(error))
     result = copy.deepcopy(plan)
     result.pop("cta", None)
@@ -386,12 +386,13 @@ def validate_plan(plan, duration_seconds=None, *, settings=None):
 
 
 def merchant_facing_error(exc):
-    """Merchants see a short Chinese sentence. Pydantic's English wrapper stays in diagnostics."""
-    if isinstance(exc, ValidationError):
-        return "台词和时长没有对上，已保留图片。请点继续制作。"
-    if isinstance(exc, (ValueError, media.MediaError)) or getattr(exc, "safe_to_display", False):
-        return str(exc)
-    return "制作步骤失败，可恢复已知任务；不会自动重新提交视频。"
+    """Merchants see one plain Chinese sentence. Technical text stays in diagnostics."""
+    from .merchant_cards import present_exception
+    return present_exception(exc)
+
+
+def _review_binding_drift(exc: PlanStructureError) -> bool:
+    return any("综合审核记录必须对应" in str(item.get("msg", "")) for item in exc.validation_errors or [])
 
 
 class Pipeline:
@@ -670,9 +671,31 @@ class Pipeline:
         first = plan["segments"][0]
         return [{"id": "current", "label": "图片没问题，生成视频", "description": "使用已确认的商品原图与参考图片制作当前方案", "segment": copy.deepcopy(first)}]
 
+    async def _generation_plan(self, job, project):
+        """Accept a saved plan. Server-only stamps do not force another planning round."""
+        raw = copy.deepcopy(job["payload"]["plan"])
+        duration = project.get("duration_seconds", 20)
+        try:
+            plan = validate_plan(raw, duration, settings=self.settings)
+        except PlanStructureError as exc:
+            if not _review_binding_drift(exc) or (job.get("payload") or {}).get("plan_review_rechecked"):
+                raise
+            self.store.add_event(job["project_id"], job["id"], "step", "已自动校正，继续制作中")
+            self._payload(job["id"], plan_review_rechecked=True)
+            refresh = getattr(self.gateway, "review_saved_plan", None)
+            if refresh is None:
+                raise
+            plan = validate_plan(await refresh(raw), duration, settings=self.settings)
+        else:
+            previous = (raw.get("plan_review") or {}).get("reviewed_plan_sha256")
+            current = (plan.get("plan_review") or {}).get("reviewed_plan_sha256")
+            if previous and current and previous != current:
+                self.store.add_event(job["project_id"], job["id"], "step", "已自动校正，继续制作中")
+        return plan
+
     async def _generate(self, job):
         project = self.store.get_project(job["project_id"])
-        plan = validate_plan(job["payload"]["plan"], project.get("duration_seconds", 20), settings=self.settings)
+        plan = await self._generation_plan(job, project)
         if project["route"] == "presenter" and not getattr(self.settings, "presenter_verified", False):
             raise ValueError("中文出镜口播能力尚未验证，目前不能生成口播路线")
         budget = self._submission_budget(job)

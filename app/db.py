@@ -346,7 +346,7 @@ class Store:
             for segment in source_plan["segments"]:
                 segment["reference_asset_ids"] = [aid for aid in segment["reference_asset_ids"] if aid not in scene_ids]
             if source_plan != original_plan:
-                raise StaleRevision("已完成任务与当前方案内容不同，请先重新策划")
+                raise StaleRevision("已完成任务与当前方案内容不同，已有内容仍保留。请在对话里说明要改的地方。")
             for segment in source["payload"]["plan"]["segments"]:
                 step = self._dict(c.execute("SELECT * FROM steps WHERE job_id=? AND step_key=?", (source_job_id, "video:" + segment["id"])).fetchone())
                 if not step or step["state"] != "downloaded" or not step["task_id"]:

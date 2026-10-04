@@ -638,7 +638,7 @@ def test_text_only_conversation_rejects_plan_without_original_image(setup, monke
         return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(strategy)}}]})
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: real_client(*a, transport=httpx.MockTransport(handle), **kw))
     result = execute(store, settings, Gateway(settings), turn(store, project["id"], "no-image-plan", project["brief"]))
-    assert result["status"] == "failed" and "请上传后继续" in result["error"]
+    assert result["status"] == "failed" and "重新上传商品图" in result["error"]
     assert result["submission_count"] == 0 and result["lease_until"] == 0 and len(calls) == 1
     assert store.get_project(project["id"])["plan"] is None and store.pending_gate(project["id"]) is None
     assert store.project_detail(project["id"])["assets"] == []

@@ -68,8 +68,8 @@ test('only exhausted planning request failures expose a last-resort resume', () 
   assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
   const html = renderCard(job);
   assert.match(html, /继续处理/);
-  assert.match(html, /需求已保留/);
-  assert.doesNotMatch(html, /重新尝试|请重试|恢复任务|输入修改要求|检查素材/);
+  assert.match(html, /这是系统问题，已记录/);
+  assert.doesNotMatch(html, /重新尝试|请重试|恢复任务|输入修改要求|检查素材|请重新策划/);
   for (const progress of [{ error_code: 'planning_request_failed' },
     { ...job.progress, retryable: false }, { error_code: 'planning_content_failed', retry_action: 'retry_planning' }]) {
     assert.equal(retryRequest({ ...job, progress }), null);
@@ -125,9 +125,10 @@ test('non-retryable failures direct the user to materials or plan changes withou
     assert.equal(recoveryForJob(job).kind, 'check_materials');
     assert.equal(retryRequest(job), null);
     const html = renderCard(job);
-    assert.match(html, /请检查素材/);
-    assert.match(html, /重新确认方案/);
-    assert.doesNotMatch(html, /<button|恢复任务|重试失败片段/);
+    assert.match(html, /重新上传商品图/);
+    assert.match(html, /已有方案仍保留/);
+    assert.doesNotMatch(html, /恢复任务|重试失败片段|请重新策划/);
+    assert.equal((html.match(/<button/g) || []).length, 1);
   }
   assert.equal(recoveryForJob(fixture({ progress: { retryable: false, error_code: 'voice_too_long' } })).kind, 'edit_voice');
 });
@@ -193,11 +194,11 @@ test('an interrupted planner reply keeps the request and one last resume', () =>
   assert.equal(recoveryForJob(job).label, '继续处理');
   assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
   const html = renderCard(job);
-  assert.match(html, /这一步没有在系统这边完成/);
-  assert.match(html, /需求已保留/);
+  assert.match(html, /这是系统问题，已记录/);
+  assert.match(html, /方案和图片都还在/);
   assert.match(html, /继续处理/);
   assert.equal((html.match(/<button/g) || []).length, 1);
-  assert.doesNotMatch(html, /重新尝试|请重试|结构校验|输入修改要求|继续对话/);
+  assert.doesNotMatch(html, /重新尝试|请重试|结构校验|输入修改要求|继续对话|请重新策划/);
 });
 
 
@@ -230,8 +231,8 @@ test('a saved storyboard rejected for segment structure resumes that storyboard'
   assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
   const html = renderCard(job);
   assert.match(html, /继续处理/);
-  assert.match(html, /这一步没有在系统这边完成/);
-  assert.doesNotMatch(html, /不能沿用刚才的进度|按已保存的需求继续|输入修改要求/);
+  assert.match(html, /这是系统问题，已记录/);
+  assert.doesNotMatch(html, /不能沿用刚才的进度|按已保存的需求继续|输入修改要求|请重新策划/);
   const exhausted = { ...job, progress: { ...job.progress, retry_action: 'continue_conversation' } };
   assert.equal(recoveryForJob(exhausted).kind, 'continue_conversation');
 });
@@ -247,8 +248,8 @@ test('a structurally invalid planning reply resumes only after automatic recover
   assert.equal(recoveryForJob(job).label, '继续处理');
   assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
   const html = renderCard(job);
-  assert.match(html, /这一步没有在系统这边完成/);
-  assert.match(html, /需求已保留/);
+  assert.match(html, /这是系统问题，已记录/);
+  assert.match(html, /方案和图片都还在/);
   assert.match(html, /继续处理/);
   assert.equal((html.match(/<button/g) || []).length, 1);
   assert.doesNotMatch(html, /重新尝试|请重试|输入修改要求|继续对话/);
@@ -295,6 +296,28 @@ test('every planning recovery button calls an action that state can accept', () 
     if (expected === 'retry') assert.ok(retryRequest(job));
     else assert.equal(retryRequest(job), null);
   }
+});
+
+test('failure cards never show field names, pydantic, or validation wording', () => {
+  const { SYSTEM_FAILURE_COPY } = loadSource('jobRecovery.ts');
+  const samples = [
+    fixture({ error: '4 validation errors for CreativeOption\nsegment.speech_characters_per_tenth\n  Value error' }),
+    fixture({ error: '独立旁白方案的声音策略、内容或跨段对应无效，请重新策划' }),
+    fixture({ kind: 'plan', error: 'speech_spans pydantic validation',
+      progress: { error_code: 'planning_invalid_response', retry_action: 'retry_planning', retryable: true } }),
+    fixture({ progress: { error_code: 'voice_too_long' }, error: 'speech_characters_per_tenth validation' }),
+    fixture({ progress: { retryable: false, error_code: 'reference_image_unreadable' }, error: 'reference_asset_ids' }),
+    fixture({ kind: 'plan', progress: { error_code: 'planning_content_failed', retryable: false, retry_action: 'edit_plan',
+      issue_summary: ['shot.speech_characters_per_tenth failed validation', '第 1 镜：台词太满'] } }),
+  ];
+  for (const job of samples) {
+    const html = renderCard(job, { error: 'pydantic ValidationError speech_characters_per_tenth' });
+    assert.equal(SYSTEM_FAILURE_COPY, '这是系统问题，已记录；你的方案和图片都还在。');
+    assert.doesNotMatch(html, /pydantic|validation|speech_characters_per_tenth|speech_spans|CreativeOption|reference_asset_ids|请重新策划/i);
+  }
+  const kept = renderCard(samples[5]);
+  assert.match(kept, /第 1 镜：台词太满/);
+  assert.doesNotMatch(kept, /speech_characters_per_tenth|validation/i);
 });
 
 test('the last-resort card button requests a restart from the saved brief', () => {

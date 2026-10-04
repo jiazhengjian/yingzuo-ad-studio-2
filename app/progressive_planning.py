@@ -440,6 +440,41 @@ def compile_director(raw, strategy, duration, generation_strategy, asset_ids, lo
     return plan, schedule, draft.model_dump()
 
 
+def saved_plan_review_request(plan):
+    """One review payload for a film that is already saved.
+
+    This does not invent a schedule the plan cannot reproduce. A plan without
+    the director fields raises, and the caller records that as a system issue.
+    """
+    from .av_review import review_execution_windows, review_speech_requirements, review_transition_boundaries
+    from .plan_review import plan_review_schema
+    from .review_output import REVIEW_OUTPUT_VERSION, compact_review_schema
+    from .review_policy import REVIEW_POLICY_VERSION
+
+    projection = review_projection(plan)
+    request = {"stage": "plan_review", "schema": compact_review_schema(plan_review_schema(plan)),
+        "review_output_version": REVIEW_OUTPUT_VERSION, "review_policy_version": REVIEW_POLICY_VERSION,
+        "final_plan": projection, "speech_requirements": review_speech_requirements(plan),
+        "transition_boundaries": review_transition_boundaries(plan),
+        "merchant_request": "", "conversation": []}
+    from .av_review import _planned_action_limits
+    if _planned_action_limits(plan):
+        from .ad_script import AdScript
+        from .generation_policy import generation_groups
+        from .planning import expression_schedule
+        script = AdScript.model_validate(plan["ad_script"])
+        durations = [segment["duration_seconds"] for segment in plan["segments"]]
+        from .ad_form_playbook import speech_profile_for_strategy
+        tenth = speech_profile_for_strategy(plan.get("strategy")).characters_per_tenth
+        grouping = generation_groups(script, sum(durations), plan.get("generation_strategy", "legacy_10s"),
+                                     characters_per_tenth=tenth)
+        schedule = expression_schedule(script, durations, beat_groups=grouping["beat_groups"],
+                                       characters_per_tenth=tenth)
+        request["execution_windows"] = review_execution_windows(schedule, plan["segments"])
+        request["execution_window_rules"] = "beat_start/beat_end是本拍实际分配的段内窗口，不是成片实测。"
+    return request
+
+
 def review_projection(plan):
     """Remove authors' justifications while preserving the actual reviewed work."""
     result = deepcopy(plan)
@@ -452,7 +487,9 @@ def review_projection(plan):
         segment.pop("prompt", None)
         for shot in segment["shots"]:
             shot.pop("purpose", None)
-            shot["continuity"].pop("entry_reason", None)
+            continuity = shot.get("continuity")
+            if isinstance(continuity, dict):
+                continuity.pop("entry_reason", None)
         for span in segment["speech_spans"]:
             for anchor in span["anchors"]:
                 anchor.pop("visual_evidence", None)
