@@ -11,7 +11,18 @@ import asyncio
 import json
 import sqlite3
 import sys
+import tempfile
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
+
+
+def _mime_for(path):
+    return _MIME.get(Path(str(path)).suffix.lower(), "image/png")
 
 
 MEDIA_METHODS = (
@@ -48,7 +59,10 @@ def load_saved_job(db_path, job_id):
         if job is None:
             raise SystemExit("找不到这个策划任务")
         payload = json.loads(job["payload"] or "{}")
-        plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
+        plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else None
+        if plan is None:
+            decision = payload.get("decision") if isinstance(payload.get("decision"), dict) else {}
+            plan = decision.get("plan") if isinstance(decision.get("plan"), dict) else {}
         if not isinstance(plan.get("strategy"), dict):
             raise SystemExit("这个任务里没有已保存的方向")
         project = connection.execute("SELECT * FROM projects WHERE id=?", (job["project_id"],)).fetchone()
@@ -63,9 +77,11 @@ def load_saved_job(db_path, job_id):
                     metadata = json.loads(metadata)
                 except json.JSONDecodeError:
                     metadata = {}
+            keys = set(row.keys())
+            mime = row["mime"] if "mime" in keys and row["mime"] else _mime_for(row["path"])
             assets.append({
                 "id": row["id"], "kind": row["kind"], "name": row["name"], "path": row["path"],
-                "metadata": metadata if isinstance(metadata, dict) else {},
+                "mime": mime, "metadata": metadata if isinstance(metadata, dict) else {},
             })
         messages = [{"role": row["role"], "content": row["content"]} for row in connection.execute(
             "SELECT role, content FROM messages WHERE project_id=? ORDER BY created_at, id", (job["project_id"],))]
@@ -133,6 +149,23 @@ def _shots(plan):
     return rows
 
 
+def _one_sheet_each(assets):
+    """A character can have two saved sheets. The video request keeps one."""
+    chosen = {}
+    others = []
+    for asset in assets:
+        if asset.get("kind") != "character":
+            others.append(asset)
+            continue
+        character_id = (asset.get("metadata") or {}).get("character_id")
+        layout = (asset.get("metadata") or {}).get("sheet_layout")
+        rank = 2 if layout == "horizontal_16x9" else 1
+        current = chosen.get(character_id)
+        if current is None or rank >= current[0]:
+            chosen[character_id] = (rank, asset)
+    return others + [item[1] for item in chosen.values()]
+
+
 def _compiled_prompt(plan, assets):
     from app.pipeline import video_submission_spec
     from app.video_prompt import compiled_video_request
@@ -140,7 +173,7 @@ def _compiled_prompt(plan, assets):
     if not segments:
         return "", ["没有可编译的视频段"]
     segment = segments[-1]
-    ordered = _order_assets(assets, plan.get("production"))
+    ordered = _one_sheet_each(_order_assets(assets, plan.get("production")))
     notes = []
     if segment.get("reference_roles") is None and ordered:
         notes.append("新方案还没绑定参考图，已按商品、场景、角色的保存顺序补上。")
@@ -159,8 +192,22 @@ async def replan_offline(*, job_id, db_path, stage_call, gateway=None, skip_revi
     saved = load_saved_job(db_path, job_id)
     plan = saved["plan"]
     strategy = StrategyRecord.model_validate(plan["strategy"])
+
+    async def production_stage(system, data, assets, max_tokens=7000):
+        if isinstance(data, dict):
+            data.setdefault("ad_form", strategy.brief.ad_form)
+            from app.planner_stage import enrich_planner_stage
+            enrich_planner_stage(data)
+        prepared = []
+        for asset in assets or []:
+            item = dict(asset)
+            if not item.get("mime"):
+                item["mime"] = _mime_for(item.get("path") or item.get("name") or "")
+            prepared.append(item)
+        return await stage_call(system, data, prepared, max_tokens=max_tokens)
+
     result = await progressive_plan(
-        stage_call=stage_call,
+        stage_call=production_stage,
         on_progress=None,
         record_failure=lambda candidate: None,
         strategy=strategy,
@@ -220,7 +267,9 @@ def _print_report(report):
 def _live_stage_call():
     from app.config import Settings
     from app.providers.gateway import Gateway
-    gateway = stub_media(Gateway(Settings()))
+    settings = Settings.load()
+    settings.data_root = Path(tempfile.mkdtemp(prefix="replan-offline-"))
+    gateway = stub_media(Gateway(settings))
 
     async def stage_call(system, data, assets, max_tokens=7000):
         return await gateway._planner_json(system, data, assets, max_tokens=max_tokens)

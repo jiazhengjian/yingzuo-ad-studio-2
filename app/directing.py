@@ -65,6 +65,106 @@ def storyboard_continuity_schema():
     return schema
 
 
+_SHOT_FIELDS = {
+    "id", "coverage", "description", "product_visible", "purpose", "evidence_ids",
+    "character_ids", "continuity", "start", "end", "narration", "beat_id", "beat_ids",
+}
+_CONTINUITY_FIELDS = {
+    "start_state", "allowed_changes", "end_state", "camera_move", "entry_transition", "entry_reason",
+}
+_VISUAL_FIELDS = {
+    "version", "product_anchor_ids", "scene", "lighting", "color_palette", "camera_style", "sound",
+}
+_DIRECTOR_FIELDS = {"title", "video_flow", "ad_script", "visual_direction", "shots"}
+_NEUTRAL_START = "画面开始时，商品和人物停在本镜将要拍到的位置。"
+_QUOTE_CLOSE = {"“": "”", "\"": "\"", "「": "」", "『": "』"}
+
+
+def _blank_extra(value):
+    if value is None or value == [] or value == {}:
+        return True
+    return isinstance(value, str) and not value.strip()
+
+
+def _drop_empty_unknown(value, known):
+    if not isinstance(value, dict):
+        return
+    for key in list(value):
+        if key not in known and _blank_extra(value[key]):
+            value.pop(key)
+
+
+def _usable_state(value):
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _first_clause(text):
+    buffer, quote = [], None
+    for character in text:
+        if quote:
+            buffer.append(character)
+            if character == quote:
+                quote = None
+            continue
+        if character in _QUOTE_CLOSE:
+            quote = _QUOTE_CLOSE[character]
+            buffer.append(character)
+            continue
+        if character in "。；":
+            break
+        buffer.append(character)
+    return "".join(buffer).strip()
+
+
+def _derived_start_state(shot, previous_end):
+    description = shot.get("description") if isinstance(shot, dict) else ""
+    clause = _first_clause(description).strip("。； ") if isinstance(description, str) else ""
+    if clause:
+        return clause[:80]
+    if _usable_state(previous_end):
+        return previous_end.strip()
+    return _NEUTRAL_START
+
+
+def _fill_hard_cut_starts(shots):
+    previous_end = None
+    for shot in shots:
+        if not isinstance(shot, dict):
+            previous_end = None
+            continue
+        _drop_empty_unknown(shot, _SHOT_FIELDS)
+        continuity = shot.get("continuity")
+        if not isinstance(continuity, dict):
+            previous_end = None
+            continue
+        _drop_empty_unknown(continuity, _CONTINUITY_FIELDS)
+        if continuity.get("entry_transition") != "continuous" and not _usable_state(continuity.get("start_state")):
+            continuity["start_state"] = _derived_start_state(shot, previous_end)
+        end_state = continuity.get("end_state")
+        previous_end = end_state.strip() if _usable_state(end_state) else None
+
+
+def prepare_storyboard_wire(raw):
+    """Drop empty unknown fields and fill a missing hard-cut start state.
+
+    Continuous omissions stay for derive_continuous_start_states. A non-empty
+    authored start state is left unchanged. The caller's object is not mutated.
+    """
+    if not isinstance(raw, dict):
+        return raw
+    result = deepcopy(raw)
+    if isinstance(result.get("visual_direction"), dict):
+        _drop_empty_unknown(result["visual_direction"], _VISUAL_FIELDS)
+    if isinstance(result.get("shots"), list):
+        _fill_hard_cut_starts(result["shots"])
+    for segment in result.get("segments") or []:
+        if isinstance(segment, dict) and isinstance(segment.get("shots"), list):
+            _fill_hard_cut_starts(segment["shots"])
+    if "segments" not in result:
+        _drop_empty_unknown(result, _DIRECTOR_FIELDS)
+    return result
+
+
 def derive_continuous_start_states(raw):
     """Fill only omitted new-wire references, without changing authored data.
 

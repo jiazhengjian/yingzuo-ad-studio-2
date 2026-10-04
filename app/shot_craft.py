@@ -320,26 +320,35 @@ def _shot_text(shot) -> str:
     return " ".join(part for part in parts if isinstance(part, str))
 
 
+def _hand_on_product(shot) -> bool:
+    blob = _shot_text(shot)
+    has_hand = "手" in blob or bool(re.search(r"五指|手指", blob))
+    product_word = bool(re.search(r"商品|产品|瓶|机|杯|盒", blob))
+    if shot.get("product_visible") is False and not product_word:
+        return False
+    # Putting the product down is a hand even when the shot never writes 手.
+    # A flip or a button without a hand word is the product, not a hand.
+    if _PUT_DOWN.search(blob) and product_word:
+        return True
+    if not has_hand:
+        return False
+    return product_word or bool(re.search(r"握|拿|按|递|换", blob))
+
+
 def _append_hand_suggestions(suggestions, rows):
-    """Hand-and-product motion is advice. It never asks for another rewrite."""
+    """One note, and only when a person's hand is actually on the product."""
     note = "这一镜手和商品动作多，视频模型容易把手指和商品画变形。可以放慢、让商品拿稳，或拆成更简单的动作。这是建议。"
-    last_segment, last_index, last = rows[-1]
-    last_blob = _shot_text(last)
-    if _PUT_DOWN.search(last_blob):
-        quote = (last.get("description") or last_blob)[:240]
-        item = _suggestion(5, f"/segments/{last_segment}/shots/{last_index}/description", quote, note)
-        if item:
-            suggestions.append(item)
-    for segment_index, shot_index, shot in rows[:-1]:
-        blob = _shot_text(shot)
-        if not _COMPLEX_HAND.search(blob):
+    for segment_index, shot_index, shot in rows:
+        if not _hand_on_product(shot):
             continue
-        if shot.get("product_visible") is False and not re.search(r"商品|产品|瓶|机", blob):
+        blob = _shot_text(shot)
+        if not (_PUT_DOWN.search(blob) or _COMPLEX_HAND.search(blob) or re.search(r"手", blob)):
             continue
         quote = (shot.get("description") or blob)[:240]
         item = _suggestion(5, f"/segments/{segment_index}/shots/{shot_index}/description", quote, note)
         if item:
             suggestions.append(item)
+            return
 
 
 def _append_opening_suggestions(suggestions, rows, strategy):
@@ -351,7 +360,11 @@ def _append_opening_suggestions(suggestions, rows, strategy):
         item = _suggestion(3, target, quote, "人物讲解的第一镜还没看见商品。这是建议，方案会继续。")
         if item:
             suggestions.append(item)
-    elif form in ("scene_story", "brand_tvc") and quote and _window_hides_product(rows):
+    elif form == "brand_tvc" and quote and _window_hides_product(rows, 1.5):
+        item = _suggestion(3, target, quote, "前大约1.5秒还没看见商品。这是建议，方案会继续。")
+        if item:
+            suggestions.append(item)
+    elif form == "scene_story" and quote and _window_hides_product(rows, 3.0):
         item = _suggestion(3, target, quote, "前大约3秒还没看见商品或用法。这是建议，方案会继续。")
         if item:
             suggestions.append(item)
@@ -409,7 +422,10 @@ def craft_refine_request(plan, strategy) -> dict | None:
     if form == "presenter_pitch" and first.get("product_visible") is False:
         issues.append("opening_product")
         take(first)
-    elif form in ("scene_story", "brand_tvc") and _window_hides_product(rows):
+    elif form == "brand_tvc" and _window_hides_product(rows, 1.5):
+        issues.append("opening_product_window")
+        take(first)
+    elif form == "scene_story" and _window_hides_product(rows, 3.0):
         issues.append("opening_product_window")
         take(first)
     last = rows[-1][2]
@@ -439,7 +455,7 @@ def craft_refine_request(plan, strategy) -> dict | None:
         return None
     labels = {
         "opening_product": "人物讲解的第一镜还没看见商品",
-        "opening_product_window": "前大约3秒还没看见商品或用法",
+        "opening_product_window": "前大约1.5秒还没看见商品" if form == "brand_tvc" else "前大约3秒还没看见商品或用法",
         "short_ending": "结尾镜头不到2秒",
         "speaker_missing": "第一句所在的镜头没有说话的人",
     }
@@ -461,7 +477,7 @@ def craft_refine_request(plan, strategy) -> dict | None:
             "issue": "；".join(labels[name] for name in issues),
             "repair_contract": (
                 "只改列出的开头或结尾。人物讲解的第一镜要让商品清楚可认。"
-                "剧情和产品片可以先给处境，但前约3秒要看见商品或用法。"
+                "剧情可以先给处境，但前约3秒要看见商品或用法。产品片大约1.5秒内要认出商品。"
                 "最后一镜至少2秒，机位停住，商品不动。可以缩短前面的台词给结尾留时间。"
                 "出镜讲解的第一句所在镜头要有说话人。改完仍不通过就保留当前稿继续。"
             ),
@@ -477,7 +493,29 @@ def craft_refine_request(plan, strategy) -> dict | None:
 
 
 def _clauses(description: str) -> list[str]:
-    parts = [part.strip() for part in re.split(r"[。；]", description or "") if part.strip()]
+    text = description or ""
+    parts, buffer, quote = [], [], None
+    closing = {"“": "”", "\"": "\"", "「": "」", "『": "』"}
+    for character in text:
+        if quote:
+            buffer.append(character)
+            if character == quote:
+                quote = None
+            continue
+        if character in closing:
+            quote = closing[character]
+            buffer.append(character)
+            continue
+        if character in "。；":
+            part = "".join(buffer).strip()
+            if part:
+                parts.append(part)
+            buffer = []
+            continue
+        buffer.append(character)
+    tail = "".join(buffer).strip()
+    if tail:
+        parts.append(tail)
     return parts
 
 

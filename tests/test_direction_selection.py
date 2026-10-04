@@ -638,6 +638,31 @@ def test_product_supplement_keeps_direction_and_does_not_open_clarification(env,
     assert app.state.store.pending_gate(pid) is None
 
 
+def test_first_directions_do_not_claim_old_ones_were_set_aside(env, monkeypatch):
+    _, app, pid, asset = env
+    with app.state.store._connection(True) as connection:
+        connection.execute(
+            "UPDATE projects SET ad_form=?, ad_form_updated_context_version=1 WHERE id=?",
+            ("presenter_pitch", pid))
+    project = app.state.store.get_project(pid)
+    candidate = candidates_for(env)
+
+    async def planned(self, system, context, originals, max_tokens=7000):
+        if context["stage"] == "direction_review":
+            return approved_direction_review(context["directions"])
+        assert "先前的方向先放下" not in context.get("direction_reopen", "")
+        return {"kind": "directions", "message": "请选择方向", "brief": candidate.brief.model_dump(),
+            "directions": [item.model_dump() for item in candidate.directions],
+            "concept_pool": concept_pool_for(candidate.directions)}
+
+    monkeypatch.setattr(Gateway, "_planner_json", planned)
+    result = asyncio.run(Gateway(app.state.settings).decide(
+        project, [asset], [{"role": "user", "content": "人物讲解"}], [], None))
+    assert result["kind"] == "directions"
+    assert "先前的方向先放下" not in result["message"]
+    assert "准备了三个不同的广告方向" in result["message"]
+
+
 def test_explicit_reselection_says_the_previous_direction_is_set_aside(env, monkeypatch):
     _, app, pid, asset = env
     candidate = candidates_for(env)

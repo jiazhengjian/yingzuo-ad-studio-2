@@ -18,7 +18,7 @@ from .ad_script import (AD_EXPRESSION_VERSION, AdScript, derive_script_evidence,
                         script_stage_schema, script_narration, validate_script, validate_script_timing)
 from .beat_timing import execution_action_bounds
 from .review_policy import REVIEW_POLICY_VERSION
-from .directing import VisualDirection, ShotContinuity, derive_continuous_start_states
+from .directing import VisualDirection, ShotContinuity, derive_continuous_start_states, prepare_storyboard_wire
 from .generation_policy import generation_groups
 from .planning import compact_schema, expression_schedule, validate_expression_schedule
 from .schemas import Plan
@@ -28,6 +28,10 @@ from .refinement_patch import (REFINEMENT_OUTPUT_VERSION, SPARSE_REFINEMENT_INST
 
 class _DraftModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class RevisionKept(Exception):
+    """A revision could not be applied. Keep the plan from before that revision."""
 
 
 class ProgressivePlanningError(ValueError):
@@ -215,6 +219,28 @@ def _is_capacity_error(error):
     return not isinstance(error, ValidationError) and str(error) in _CAPACITY_ERRORS
 
 
+_CONTRACT_FIELDS = {"evidence_ids", "character_ids", "product_anchor_ids"}
+
+
+def _is_schema_shape_error(error):
+    """A storyboard the model shaped wrong, not a broken fact or cast reference."""
+    if isinstance(error, (KeyError, TypeError)):
+        return True
+    if not isinstance(error, ValidationError):
+        return False
+    items = error.errors(include_input=False, include_url=False)
+    if not items:
+        return False
+    for item in items:
+        if any(part in _CONTRACT_FIELDS for part in item.get("loc") or ()):
+            return False
+        if item.get("type") == "value_error":
+            text = str((item.get("ctx") or {}).get("error") or "")
+            if any(token in text for token in ("事实", "角色", "台词", "依据")):
+                return False
+    return True
+
+
 def refinement_schema(scope):
     """Request only editable fields; fixed globals are owned by the server."""
     schema = director_schema()
@@ -306,7 +332,7 @@ def _shares(weights, ticks):
 
 def canonical_director(raw, strategy, duration_seconds=None, locked_lines=()):
     """Validate authored fields before any capacity check or scoped revision."""
-    data = deepcopy(raw)
+    data = prepare_storyboard_wire(raw)
     data["ad_script"] = derive_script_evidence(data["ad_script"], strategy,
                                               server_skill_version=AD_EXPRESSION_VERSION,
                                               duration_seconds=duration_seconds,
@@ -380,10 +406,13 @@ def compile_director(raw, strategy, duration, generation_strategy, asset_ids, lo
     narration = script_narration(script)
     tenth = speech_profile_for_strategy(strategy).characters_per_tenth
     grouping = generation_groups(script, duration, generation_strategy, characters_per_tenth=tenth)
+    selected = next(d for d in strategy.directions if d.id == strategy.selected_direction_id)
+    from .ad_form_playbook import resolve_playbook_form
+    structure = selected.film_concept.structure if selected.film_concept is not None else None
     schedule = expression_schedule(script, grouping["durations"],
         beat_groups=grouping["beat_groups"] if generation_strategy == "continuity_v1" else None,
-        characters_per_tenth=tenth)
-    selected = next(d for d in strategy.directions if d.id == strategy.selected_direction_id)
+        characters_per_tenth=tenth,
+        ad_form=resolve_playbook_form(strategy.brief.ad_form, structure))
     segments = []
     used_shots = set()
     for index, reserved in enumerate(schedule):
@@ -464,12 +493,12 @@ def saved_plan_review_request(plan):
         from .planning import expression_schedule
         script = AdScript.model_validate(plan["ad_script"])
         durations = [segment["duration_seconds"] for segment in plan["segments"]]
-        from .ad_form_playbook import speech_profile_for_strategy
+        from .ad_form_playbook import form_for_strategy, speech_profile_for_strategy
         tenth = speech_profile_for_strategy(plan.get("strategy")).characters_per_tenth
         grouping = generation_groups(script, sum(durations), plan.get("generation_strategy", "legacy_10s"),
                                      characters_per_tenth=tenth)
         schedule = expression_schedule(script, durations, beat_groups=grouping["beat_groups"],
-                                       characters_per_tenth=tenth)
+                                       characters_per_tenth=tenth, ad_form=form_for_strategy(plan.get("strategy")))
         request["execution_windows"] = review_execution_windows(schedule, plan["segments"])
         request["execution_window_rules"] = "beat_start/beat_end是本拍实际分配的段内窗口，不是成片实测。"
     return request
@@ -906,6 +935,86 @@ def _restore_unsupported_estimates(before, revised, error):
     return restored if changed else None
 
 
+def _sparse_format_error(error):
+    return "稀疏返修" in str(error)
+
+
+def fallback_director(strategy, locked_lines=()):
+    """A compilable storyboard when the model cannot return a valid one.
+
+    It uses only facts and characters already on the selected direction.
+    """
+    selected = next(item for item in strategy.directions if item.id == strategy.selected_direction_id)
+    evidence = list(dict.fromkeys(selected.evidence_ids))
+    if not evidence:
+        evidence = [fact.id for fact in strategy.brief.facts[:1]]
+    characters = list(selected.production.characters) if selected.production else []
+    speaker = ""
+    if selected.production and selected.production.speech_mode == "character_dialogue":
+        speaker = selected.production.speaker_id or (characters[0].id if characters else "")
+    character_ids = [speaker] if speaker else ([characters[0].id] if characters else [])
+    speech = selected.production.speech_mode if selected.production else "voiceover"
+    lines = [line.strip() for line in locked_lines or () if isinstance(line, str) and line.strip()]
+    if speech == "none":
+        lines = lines or [""]
+    else:
+        while len(lines) < 2:
+            lines.append("看这里。" if not lines else "就是这个。")
+    lines = lines[:6]
+    product = (strategy.brief.product_name or "商品").strip() or "商品"
+    timing = {"visual_seconds": 2, "speech_overlap": True, "action_plan": "商品保持不动，供人看清",
+              "start_state": "商品在画面里", "end_state": "商品在画面里", "time_transition": "continuous"}
+    beats, shots = [], []
+    for index, line in enumerate(lines):
+        beats.append({"id": f"b{index}", "purpose": "看清商品", "message": "看清商品外观",
+                      "visual_role": "商品留在画面里", "narration": "" if speech == "none" else line,
+                      "evidence_ids": list(evidence), "timing": deepcopy(timing)})
+        shots.append({"id": f"shot_{index}", "coverage": [{"beat_id": f"b{index}", "weight": 1}],
+                      "description": f"{product}放在画面中间，光线稳定。", "product_visible": True,
+                      "purpose": "看清商品", "evidence_ids": list(evidence), "character_ids": list(character_ids),
+                      "continuity": {"start_state": "商品放在画面中间", "allowed_changes": "商品保持不动",
+                                     "end_state": "商品放在画面中间", "camera_move": "中景，机位固定",
+                                     "entry_transition": "opening" if index == 0 else "continuous",
+                                     "entry_reason": "看清商品"}})
+    return {"title": product[:20], "video_flow": "先看见商品，再停住。",
+            "ad_script": {"core_message": "看清商品", "audience_takeaway": "记住商品",
+                          "product_role": "商品出现在画面里", "evidence_ids": list(evidence), "beats": beats},
+            "visual_direction": {"product_anchor_ids": list(evidence[:1]), "scene": "实际使用的场所",
+                                 "lighting": "均匀自然光", "color_palette": "保留商品原色",
+                                 "camera_style": "中景固定机位", "sound": "环境声很轻"},
+            "shots": shots}
+
+
+async def _recover_storyboard_schema(stage_call, director_system, data, assets, broken, strategy, duration, locked, progress):
+    """One targeted repair, then one full regeneration, then a local storyboard."""
+    feedback = "分镜结构不完整。opening、cut、scene_change必须写出start_state。值为空的多余字段不要写。只返回完整分镜。"
+
+    def keep_going(error):
+        return error.__class__.__name__ not in ("StaleRevision", "PlanningSessionError")
+
+    progress("repairing_storyboard")
+    repair_payload = {**data, "stage": "storyboard_repair", "draft_storyboard": broken,
+                      "validation_feedback": feedback, "repair_instruction": feedback}
+    try:
+        candidate = await stage_call(director_system, repair_payload, assets)
+        canonical_director(candidate, strategy, duration_seconds=duration, locked_lines=locked)
+        return candidate
+    except Exception as error:
+        if not keep_going(error):
+            raise
+    progress("storyboarding")
+    regen_payload = {**data, "stage": "storyboard", "task_kind": "storyboard_regeneration",
+                     "previous_storyboard": broken, "repair_instruction": feedback}
+    try:
+        candidate = await stage_call(director_system, regen_payload, assets)
+        canonical_director(candidate, strategy, duration_seconds=duration, locked_lines=locked)
+        return candidate
+    except Exception as error:
+        if error.__class__.__name__ in ("StaleRevision", "PlanningSessionError"):
+            raise
+    return fallback_director(strategy, locked)
+
+
 async def progressive_plan(*, stage_call, on_progress, record_failure, strategy, draft,
                            draft_issues, duration, generation_strategy, assets, conversation,
                            merchant_request, current_plan, initial_brief=None, content_only=False,
@@ -914,7 +1023,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                            skip_review=False):
     from .av_review import review_execution_windows, review_speech_requirements, review_transition_boundaries
     from .beat_timing import script_capacity_budget
-    from .line_quality import offending_lines, rewrite_director_if_needed
+    from .line_quality import offending_lines, rewrite_director_if_needed, script_line_offenses
     from .plan_review import plan_review_schema, lower_failed_plan_verdicts, validate_plan_review
     from .review_output import compact_review_schema, REVIEW_OUTPUT_VERSION
     from .review_recovery import review_validation_feedback, preserve_review_rejections
@@ -973,6 +1082,8 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     shot_craft_used = False
     craft_refine_used = False
     craft_accepted = False
+    schema_recovery_used = False
+    fallback_installed = False
 
     def stop(message, issues, *, error_code="planning_content_failed"):
         raise ProgressivePlanningError(message + "。已有方案和素材已保留，尚未开始新的图片或视频生成",
@@ -985,6 +1096,8 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
         # never replaces the original baseline for scope or estimate guards.
         current = before
         initial_feedback = feedback
+        format_retried = False
+        force_full = False
         reviewed_timing = (_reviewed_timing_authorization(before, plan, bound_review)
                            if plan is not None and bound_review is not None else None)
         limit_names = {0: "零轮", 1: "一轮", 2: "两轮"}
@@ -1001,7 +1114,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 "review_feedback": feedback, "repair_scope": scope,
                 "repair_attempt": repairs, "repair_attempt_limit": max_refinements,
                 "repair_rules": "只输出本次schema的可编辑字段。title、visual_direction以及未允许更新的三项摘要由程序保留原值，不重写。一次处理全部已知问题，仅修改允许范围及必要相邻状态。保留其他内容和用户固定要求；不能只修改purpose、action_plan或审核说明。完成后程序重排时间并独立完整复核。"}
-            sparse_allowed = sparse_refinement_compatible(current, scope)
+            sparse_allowed = sparse_refinement_compatible(current, scope) and not force_full
             refinement_system = DIRECTOR_SYSTEM
             if sparse_allowed:
                 sparse_schema = sparse_refinement_schema(refinement["schema"], current, scope)
@@ -1025,6 +1138,8 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             candidate = await stage_call(refinement_system, refinement, assets)
             try:
                 if isinstance(candidate, dict) and "patch" in candidate:
+                    if force_full:
+                        raise ValueError("稀疏返修不能替代完整返修")
                     candidate = compose_sparse_refinement(candidate, current, scope)
                 revised = canonical_director(compose_refinement(candidate, before, scope), strategy,
                                              duration_seconds=duration, locked_lines=locked).model_dump()
@@ -1090,7 +1205,14 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 record_failure(plan)
                 raise ProgressivePlanningError(str(error), issue_summary=list(issues.values()),
                     repair_attempts=repairs, error_code=error.error_code) from None
-            except (ValueError, KeyError, TypeError):
+            except (ValueError, KeyError, TypeError) as error:
+                if _sparse_format_error(error) and not format_retried:
+                    format_retried = True
+                    force_full = True
+                    repairs -= 1
+                    continue
+                if _sparse_format_error(error):
+                    raise RevisionKept from None
                 record_failure(plan)
                 stop("本次调整未能保留已确认内容或未受影响的方案，已保留调整前的成果", issues)
             mapping_improved = (initial_feedback.get("kind") == "evidence_mapping"
@@ -1104,12 +1226,29 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
         try:
             plan, schedule, coordinated = compile_director(raw, strategy, duration, generation_strategy,
                                                            [a["id"] for a in assets], locked)
-        except ValueError as error:
+        except (ValueError, KeyError, TypeError) as error:
             # A known reference-to-shot mapping error can use one remaining
-            # repair. Nothing is auto-filled and actual work is fully reviewed.
+            # repair. A storyboard that cannot even be read is repaired inside
+            # the job. Nothing is auto-filled and actual work is fully reviewed.
             try:
                 before = canonical_director(raw, strategy, duration_seconds=duration, locked_lines=locked).model_dump()
-            except (ValueError, KeyError, TypeError):
+            except (ValidationError, KeyError, TypeError) as shape_error:
+                # Shape problems stay inside the job: one repair, one regeneration,
+                # then a local storyboard. Dropped facts and cast are not shape.
+                if _is_schema_shape_error(shape_error):
+                    if not schema_recovery_used:
+                        schema_recovery_used = True
+                        raw = await _recover_storyboard_schema(
+                            stage_call, director_system, data, assets, raw, strategy, duration, locked, progress)
+                        continue
+                    if not fallback_installed:
+                        record_failure(None)
+                        raw = fallback_director(strategy, locked)
+                        fallback_installed = True
+                        continue
+                record_failure(None)
+                stop("本次方案结构不完整，暂未采用", {("contract",): "方案结构、商品依据或已确认内容需要调整"})
+            except ValueError:
                 record_failure(None)
                 stop("本次方案结构不完整，暂未采用", {("contract",): "方案结构、商品依据或已确认内容需要调整"})
             mapping_scope = _evidence_mapping_scope(error, before, strategy)
@@ -1126,7 +1265,10 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                     "repair_contract": "依据实际内容检查引用：无关依据从该拍移除；实际使用的已有依据落实到覆盖该拍的镜头。不能只机械补ID、补造画面或加入新事实。"}
                 if previous_review is not None:
                     feedback["previous_review"] = previous_review
-                raw = await refine(before, mapping_scope, feedback, issues)
+                try:
+                    raw = await refine(before, mapping_scope, feedback, issues)
+                except RevisionKept:
+                    stop("商品依据与镜头对应仍未完成，已停止重复尝试", issues)
                 continue
             # Other schema/ownership errors and missing locks stop.
             repairable = _is_capacity_error(error)
@@ -1151,9 +1293,18 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 feedback["previous_review"] = previous_review
                 feedback["previous_review_basis"] = "上一稿完整审核结果；结合当前稿及容量冲突汇总仍未解决的问题，已经修好的内容须保留。"
                 issues.update(previous_issues)
-            raw = await refine(before, scope, feedback, issues)
+            try:
+                raw = await refine(before, scope, feedback, issues)
+            except RevisionKept:
+                stop("自动调整后动作与台词容量仍未改善，已停止重复尝试", issues)
             continue
-        if not jargon_rewrite_used and offending_lines(coordinated.get("ad_script") or {}, locked_lines=locked):
+        spoken = coordinated.get("ad_script") or {}
+        # Per-line jargon stays independent of the strategy. Cross-line craft
+        # still sees the ad type, without opening the product-reference check.
+        if not jargon_rewrite_used and (
+            offending_lines(spoken, locked_lines=locked)
+            or script_line_offenses(spoken, strategy, locked)
+        ):
             progress("writing_script")
             called, replacement = await rewrite_director_if_needed(
                 stage_call, coordinated, strategy, duration, locked)
@@ -1184,7 +1335,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             try:
                 revised = await refine(coordinated, craft_request["scope"], craft_request["feedback"],
                                        craft_request["issues"])
-            except ProgressivePlanningError:
+            except (ProgressivePlanningError, RevisionKept):
                 revised = None
             if revised is None:
                 craft_accepted = _accept_craft_issue(diagnostic_settings, craft_request) or craft_accepted
@@ -1278,5 +1429,8 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             stop("自动调整后同一内容问题仍未改善，已停止重复尝试", issues)
         previous_review, previous_issues = feedback, issues
         previous_capacity, previous_draft = capacity, coordinated
-        raw = await refine(coordinated, repair_scope(feedback, coordinated, plan), feedback, issues,
-                           plan=plan, schedule=schedule, bound_review=review)
+        try:
+            raw = await refine(coordinated, repair_scope(feedback, coordinated, plan), feedback, issues,
+                               plan=plan, schedule=schedule, bound_review=review)
+        except RevisionKept:
+            return plan

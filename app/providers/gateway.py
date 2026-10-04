@@ -1577,46 +1577,10 @@ class Gateway:
                 data["ad_form"] = project["ad_form"]
             traces = []
             if choice_enabled:
-                from app.runtime_skills import stage_skill_context, skill_trace as loaded_skill_trace, shared_reference_trace
-                stage = data["stage"]
-                skill_stage = "storyboard" if stage == "storyboard_repair" else stage
-                if stage == "ad_script" and data.get("draft_format") == "content_only":
-                    skill_stage = "content_draft"
-                if stage == "ad_script" and data.get("draft_format") == "speech_only":
-                    skill_stage = "speech_draft"
-                if data.get("task_kind") == "line_jargon_rewrite":
-                    skill_stage = "line_rewrite"
-                if data.get("task_kind") == "shot_craft_rewrite":
-                    skill_stage = "shot_craft_rewrite"
-                if skill_stage == "storyboard" and not getattr(self.settings, "progressive_planning_enabled", False):
-                    skill_stage = "legacy_storyboard"
-                from app.ad_form_playbook import (ending_policy, resolve_playbook_form, speech_profile,
-                                                   structure_from_stage_data, tagline_policy)
-                playbook_form = (resolve_playbook_form(data.get("ad_form"), structure_from_stage_data(data))
-                                 if "ad_form" in data else None)
-                data["tagline_policy"] = tagline_policy()
-                data["ending_policy"] = ending_policy(playbook_form)
-                bundle = (stage_skill_context(skill_stage, playbook_form=playbook_form) if playbook_form
-                          else stage_skill_context(skill_stage))
-                data["stage_skills"] = bundle
-                if playbook_form in ("brand_tvc", "scene_story", "presenter_pitch") and isinstance(data.get("speech_budget"), dict):
-                    profile = speech_profile(playbook_form)
-                    data["speech_budget"]["characters_per_second"] = profile.characters_per_second
-                    data["speech_budget"]["max_beat_characters"] = profile.max_beat_characters
-                    if isinstance(data.get("duration_seconds"), int):
-                        data["speech_budget"]["max_total_characters"] = data["duration_seconds"] * profile.characters_per_tenth // 10
-                bundles = [bundle]
-                if stage in ("ad_script", "script_review") and isinstance(data.get("creative_strategy"), dict):
-                    data["creative_strategy"].pop("selected_direction", None)
-                data["output_style"] = "字段简洁完整；共享人物外观、商品形态和场所不逐段复述。动作状态只写理解接续所必需的变化；审核只给可定位结论，不重述整份方案。"
-                if stage == "strategy":
-                    data["orchestrator_skills"] = stage_skill_context("orchestrator")
-                    bundles.insert(0, data["orchestrator_skills"])
-                # Retain historical version/hash fields required by the script
-                # contract, not the duplicated legacy authored method text.
-                for key in ("runtime_skill", "ad_expression_skill"):
-                    if isinstance(data.get(key), dict):
-                        data[key] = {k: v for k, v in data[key].items() if k != "content"}
+                from app.planner_stage import enrich_planner_stage
+                from app.runtime_skills import skill_trace as loaded_skill_trace, shared_reference_trace
+                bundles = enrich_planner_stage(
+                    data, legacy_storyboard=not getattr(self.settings, "progressive_planning_enabled", False))
                 for loaded in bundles:
                     for trace in [*loaded_skill_trace(loaded), *shared_reference_trace(loaded)]:
                         skill_trace.append(trace)
@@ -1743,6 +1707,8 @@ class Gateway:
         existing_direction = None
         existing_creative_intent = None
         latest_direction_gate = next((g for g in reversed(gates) if g.get("kind") == "direction"), None)
+        saved_directions = ((current_plan or {}).get("strategy") or {}).get("directions") or []
+        had_directions = bool(latest_direction_gate) or bool(saved_directions)
         unselected_offer = bool(latest_direction_gate and latest_direction_gate.get("selected_option_id") is None)
         if choice_enabled and not new_directions_requested and not unselected_offer:
             saved_strategy = (current_plan or {}).get("strategy") or {}
@@ -1824,7 +1790,7 @@ class Gateway:
                 context["product_supplement"] = "商家补充了商品图或商品信息。把新事实并进现有brief，沿用已选方向的id和rule_id，kind只能是plan。不要澄清，不要重新给出三个方向。"
             if needs_ad_form_choice(project):
                 context["ad_form_question"] = ad_form_question()
-        if new_directions_requested:
+        if new_directions_requested and (had_directions or not form_invalidates_plan):
             context["direction_reopen"] = ("广告倾向已改，先前的方向先放下。请按新的偏好重新选一个方向，并在回复里直接说明这一点。"
                 if form_invalidates_plan else
                 "商家明确要求更换创意方向。先前的选择先放下，重新给出三个方向，并在回复里直接说明：因为你要求换方向，所以重新选择。")
@@ -1970,17 +1936,24 @@ class Gateway:
                             save_failed_planner_output(self.settings, last_stage_result)
                             raise ProviderError("创意方向尚未通过内容检查，已有方案和素材已保留；本次未开始图片或视频生成")
                         candidates = reviewed_candidates(review, candidates, context["strategy_rules"])
-                    if new_directions_requested:
-                        offer_message = ("广告倾向已改，先前的方向先放下。请按新的偏好重新选一个方向。"
-                            if form_invalidates_plan else
-                            "你要求更换创意方向，先前的选择先放下。请从下面三个方向里重新选一个。")
+                    if new_directions_requested and form_invalidates_plan and had_directions:
+                        offer_message = "广告倾向已改，先前的方向先放下。请按新的偏好重新选一个方向。"
+                    elif new_directions_requested and not form_invalidates_plan:
+                        offer_message = "你要求更换创意方向，先前的选择先放下。请从下面三个方向里重新选一个。"
                     else:
                         offer_message = "准备了三个不同的广告方向，选一个后再展开脚本和画面。"
                     return AgentDecision(kind="directions", message=offer_message,
                         direction_candidates=candidates, planning_brief=candidates.brief, skill_trace=skill_trace).model_dump()
                 if decision.kind != "plan":
-                    return AgentDecision(kind=decision.kind, message=decision.message, questions=decision.questions,
-                        planning_brief=decision.brief, skill_trace=skill_trace if choice_enabled else None).model_dump()
+                    from app.ad_form import plain_merchant_text
+                    questions = []
+                    for question in decision.questions:
+                        item = question.model_dump()
+                        item["prompt"] = plain_merchant_text(item.get("prompt") or "")
+                        questions.append(item)
+                    return AgentDecision(kind=decision.kind, message=plain_merchant_text(decision.message),
+                        questions=questions, planning_brief=decision.brief,
+                        skill_trace=skill_trace if choice_enabled else None).model_dump()
             selected = next(d for d in strategy.directions if d.id == strategy.selected_direction_id)
             from app.ad_form_playbook import speech_profile_for_strategy
             speech = speech_profile_for_strategy(strategy)
@@ -2214,7 +2187,8 @@ class Gateway:
                     "script_budget": context["script_budget"], "assets": context["assets"],
                     "approved_ad_script": ad_script.model_dump(),
                     "expression_schedule": expression_schedule(ad_script, durations,
-                        beat_groups=grouping["beat_groups"] if generation_strategy == "continuity_v1" else None),
+                        beat_groups=grouping["beat_groups"] if generation_strategy == "continuity_v1" else None,
+                        ad_form=resolve_playbook_form(strategy.brief.ad_form, getattr(getattr(selected, "film_concept", None), "structure", None))),
                     "generation_grouping": grouping,
                     "directing_contract_required": generation_strategy == "continuity_v1",
                     "creative_strategy": {"brief": strategy.brief.model_dump(), "selected_direction": selected.model_dump()},
@@ -2231,7 +2205,9 @@ class Gateway:
                     # identical direction/cast/voice/constraint tree.
                     compilation["creative_strategy"].pop("selected_direction")
                 def validate_storyboard(raw):
-                    candidate = derive_continuous_start_states(raw) if choice_enabled else copy.deepcopy(raw)
+                    from app.directing import prepare_storyboard_wire
+                    prepared = prepare_storyboard_wire(raw)
+                    candidate = derive_continuous_start_states(prepared) if choice_enabled else prepared
                     # Immutable facts and reviewed copy remain server-owned.
                     candidate["facts"] = {"name": strategy.brief.product_name, "claims": [f.text for f in strategy.brief.facts]}
                     candidate["strategy"] = strategy.model_dump()
@@ -2424,7 +2400,11 @@ class Gateway:
                 save_failed_planner_output(self.settings, last_stage_result)
             error = ProviderError(str(exc))
             error.error_code, error.retryable = exc.error_code, False
-            error.retry_action = "continue_conversation" if exc.error_code == "planning_review_incomplete" else "edit_plan"
+            if "结构不完整" in str(exc):
+                error.retryable = True
+                error.retry_action = "retry_planning"
+            else:
+                error.retry_action = "continue_conversation" if exc.error_code == "planning_review_incomplete" else "edit_plan"
             error.issue_summary = getattr(exc, "issue_summary", [])
             error.repair_attempts = getattr(exc, "repair_attempts", 0)
             raise error from None

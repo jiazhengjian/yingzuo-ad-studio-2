@@ -134,10 +134,10 @@ class Store:
     def create_project(self, brief, route, title=None, duration_seconds=20, ad_form=None):
         from .schemas import segment_durations
         segment_durations(duration_seconds)
-        from .ad_form import AD_FORM_LABELS, explicit_ad_form
+        from .ad_form import AD_FORM_LABELS, infer_ad_form
         if ad_form is not None and ad_form not in AD_FORM_LABELS:
             raise ValueError("广告倾向无效")
-        ad_form = ad_form or explicit_ad_form(brief)
+        ad_form = ad_form or infer_ad_form(brief)
         if route not in ("product", "presenter"):
             raise ValueError("不支持的制作路线")
         if not str(brief).strip():
@@ -395,7 +395,7 @@ class Store:
         already-running request or a completed result.
         """
         from .planning_session import (allow_manual_planning_retry, completed_storyboard_checkpoint,
-                                       reopen_rejected_stage)
+                                       drop_storyboard_checkpoint, reopen_rejected_stage)
 
         with self._connection(True) as c:
             job = self._dict(c.execute("SELECT * FROM jobs WHERE id=? AND project_id=?",
@@ -409,14 +409,22 @@ class Store:
             progress = job.get("progress") or {}
             payload = dict(job.get("payload") or {})
             checkpoint = payload.get("planning_checkpoint")
+            structure_resume = "结构不完整" in str(job.get("error") or "")
+            if structure_resume:
+                if isinstance(checkpoint, dict):
+                    resumed = drop_storyboard_checkpoint(checkpoint)
+                    payload = {**payload, "planning_checkpoint": resumed} if resumed is not None else {
+                        key: value for key, value in payload.items() if key != "planning_checkpoint"}
+                else:
+                    payload = {key: value for key, value in payload.items() if key != "planning_checkpoint"}
             # The plan was rejected after storyboard and review had both been saved.
             # Replay those results instead of opening a new job from the brief.
-            if (progress.get("error_code") == "planning_invalid_response"
+            elif (progress.get("error_code") == "planning_invalid_response"
                     and progress.get("retry_action") in ("edit_plan", "retry_planning")
                     and not payload.get("plan_structure_replayed")
                     and completed_storyboard_checkpoint(checkpoint)):
                 payload = {**payload, "plan_structure_replayed": True}
-            elif progress.get("retry_action") != "retry_planning" or not progress.get("retryable"):
+            elif not structure_resume and (progress.get("retry_action") != "retry_planning" or not progress.get("retryable")):
                 if progress.get("error_code") in ("planning_review_incomplete", "planning_invalid_response", "planning_request_limit"):
                     raise StaleRevision("这次策划已停止，不能直接重提同一步骤；已有内容仍保留，可继续对话")
                 raise StaleRevision("本次方案需要调整，请通过输入框说明修改要求；已有成果仍保留")
@@ -965,7 +973,7 @@ class Store:
 
     def create_turn(self, project_id, body_dict):
         from .schemas import TurnInput
-        from .ad_form import (AD_FORM_LABELS, answer_ad_form, explicit_ad_form,
+        from .ad_form import (AD_FORM_LABELS, answer_ad_form, explicit_ad_form, infer_ad_form,
                              rejects_current_ad_form, unresolved_ad_form_change)
         from .planning import keeps_selected_direction, product_images_are_new
         body = TurnInput.model_validate(body_dict).model_dump()
@@ -988,6 +996,8 @@ class Store:
                 names.append(a["name"])
             content = body["content"].strip()
             text_form = explicit_ad_form(content)
+            if text_form is None and p.get("ad_form") is None:
+                text_form = infer_ad_form(content) or infer_ad_form(p.get("brief") or "")
             if body.get("ad_form") and text_form and body["ad_form"] != text_form:
                 raise ValueError("广告倾向选择与本次文字要求不一致，请保留一个选择")
             chosen_form = body.get("ad_form") or text_form

@@ -240,13 +240,13 @@ def _planned_action_limits(data):
         segments = data["segments"]
         durations = [segment["duration_seconds"] for segment in segments]
         generation = data.get("generation_strategy", "legacy_10s")
-        from .ad_form_playbook import speech_profile_for_strategy
+        from .ad_form_playbook import form_for_strategy, speech_profile_for_strategy
         tenth = speech_profile_for_strategy(data.get("strategy")).characters_per_tenth
         grouping = generation_groups(script, sum(durations), generation, characters_per_tenth=tenth)
         if durations != grouping["durations"]:
             return {}
         schedule = expression_schedule(script, durations, beat_groups=grouping["beat_groups"],
-                                       characters_per_tenth=tenth)
+                                       characters_per_tenth=tenth, ad_form=form_for_strategy(data.get("strategy")))
         validate_expression_schedule(data, schedule)
         windows = review_execution_windows(schedule, segments)
         limits = {}

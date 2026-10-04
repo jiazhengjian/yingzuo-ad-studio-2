@@ -99,6 +99,49 @@ def guard_ad_form_confirmation(raw, project):
     return raw
 
 
+_INFER_FORMS = (
+    ("presenter_pitch", re.compile(r"口播|讲解|主播")),
+    ("scene_story", re.compile(r"剧情|故事")),
+    ("brand_tvc", re.compile(r"品牌片|质感|TVC", re.I)),
+)
+_NOT_A_FORM_CHOICE = re.compile(r"里的|台词|演员|文案|改一下|缩短")
+
+
+def plain_merchant_text(text):
+    """Merchant-facing wording. Internal field names stay out of the reply."""
+    if not isinstance(text, str) or not text:
+        return text
+    result = text
+    for old, new in (
+        ("保存值为空的偏好", "还没选定广告类型"),
+        ("还差一项保存的偏好", "还需要先选定广告类型"),
+        ("保存的偏好", "广告类型"),
+        ("保存值", "已选的广告类型"),
+    ):
+        result = result.replace(old, new)
+    return result
+
+
+def infer_ad_form(text):
+    """Use an explicit choice, otherwise one clear keyword in the brief."""
+    chosen = explicit_ad_form(text)
+    if chosen is not None:
+        return chosen
+    whole = re.sub(r"\s+", "", str(text))
+    if not whole or re.search(_DISCUSSION + "|" + _NEGATIVE, whole, re.I):
+        return None
+    if _NOT_A_FORM_CHOICE.search(whole):
+        return None
+    hits = []
+    for clause in re.split(r"[，,。！!；;\n\r]", whole):
+        if re.search(_NEGATIVE + r"|不一定|未必|不见得", clause):
+            continue
+        hits.extend(form for form, pattern in _INFER_FORMS if pattern.search(clause))
+    if len(set(hits)) != 1:
+        return None
+    return hits[0]
+
+
 def explicit_ad_form(text):
     """Recognize affirmative declarations, not conditional/comparative mentions."""
     whole = re.sub(r"\s+", "", str(text))

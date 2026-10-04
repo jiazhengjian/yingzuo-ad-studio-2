@@ -125,6 +125,16 @@ def _selected_structure(strategy):
     return structure if isinstance(structure, str) and structure else None
 
 
+def form_for_strategy(strategy) -> str | None:
+    """Concrete playbook id for a strategy, or None when the form is still open."""
+    if strategy is None:
+        return None
+    brief = _field(strategy, "brief")
+    ad_form = _field(brief, "ad_form") if brief is not None else None
+    form = resolve_playbook_form(ad_form, _selected_structure(strategy))
+    return form if form in CONCRETE_FORMS else None
+
+
 def speech_profile_for_strategy(strategy) -> SpeechProfile:
     """Use the brief's form. Auto adopts the selected structure; otherwise stay legacy."""
     if strategy is None:

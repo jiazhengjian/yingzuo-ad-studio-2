@@ -377,6 +377,73 @@ def _spoken_roles(script) -> dict:
     return roles
 
 
+def _spoken_core(text):
+    return re.sub(r"[^\u4e00-\u9fff]", "", text or "")
+
+
+def _near_duplicate(left, right):
+    first, second = _spoken_core(left), _spoken_core(right)
+    if len(first) < 2 or len(second) < 2:
+        return False
+    short, long = (first, second) if len(first) <= len(second) else (second, first)
+    return short in long and len(long) - len(short) <= 8
+
+
+def _is_question(text):
+    stripped = text.strip()
+    return "？" in stripped or "?" in stripped or stripped.rstrip("。！! ") .endswith("吗")
+
+
+_THIRD_PERSON = re.compile(r"[她他](?:走过|走|坐|拿|看|站|放|开|说|来|回|切|夹)")
+_FIRST_PERSON = re.compile(r"我|咱们|我们|吧")
+_ACTION_ONLY = re.compile(
+    r"^(?:[她他])?(?:用)?(?:叉子|勺子|刀|手)?(?:切下|切开|拿起|放下|走过|走到|打开|盖上|倒入|舀起|夹起).{0,12}$"
+)
+
+
+def script_line_offenses(script, strategy, locked_lines=()):
+    return _script_line_offenses(script, strategy, locked_lines)
+
+
+def _script_line_offenses(script, strategy, locked_lines):
+    """Cross-line problems one rewrite should see. Locked lines stay untouched."""
+    form = None
+    if strategy is not None:
+        try:
+            form = script_form(strategy)
+        except (ValidationError, TypeError, ValueError, KeyError):
+            form = None
+    spoken = [beat for beat in _beats(script)
+              if isinstance(beat, dict) and isinstance(beat.get("narration"), str) and beat["narration"].strip()
+              and not _locked(beat["narration"], locked_lines)]
+    extra = []
+
+    def add(beat, index, name):
+        extra.append({"beat_id": beat.get("id"), "index": index, "narration": beat.get("narration"),
+                      "offenses": [name]})
+
+    indexes = {id(beat): index for index, beat in enumerate(_beats(script))}
+    for previous, current in zip(spoken, spoken[1:]):
+        if _near_duplicate(previous.get("narration"), current.get("narration")):
+            add(current, indexes.get(id(current), 0), "相邻台词重复")
+    if form == "scene_story" and spoken:
+        third = [beat for beat in spoken if _THIRD_PERSON.search(_spoken_core(beat["narration"]))]
+        first = [beat for beat in spoken if _FIRST_PERSON.search(beat["narration"])]
+        if third and first:
+            for beat in third + first:
+                add(beat, indexes.get(id(beat), 0), "人称不统一")
+    for beat in spoken:
+        if _ACTION_ONLY.match(_spoken_core(beat["narration"])):
+            add(beat, indexes.get(id(beat), 0), "只描述画面")
+    if spoken and _is_question(spoken[0]["narration"]):
+        later = spoken[1:]
+        if later and not any(not _is_question(beat["narration"]) for beat in later):
+            add(spoken[0], indexes.get(id(spoken[0]), 0), "开场问题没有下文")
+        elif not later:
+            add(spoken[0], indexes.get(id(spoken[0]), 0), "开场问题没有下文")
+    return extra
+
+
 def offending_lines(script: dict, *, tagline_enabled: bool | None = None, locked_lines=(),
                     strategy=None) -> list[dict]:
     roles = _spoken_roles(script)
@@ -399,6 +466,16 @@ def offending_lines(script: dict, *, tagline_enabled: bool | None = None, locked
         if offenses:
             beats.append({"beat_id": beat.get("id"), "index": index, "narration": narration,
                           "offenses": offenses})
+    seen = {item["beat_id"] for item in beats}
+    for item in _script_line_offenses(script, strategy, locked_lines):
+        if item["beat_id"] in seen:
+            current = next(row for row in beats if row["beat_id"] == item["beat_id"])
+            for name in item["offenses"]:
+                if name not in current["offenses"]:
+                    current["offenses"].append(name)
+        else:
+            beats.append(item)
+            seen.add(item["beat_id"])
     return beats
 
 
@@ -473,6 +550,7 @@ LINE_REWRITE_SYSTEM = """你只重写列出的中文广告台词，只输出 sch
 不写关注、呈现、兼顾、打造、采用某技术、高端质感、赋能、满足你对、卖点，也不写最、第一、根治、国家级、绝对、永久。
 不写购买、下单、抢购。优惠、限时、活动只在资料里已经有这些词时才能说。收束句可以指路，例如「想要的话，点下面看看」，不写催单。
 每句不超过该句 max_characters，标点也算。用户固定台词原样留在句子里。
+相邻两句不要近义重复。剧情广告全片只用一种人称，不要旁白说「她走过」同时又用「我」或「吧」。不要只复述看得见的动作。开场如果是问句，后面要有一句回答。
 tagline_policy.enabled 为 false 时不加独立口号字卡。为 true 时只有收束句可以是不超过10字的口播，仍然不写购买、下单、抢购。
 不输出其他字段，不解释。"""
 

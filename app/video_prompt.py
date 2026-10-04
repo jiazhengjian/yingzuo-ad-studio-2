@@ -75,11 +75,16 @@ def _reference_lines(segment):
             else:
                 # Saved 2×2 sheets predate the horizontal contact sheet.
                 sheet = "统一其外貌与服装；四格版式不进入视频。"
-            duty = (f"角色“{character['name']}”的四视图，{sheet}"
-                    f"{cast_appearance_clause(character.get('description', ''))}{character['description']}")
+            description = character.get("description") or ""
+            clause = cast_appearance_clause(description)
+            if clause.rstrip("。") in description or ("日常大陆长相" in description and "日常大陆长相" in clause):
+                appearance = description
+            else:
+                appearance = f"{clause}{description}"
+            duty = f"角色“{character['name']}”的四视图，{sheet}{appearance}"
         else:
             raise ValueError("不支持的视频参考图片职责")
-        lines.append(f"参考图{index}：{duty}。")
+        lines.append(re.sub(r"。{2,}", "。", f"参考图{index}：{duty}。"))
     if referenced_characters != set(characters):
         raise ValueError("视频缺少已确认角色的四视图参考")
     return lines
@@ -137,6 +142,29 @@ def _voice_lines(production, director, spans, characters, *, ad_form=None):
 
 def _speech_overlaps(shot, span):
     return min(shot["end"], span["end"]) - max(shot["start"], span["start"]) > 1e-7
+
+
+_NO_FACE = re.compile(r"不露脸|看不见嘴|看不到脸|后脑|背对|手部特写|只拍手|只见手|嘴不在画面")
+_FACE = re.compile(r"面向镜头|露脸|看镜头")
+_MOUTH_CLOSED = re.compile(r"嘴未张开|嘴巴未张开|未开口|闭嘴|嘴闭合|嘴巴紧闭|嘴唇紧闭")
+
+
+def _speaker_face_visible(shot):
+    continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else {}
+    blob = " ".join(part for part in (
+        shot.get("description") or "", continuity.get("camera_move") or "", continuity.get("start_state") or "",
+    ) if isinstance(part, str))
+    if not _NO_FACE.search(blob):
+        return True
+    if _FACE.search(blob) and not re.search(r"不露脸|看不见嘴|看不到脸", blob):
+        return True
+    return False
+
+
+def _mouth_open_state(text):
+    if not isinstance(text, str) or not text:
+        return text
+    return _MOUTH_CLOSED.sub("已经开口", text)
 
 
 def _hand_product_line(shot):
@@ -199,10 +227,13 @@ def _compile_grouped_video(segment, template):
             speaker_id = production.get("speaker_id")
             speaking_here = any(_speech_overlaps(shot, span) for span in spans)
             name = characters.get(speaker_id, "")
-            if speaking_here and speaker_id in shot.get("character_ids", []):
+            face_visible = _speaker_face_visible(shot)
+            if speaking_here and speaker_id in shot.get("character_ids", []) and face_visible:
                 lines.append(f"  本镜{name}面向镜头说话，嘴型与台词同步。")
                 if shot.get("id") == first_speaking_shot:
                     lines.append("  从本镜第一帧开口说话，不先闭嘴停顿。")
+            elif speaking_here and speaker_id in shot.get("character_ids", []) and not face_visible:
+                lines.append("  本镜看不见说话人的嘴，台词由上述同一人物在画外接着说，不要求嘴型。")
             elif (speaking_here and production.get("speech_delivery") == "on_and_off_screen"
                     and speaker_id not in shot.get("character_ids", [])):
                 lines.append("  本镜说话角色不入画，台词时窗内由上述同一人物画外延续，不补人物或嘴部。")
@@ -211,7 +242,11 @@ def _compile_grouped_video(segment, template):
         if partial:
             lines.append("  仅局部出镜、不增加露脸：" + "、".join(characters[cid] for cid in partial)
                          + "；依实际镜头拍摄其手、头发或其他已确认局部，不把身份参考的组合版式当成本镜构图。")
-        lines.extend(_continuity_lines(shot.get("continuity"), shot["description"]))
+        continuity = shot.get("continuity")
+        if (shot.get("id") == first_speaking_shot and isinstance(continuity, dict) and spans
+                and abs(float(spans[0].get("start", 1)) - float(shot.get("start", 1))) < 0.05):
+            continuity = {**continuity, "start_state": _mouth_open_state(continuity.get("start_state"))}
+        lines.extend(_continuity_lines(continuity, shot["description"]))
         hand_line = _hand_product_line(shot)
         if hand_line:
             lines.append(hand_line)

@@ -164,6 +164,27 @@ def allow_manual_planning_retry(checkpoint):
     return result
 
 
+def drop_storyboard_checkpoint(checkpoint):
+    """Keep finished stages before the storyboard and run that step again."""
+    if not isinstance(checkpoint, dict) or checkpoint.get("version") != 1:
+        return None
+    result = deepcopy(checkpoint)
+    entries = result.get("entries")
+    if not isinstance(entries, list):
+        return None
+    index = next((position for position, entry in enumerate(entries)
+                  if isinstance(entry, dict) and entry.get("stage") == "storyboard"), None)
+    if index is None:
+        return reopen_rejected_stage(checkpoint)
+    result["entries"] = entries[:index]
+    try:
+        retries = int(result.get("manual_retries") or 0)
+    except (TypeError, ValueError):
+        retries = 0
+    result["manual_retries"] = retries + 1
+    return result
+
+
 def reopen_rejected_stage(checkpoint):
     """Drop a stored stage that a later check rejected, then run that step again.
 

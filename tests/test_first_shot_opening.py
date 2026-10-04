@@ -37,7 +37,7 @@ def test_only_new_film_first_entry_label_is_owned_by_the_compiler(source, transi
 
 @pytest.mark.parametrize("transition", ["cut", "scene_change"])
 @pytest.mark.parametrize("state", ["missing", None, "", " ", 123])
-def test_first_cut_or_scene_change_never_invents_its_start_state(source, transition, state):
+def test_missing_hard_cut_start_state_is_derived_and_does_not_fail(source, transition, state):
     strategy = chosen_strategy(source)
     raw = director_output(strategy)
     first = raw["shots"][0]["continuity"]
@@ -47,9 +47,11 @@ def test_first_cut_or_scene_change_never_invents_its_start_state(source, transit
     else:
         first["start_state"] = state
     before = deepcopy(raw)
-    with pytest.raises(ValueError):
-        compile_draft(raw, strategy, source)
+    plan, _, _ = compile_draft(raw, strategy, source)
     assert raw == before
+    opening = plan["segments"][0]["shots"][0]["continuity"]
+    assert opening["entry_transition"] == "opening"
+    assert isinstance(opening["start_state"], str) and opening["start_state"].strip()
 
 
 @pytest.mark.parametrize("transition", ["continuous", "invented", None])
