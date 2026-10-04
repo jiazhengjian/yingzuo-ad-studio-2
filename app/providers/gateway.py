@@ -1275,8 +1275,19 @@ class Gateway:
         retain_direction_value = bool(existing_direction and (
             existing_direction.get("audience_value") or existing_direction.get("product_expression")))
         retain_direction_concept = bool(existing_direction and existing_direction.get("film_concept"))
+        from app.planning import keeps_selected_direction, product_images_are_new
         from app.strategy import playbook_hook_ids
         hook_form = project.get("ad_form") if "ad_form" in project else None
+        answered_direction = next((gate for gate in reversed(gates)
+            if gate.get("kind") == "direction" and gate.get("selected_option_id")), None)
+        plan_brief = ((current_plan or {}).get("strategy") or {}).get("brief")
+        has_new_image = product_images_are_new(assets, brief=plan_brief if isinstance(plan_brief, dict) else None,
+            since=(answered_direction or {}).get("answered_at") or (answered_direction or {}).get("created_at"))
+        product_supplement = bool(choice_enabled and existing_direction and sources and not form_invalidates_plan
+            and not needs_ad_form_choice(project)
+            and keeps_selected_direction(messages, has_new_image=has_new_image))
+        if product_supplement:
+            allowed_decisions = ["plan"]
         decision_schema = production_authoring_schema(strategy_decision_schema(
             new_directions="directions" in allowed_decisions, retain_direction_story=retain_direction_story,
             retain_direction_value=retain_direction_value, retain_direction_concept=retain_direction_concept,
@@ -1316,8 +1327,14 @@ class Gateway:
                 context["existing_creative_intent"] = existing_creative_intent
                 context["concept_revision_permissions"] = sorted(concept_revision_permissions(merchant_request))
             context["direction_selection_required"] = bool(sources and existing_direction is None)
+            if product_supplement:
+                context["product_supplement"] = "商家补充了商品图或商品信息。把新事实并进现有brief，沿用已选方向的id和rule_id，kind只能是plan。不要澄清，不要重新给出三个方向。"
             if needs_ad_form_choice(project):
                 context["ad_form_question"] = ad_form_question()
+        if new_directions_requested:
+            context["direction_reopen"] = ("广告倾向已改，先前的方向先放下。请按新的偏好重新选一个方向，并在回复里直接说明这一点。"
+                if form_invalidates_plan else
+                "商家明确要求更换创意方向。先前的选择先放下，重新给出三个方向，并在回复里直接说明：因为你要求换方向，所以重新选择。")
         if generation_strategy == "continuity_v1":
             context.pop("segment_durations", None)
             context["generation_constraints"] = {
@@ -1419,9 +1436,12 @@ class Gateway:
                                                        include_input=False)[:10]]
                         else:
                             feedback = [{"type": "strategy_contract", "message": str(exc)[:500]}]
+                        repair_instruction = "上一份入口回复未通过程序校验，尚未向用户展示。根据原始需求重新判断 reply/clarify/directions/plan 路由，只返回修正后的完整 schema JSON。信息不足且用户未授权代定时先澄清；不要为凑三个方向选用不适用品类或缺少事实前提的规则。同一规则可用于实质不同的故事。concept_pool的hook_type只能使用allowed_hook_types。无效短概念会被丢弃，至少保留三个有效短概念。展开的三个方向必须来自这些有效短概念，彼此在机制、钩子和品牌世界路径上至少有两种；不必改成程序记录的那一组。方向上的机制、钩子、品牌世界、观众处境、一句话和事实编号以对应短概念为准。不得修改用户要求、伪造商品事实或绕过来源校验。"
+                        if product_supplement:
+                            repair_instruction = "上一份入口回复未通过程序校验，尚未向用户展示。本轮只是补充商品图或商品信息。kind只能是plan，沿用existing_direction的id与rule_id，把新的商品事实并进brief。不要返回clarify或directions，不要要求重选方向或重新确认需求。不得修改用户要求、伪造商品事实或绕过来源校验。"
                         request_context = {**copy.deepcopy(context), "task_kind": "strategy_response_repair",
                             "previous_response": copy.deepcopy(raw), "validation_feedback": feedback,
-                            "repair_instruction": "上一份入口回复未通过程序校验，尚未向用户展示。根据原始需求重新判断 reply/clarify/directions/plan 路由，只返回修正后的完整 schema JSON。信息不足且用户未授权代定时先澄清；不要为凑三个方向选用不适用品类或缺少事实前提的规则。同一规则可用于实质不同的故事。concept_pool的hook_type只能使用allowed_hook_types。无效短概念会被丢弃，至少保留三个有效短概念。展开的三个方向必须来自这些有效短概念，彼此在机制、钩子和品牌世界路径上至少有两种；不必改成程序记录的那一组。方向上的机制、钩子、品牌世界、观众处境、一句话和事实编号以对应短概念为准。不得修改用户要求、伪造商品事实或绕过来源校验。"}
+                            "repair_instruction": repair_instruction}
                         if on_progress:
                             on_progress("recovering_strategy")
                 if decision.kind == "directions":
@@ -1447,7 +1467,13 @@ class Gateway:
                             save_failed_planner_output(self.settings, last_stage_result)
                             raise ProviderError("创意方向尚未通过内容检查，已有方案和素材已保留；本次未开始图片或视频生成")
                         candidates = reviewed_candidates(review, candidates, context["strategy_rules"])
-                    return AgentDecision(kind="directions", message="准备了三个不同的广告方向，选一个后再展开脚本和画面。",
+                    if new_directions_requested:
+                        offer_message = ("广告倾向已改，先前的方向先放下。请按新的偏好重新选一个方向。"
+                            if form_invalidates_plan else
+                            "你要求更换创意方向，先前的选择先放下。请从下面三个方向里重新选一个。")
+                    else:
+                        offer_message = "准备了三个不同的广告方向，选一个后再展开脚本和画面。"
+                    return AgentDecision(kind="directions", message=offer_message,
                         direction_candidates=candidates, planning_brief=candidates.brief, skill_trace=skill_trace).model_dump()
                 if decision.kind != "plan":
                     return AgentDecision(kind=decision.kind, message=decision.message, questions=decision.questions,

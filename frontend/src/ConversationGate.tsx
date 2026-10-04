@@ -35,7 +35,7 @@ function loadDraft(gate: Gate) { try { return restoreDraft(gate, sessionStorage.
 const ConversationGate = forwardRef<ConversationGateHandle, ConversationGateProps>(function ConversationGate(props, ref) {
   const { gate } = props;
   useEffect(() => { if (gate.status !== 'pending') clearDraft(gate.id); }, [gate.id, gate.status]);
-  if (gate.kind === 'direction') return <DirectionGate key={`${gate.id}:${signatureOf(gate)}`} {...props} gate={gate} ref={ref}/>;
+  if (gate.kind === 'direction') return <DirectionGate key={`${gate.id}:${gate.context_version}:${signatureOf(gate)}`} {...props} gate={gate} ref={ref}/>;
   if (gate.status !== 'pending') return <ResolvedGate gate={gate} />;
   return <PendingGate key={`${gate.id}:${signatureOf(gate)}`} {...props} gate={gate} ref={ref} />;
 });

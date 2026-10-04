@@ -12,7 +12,7 @@ from app import runtime_skills
 from app import strategy as strategy_module
 from app.db import Store
 from app.pipeline import Pipeline
-from app.planning import StrategyDecision, evidence_sources, requests_new_directions, strategy_decision_schema
+from app.planning import StrategyDecision, evidence_sources, keeps_selected_direction, requests_new_directions, strategy_decision_schema
 from app.providers.gateway import Gateway, ProviderError
 from app.schemas import AgentDecision
 from app.strategy import CreativeDirection, DirectionCandidates, ProductBrief, StrategyRecord, build_direction_candidates, select_rules
@@ -243,6 +243,37 @@ def test_invalid_or_stale_choice_does_not_mutate(env, field, value):
     response = env[0].post(f"/api/projects/{env[2]}/direction-select", json=body)
     assert response.status_code in (409, 422)
     assert env[1].state.store.project_detail(env[2]) == before
+
+
+def test_product_image_and_info_keep_the_pending_direction(env):
+    """A later product photo or product note stays on the offer the merchant is already choosing."""
+    import io
+    from PIL import Image
+    gate, job = offer(env)
+    client, app, pid, _ = env
+    store = app.state.store
+    option_ids = [option["id"] for option in gate["options"]]
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(buffer, "PNG")
+    uploaded = client.post(f"/api/projects/{pid}/assets", files={"file": ("草莓蛋糕.png", buffer.getvalue(), "image/png")})
+    assert uploaded.status_code == 201
+    kept = store.pending_gate(pid, "direction")
+    assert kept["id"] == gate["id"] and kept["status"] == "pending"
+    assert [option["id"] for option in kept["options"]] == option_ids
+    assert kept["context_version"] == store.get_project(pid)["context_version"]
+    assert store.get_job(job["id"])["status"] == "awaiting_input"
+    assert store.pending_gate(pid, "clarification") is None
+    noted = post_turn(env, client_turn_id="product-note", content="这是草莓蛋糕，表面有奶油和水果。")
+    assert noted.status_code == 200
+    assert noted.json()["job"]["id"] == job["id"]
+    assert noted.json()["job"]["status"] == "awaiting_input"
+    kept = store.pending_gate(pid, "direction")
+    assert kept["id"] == gate["id"] and [option["id"] for option in kept["options"]] == option_ids
+    assert kept["context_version"] == store.get_project(pid)["context_version"]
+    assert store.pending_gate(pid, "clarification") is None
+    assert not any(item["status"] == "queued" for item in store.project_detail(pid)["jobs"])
+    assert any(message["role"] == "user" and message["content"] == "这是草莓蛋糕，表面有奶油和水果。" for message in store.project_detail(pid)["messages"])
+    assert select(env, kept).status_code == 200
 
 
 def test_free_input_supersedes_gate_and_question_reply_preserves_offer(env):
@@ -572,6 +603,66 @@ def test_candidate_builder_accepts_wire_dicts_without_preselecting(env):
         [direction.model_dump() for direction in candidates.directions], None, select_rules(None))
     assert len(result.directions) == 3 and result.recommended_direction_id is None
     assert "selected_direction_id" not in result.model_dump()
+
+
+def test_product_supplement_keeps_direction_and_does_not_open_clarification(env, monkeypatch):
+    _, app, pid, asset = env
+    candidate = candidates_for(env)
+    current = {"strategy": candidate.select("direction_1").model_dump()}
+    newer = {**asset, "id": "asset_later", "name": "补充蛋糕.png", "created_at": asset["created_at"] + 5}
+    calls = []
+
+    async def planned(self, system, context, originals, max_tokens=7000):
+        calls.append(context)
+        assert context["stage"] == "strategy"
+        assert context["allowed_decisions"] == ["plan"]
+        assert context["existing_direction"]["id"] == "direction_1"
+        assert context["product_supplement"]
+        assert "direction_reopen" not in context
+        return {"kind": "clarify", "message": "请重新确认需求。", "questions": [{"id": "again", "prompt": "再选一次方向？", "options": [], "allow_custom": True, "allow_skip": True}]}
+
+    monkeypatch.setattr(Gateway, "_planner_json", planned)
+    with pytest.raises(ProviderError):
+        asyncio.run(Gateway(app.state.settings).decide(app.state.store.get_project(pid), [asset, newer],
+            [{"role": "user", "content": "这是草莓蛋糕，表面有奶油和水果。"}], [], current))
+    assert [item["stage"] for item in calls] == ["strategy", "strategy"]
+    assert app.state.store.pending_gate(pid) is None
+
+
+def test_explicit_reselection_says_the_previous_direction_is_set_aside(env, monkeypatch):
+    _, app, pid, asset = env
+    candidate = candidates_for(env)
+    current = {"strategy": candidate.select("direction_1").model_dump()}
+    calls = []
+
+    async def planned(self, system, context, originals, max_tokens=7000):
+        calls.append(context)
+        if context["stage"] == "direction_review":
+            return approved_direction_review(context["directions"])
+        assert context["existing_direction"] is None
+        assert "directions" in context["allowed_decisions"]
+        assert "先前" in context["direction_reopen"]
+        return {"kind": "directions", "message": "请选择新方向", "brief": candidate.brief.model_dump(),
+            "directions": [item.model_dump() for item in candidate.directions],
+            "concept_pool": concept_pool_for(candidate.directions)}
+
+    monkeypatch.setattr(Gateway, "_planner_json", planned)
+    result = asyncio.run(Gateway(app.state.settings).decide(app.state.store.get_project(pid), [asset],
+        [{"role": "user", "content": "重新给我三个创意方向"}], [], current))
+    assert result["kind"] == "directions"
+    assert "先前的选择先放下" in result["message"]
+    assert calls[0]["stage"] == "strategy" and calls[1]["stage"] == "direction_review"
+
+
+@pytest.mark.parametrize("text,kept", [
+    ("这是草莓蛋糕，表面有奶油和水果。", True),
+    ("把台词改短一些", False),
+    ("第一个方向是什么意思？", False),
+    ("重新给我三个创意方向", False),
+])
+def test_product_note_keeps_direction_unless_the_merchant_asks_to_change_it(text, kept):
+    assert keeps_selected_direction([{"role": "user", "content": text}]) is kept
+    assert keeps_selected_direction([{"role": "user", "content": "把台词改短一些"}], has_new_image=True) is True
 
 
 @pytest.mark.parametrize("content,reselect", [("把台词改短一些", False), ("重新给我三个创意方向", True)])

@@ -240,7 +240,7 @@ def create_app(settings=None, gateway=None, run_worker=True):
         name = Path(file.filename or "商品图").name[:100]
         asset = store.add_asset(project_id, "product", name, path, "image/jpeg", metadata={"generated": False, "width": im.width, "height": im.height})
         if store.get_project(project_id)["plan"]:
-            store.add_message(project_id, "system", "新增商品图已保存。现有方案继续使用原先确认的参考；点击更新脚本后，才会采用新增图片。")
+            store.add_message(project_id, "system", "商品图已保存。已选方向保持不变；写上商品信息并发送后，才会把新图并进当前方案。")
         return public(asset)
 
     @app.post("/api/projects/{project_id}/messages", status_code=201)

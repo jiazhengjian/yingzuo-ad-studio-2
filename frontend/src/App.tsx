@@ -19,6 +19,8 @@ import { currentCharacterAssets, currentSceneAssets, designImageLabel, messageDe
 import { clonePlanForEditing } from './strategy';
 import { creativeSummary, planningMessageText, planningNotes } from './planningDisplay';
 import { directionSelectRequest, isCurrentDirectionGate, pendingConversationGate } from './directionSelection';
+import { stageProductImages } from './composerDraft';
+import ComposerImageDraft from './ComposerImageDraft';
 import './conversation.css';
 import { api, json, activeStatus, mediaUrl, downloadUrl } from './api';
 import type { Answer, Asset, Detail, Gate, Health, Job, Message, Plan, Project, Render, RunEvent } from './api';
@@ -207,33 +209,38 @@ export default function App() {
     return result;
   }
   async function uploadFile(id: string, file: File) { const form = new FormData(); form.append('file', file); return api<Asset>(`/api/projects/${id}/assets`, { method: 'POST', body: form }); }
-  async function acceptFiles(files: FileList | File[]) {
-    if (busy || uploadLock.current) return;
-    const list = [...files], target = projectId;
-    const valid = list.filter(file => ['image/jpeg', 'image/png', 'image/webp'].includes(file.type) && file.size <= 15 * 1024 * 1024);
-    if (valid.length !== list.length) setError('请使用15 MB以内的JPG、PNG或WebP商品图。');
-    if (!target) { setPendingFiles(previous => [...previous, ...valid].slice(0, 3)); return; }
-    if (hasActive) { setError('本次制作完成后再补充商品图。'); return; }
+  function stageIncoming(files: FileList | File[]) {
+    if (busy || uploading || uploadLock.current) return;
+    const list = [...files];
+    if (!list.length) return;
+    if (projectId && hasActive) { setError('本次制作完成后再补充商品图。'); return; }
+    const limit = projectId ? Math.max(0, 3 - originalProducts.length) : 3;
+    const staged = stageProductImages(pendingFiles, list, limit);
+    setPendingFiles(staged.files);
+    if (staged.error) setError(staged.error);
+    else if (projectId && staged.files.length > pendingFiles.length) {
+      setError('');
+      setNotice('商品图已附在输入框，写上商品信息后再发送。');
+      setWorkspaceView('chat');
+    }
+  }
+  async function uploadStaged(target: string, files: File[]) {
     uploadLock.current = true; setUploading(true);
     try {
-      for (const file of valid) await uploadFile(target, file);
-      const continueConversation = valid.length > 0 && !!health?.configured.planner && (!!pendingGate || !plan);
-      if (continueConversation) {
-        const updated = await refresh(target);
-        await submitTurn(target, updated.project.context_version, {content:'我补充了商品图片，请结合新增素材和此前回答重新确认需求，再继续策划。'});
-      }
-      if (selectedProjectRef.current === target) setNotice(continueConversation ? '新素材已保存。' : '商品图片已保存，发送需求后会结合新素材继续。');
-    }
-    catch (e) { if (selectedProjectRef.current === target) setError(errorText(e)); }
-    finally { await refresh(target).catch(e => { if(selectedProjectRef.current === target) setError(errorText(e)); }); uploadLock.current = false; setUploading(false); }
+      for (const file of files) await uploadFile(target, file);
+      const updated = await refresh(target);
+      if (selectedProjectRef.current === target) { detailRef.current = updated; setPendingFiles([]); }
+      return updated;
+    } finally { uploadLock.current = false; setUploading(false); }
   }
   async function send(event: FormEvent) {
     event.preventDefault(); if (!draft.trim() || busy || hasActive || uploading || uploadLock.current || submissionLock.current) return;
     if (pendingGate) {
       if (gateInputLock.current || !pendingGateRef.current || gateComposer?.canInput === false) return;
-      const target = projectId, gateId = pendingGate.id;
+      const target = projectId, gateId = pendingGate.id, files = [...pendingFiles];
       gateInputLock.current = true; setError('');
       try {
+        if (target && files.length) await uploadStaged(target, files);
         await pendingGateRef.current.submitText(draft.trim());
         if (selectedProjectRef.current === target && gateComposerKey.current.startsWith(`${gateId}:`)) { setDraft(''); setSelectedAsset(null); }
       } catch (caught) { if (selectedProjectRef.current === target) setError(errorText(caught)); }
@@ -253,8 +260,10 @@ export default function App() {
         else if (selectedProjectRef.current === created.id) setNotice('需求已保存，连接策划服务后即可开始对话。');
       } else {
         const content = brief;
+        let version = detailRef.current?.project.id === target ? detailRef.current.project.context_version : project?.context_version ?? 0;
+        if (files.length) version = (await uploadStaged(target, files)).project.context_version;
         if (health?.configured.planner) {
-          await submitTurn(target, project?.context_version ?? 0, { content, reference_asset_ids: selectedAsset ? [selectedAsset.id] : [] });
+          await submitTurn(target, version, { content, reference_asset_ids: selectedAsset ? [selectedAsset.id] : [] });
         } else {
           await api(`/api/projects/${target}/messages`, json('POST', { content, ...(selectedAsset ? { asset_id: selectedAsset.id } : {}) }));
         }
@@ -277,9 +286,10 @@ export default function App() {
     requestAnimationFrame(() => { if (selectedProjectRef.current === target) composerInput.current?.focus(); });
   }
   async function answerGate(gate: Gate, answers: Answer[]) {
-    if (submissionLock.current || busy || uploading || hasActive || !project || gate.status !== 'pending') throw new Error('请等待当前操作完成。');
-    const id = project.id; submissionLock.current = true; setBusy('answer'); setError(''); nearBottom.current = true;
-    try { await submitTurn(id, project.context_version, { reply_to_gate_id: gate.id, answers }); await refresh(id); }
+    const liveProject = detailRef.current?.project;
+    if (submissionLock.current || busy || uploading || hasActive || !liveProject || gate.status !== 'pending') throw new Error('请等待当前操作完成。');
+    const id = liveProject.id; submissionLock.current = true; setBusy('answer'); setError(''); nearBottom.current = true;
+    try { await submitTurn(id, liveProject.context_version, { reply_to_gate_id: gate.id, answers }); await refresh(id); }
     catch (e) { if(selectedProjectRef.current === id) setError(errorText(e)); throw e; }
     finally { submissionLock.current = false; setBusy(''); }
   }
@@ -313,12 +323,12 @@ export default function App() {
     if (submissionLock.current || busy || uploading || uploadLock.current || hasActive) throw new Error('请等待当前操作完成。');
     const current = detailRef.current?.project;
     const liveGate = pendingConversationGate(detailRef.current?.gates ?? [], current);
-    if (gate.kind !== 'direction' || !isCurrentDirectionGate(gate, current) || liveGate?.id !== gate.id || selectedProjectRef.current !== gate.project_id) throw new Error('这些方向已更新，请在最新卡片下补充要求。');
+    if (gate.kind !== 'direction' || liveGate?.kind !== 'direction' || liveGate.id !== gate.id || !isCurrentDirectionGate(liveGate, current) || selectedProjectRef.current !== gate.project_id) throw new Error('这些方向已更新，请在最新卡片下补充要求。');
     const id = gate.project_id;
     submissionLock.current = true; setBusy('direction'); setError(''); nearBottom.current = true;
     setPendingText({ projectId: id, text: content });
     try {
-      await submitTurn(id, gate.context_version, { content, reference_asset_ids: selectedAsset ? [selectedAsset.id] : [] });
+      await submitTurn(id, liveGate.context_version, { content, reference_asset_ids: selectedAsset ? [selectedAsset.id] : [] });
       await refresh(id);
     } catch (caught) { if (selectedProjectRef.current === id) setError(errorText(caught)); throw caught; }
     finally { submissionLock.current = false; setBusy(''); setPendingText(null); }
@@ -436,7 +446,7 @@ export default function App() {
 
   return <div className={`app-shell ${projectId ? 'in-project' : 'at-home'}`}>
     {sidebar && <><button className="sidebar-scrim" aria-label="关闭项目列表" onClick={closeSidebar}/><aside className="project-sidebar" aria-label="项目列表"><div className="sidebar-top"><Brand/><button className="icon-button" onClick={closeSidebar} aria-label="关闭项目列表"><PanelLeftClose size={20}/></button></div><button className="new-project" onClick={() => chooseProject(null)}><Plus size={18}/>新建广告</button><span className="section-eyebrow">我的项目</span><nav>{projects.map(p => <button key={p.id} className={`project-link ${p.id === projectId ? 'selected' : ''}`} onClick={() => chooseProject(p.id)}><Film size={18}/><span>{p.title}<small>{dateText(p.updated_at)} · {projectListStatus(p)}</small></span><ChevronRight size={14}/></button>)}{!projects.length && <p className="sidebar-empty">你的作品会保存在这里。</p>}</nav><button className="sidebar-settings" onClick={() => { setSidebar(false); setSettingsOpen(true); }}><Settings2 size={16}/>连接设置</button></aside></>}
-    {!projectId ? <Home brand={<Brand/>} durationSeconds={durationSeconds} onDurationChange={setDurationSeconds} draft={draft} onDraft={setDraft} files={pendingFiles} onFiles={files => void acceptFiles(files)} onRemoveFile={index => setPendingFiles(files => files.filter((_,i) => i !== index))} onSubmit={send} onOpenProjects={() => setSidebar(true)} onSelectProject={id => chooseProject(id)} projects={projects} busy={!!busy || uploading} online={online} plannerConfigured={!!health?.configured.planner} onSettings={() => setSettingsOpen(true)} loading={loading} error={error} onDismissError={() => setError('')}/> : <div className="main-shell">
+    {!projectId ? <Home brand={<Brand/>} durationSeconds={durationSeconds} onDurationChange={setDurationSeconds} draft={draft} onDraft={setDraft} files={pendingFiles} onFiles={files => stageIncoming(files)} onRemoveFile={index => setPendingFiles(files => files.filter((_,i) => i !== index))} onSubmit={send} onOpenProjects={() => setSidebar(true)} onSelectProject={id => chooseProject(id)} projects={projects} busy={!!busy || uploading} online={online} plannerConfigured={!!health?.configured.planner} onSettings={() => setSettingsOpen(true)} loading={loading} error={error} onDismissError={() => setError('')}/> : <div className="main-shell">
       <header className="studio-header">
         <div className="header-left"><button className="brand-link" aria-label="返回首页" onClick={() => chooseProject(null)}><Brand/></button><span className="header-divider"/><button className="project-heading" onClick={() => { if (project) { setNewTitle(project.title); setRenameOpen(true); } }} aria-label="修改项目名称"><span>{project?.title || '正在打开项目'}</span><Pencil size={14}/></button></div>
         <nav className="view-switch" role="tablist" aria-label="工作区视图"><button role="tab" aria-selected={workspaceView === 'chat'} onClick={() => selectView('chat')}><MessageSquare size={16}/>对话</button><button role="tab" aria-selected={workspaceView === 'canvas'} onClick={() => selectView('canvas')}><Images size={16}/>画布</button><button role="tab" aria-selected={false} disabled title="时间线剪辑将在后续版本开放"><Layers3 size={16}/>时间线</button></nav>
@@ -459,7 +469,7 @@ export default function App() {
             {!!project && !hasActive && !plan && !pendingGate && !jobs.length && <div className="next-step"><p>你的消息已保存，可以继续对话。</p><button className="button primary" disabled={!canPlan} onClick={startPlan}><MessageSquare size={15}/>继续对话</button>{!health?.configured.planner && <button className="text-action" onClick={() => setSettingsOpen(true)}>连接策划服务</button>}</div>}
             {error && <div className="inline-alert" role="alert"><TriangleAlert size={15}/><span>{error}</span><button aria-label="关闭错误提示" onClick={() => setError('')}><X size={14}/></button></div>}{notice && <div className="inline-notice" role="status"><CheckCircle2 size={14}/>{notice}</div>}<div ref={endMessages}/>
           </div>
-          <div className={`composer-area ${pendingGate ? 'has-pending-gate' : ''}`}><AdFormSummary adForm={project?.ad_form} onChange={online && health?.configured.planner && !hasActive && !busy && !uploading && (!pendingGate || pendingGate.kind === 'direction') ? focusAdFormChange : undefined}/><div className={`composer-shell ${pendingGate ? 'has-pending-gate' : ''}`} role="group" aria-label={pendingGate?.kind === 'direction' ? '选择方向与输入' : pendingGate ? '确认问题与输入' : '发送消息'}>{pendingGate && <div className="composer-gate-scroll"><ConversationGate key={pendingGate.id} ref={pendingGateRef} composerText={draft} onComposerStateChange={handleGateComposer} onReviewImages={() => selectView('canvas')} gate={pendingGate} busy={!!busy || uploading || hasActive} error={error} onSubmit={answers => answerGate(pendingGate, answers)} onCreativeSubmit={(optionId,note) => confirmCreative(pendingGate,optionId,note)} onDirectionSelect={optionId => selectDirection(pendingGate,optionId)} onDirectionModify={text => modifyDirections(pendingGate,text)}/></div>}{selectedAsset && <div className="selected-reference"><FileImage size={13}/><span>引用 {selectedAsset.name}</span><button className="icon-button" aria-label="取消素材引用" onClick={() => setSelectedAsset(null)}><X size={13}/></button></div>}<form className="chat-composer" onSubmit={send} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); if (!hasActive && !busy) void acceptFiles(e.dataTransfer.files); }}><button type="button" className="attach-button" disabled={uploading || hasActive || !!busy} aria-label="添加商品图片" title="添加商品图片" onClick={() => fileInput.current?.click()}>{uploading ? <Spinner/> : <Plus size={20}/>}</button><textarea ref={composerInput} aria-label={pendingGate && gateComposer ? gateComposer.prompt : "补充需求或修改意见"} maxLength={pendingGate ? gateComposer?.maxLength ?? 500 : 6000} value={draft} onChange={e => { setDraft(e.target.value); if (pendingGate) pendingGateRef.current?.cacheText(e.target.value); }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} onPaste={e => { const files = [...e.clipboardData.files]; if (files.length && !hasActive && !busy) { e.preventDefault(); void acceptFiles(files); } }} placeholder={hasActive ? '正在工作，你可以随时停止…' : pendingGate ? gateComposer?.prompt || '在这里回答当前问题…' : '需要修改？在这里输入…'} rows={1} disabled={hasActive || !!busy || !!pendingGate && gateComposer?.canInput === false}/>{hasActive ? <button type="button" className="stop-button" aria-label="停止制作" title="停止后续制作" disabled={!!busy || activeJob.status === 'cancel_requested'} onClick={cancel}><Square size={13} fill="currentColor"/></button> : <button type="submit" className="send-button" aria-label={pendingGate?.kind === "clarification" ? "发送当前题答案" : "发送修改意见"} disabled={!draft.trim() || !!busy || uploading || !online || !!pendingGate && gateComposer?.canInput === false}>{busy === 'message' ? <Spinner/> : <ArrowRight size={19}/>}</button>}</form></div><p className="composer-note">请核对商品信息和生成内容。<span> Enter 发送 · Shift + Enter 换行</span></p><input ref={fileInput} type="file" accept="image/jpeg,image/png,image/webp" multiple hidden onChange={e => { if(e.target.files) void acceptFiles(e.target.files); e.target.value = ''; }}/></div>
+          <div className={`composer-area ${pendingGate ? 'has-pending-gate' : ''}`}><AdFormSummary adForm={project?.ad_form} onChange={online && health?.configured.planner && !hasActive && !busy && !uploading && (!pendingGate || pendingGate.kind === 'direction') ? focusAdFormChange : undefined}/><div className={`composer-shell ${pendingGate ? 'has-pending-gate' : ''}`} role="group" aria-label={pendingGate?.kind === 'direction' ? '选择方向与输入' : pendingGate ? '确认问题与输入' : '发送消息'}>{pendingGate && <div className="composer-gate-scroll"><ConversationGate key={pendingGate.id} ref={pendingGateRef} composerText={draft} onComposerStateChange={handleGateComposer} onReviewImages={() => selectView('canvas')} gate={pendingGate} busy={!!busy || uploading || hasActive} error={error} onSubmit={answers => answerGate(pendingGate, answers)} onCreativeSubmit={(optionId,note) => confirmCreative(pendingGate,optionId,note)} onDirectionSelect={optionId => selectDirection(pendingGate,optionId)} onDirectionModify={text => modifyDirections(pendingGate,text)}/></div>}{selectedAsset && <div className="selected-reference"><FileImage size={13}/><span>引用 {selectedAsset.name}</span><button className="icon-button" aria-label="取消素材引用" onClick={() => setSelectedAsset(null)}><X size={13}/></button></div>}{pendingFiles.length > 0 && <ComposerImageDraft files={pendingFiles} disabled={!!busy || uploading || hasActive} onRemove={index => setPendingFiles(files => files.filter((_, item) => item !== index))}/>}<form className="chat-composer" onSubmit={send} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); if (!hasActive && !busy) stageIncoming(e.dataTransfer.files); }}><button type="button" className="attach-button" disabled={uploading || hasActive || !!busy} aria-label="添加商品图片" title="添加商品图片" onClick={() => fileInput.current?.click()}>{uploading ? <Spinner/> : <Plus size={20}/>}</button><textarea ref={composerInput} aria-label={pendingGate && gateComposer ? gateComposer.prompt : "补充需求或修改意见"} maxLength={pendingGate ? gateComposer?.maxLength ?? 500 : 6000} value={draft} onChange={e => { setDraft(e.target.value); if (pendingGate) pendingGateRef.current?.cacheText(e.target.value); }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} onPaste={e => { const files = [...e.clipboardData.files]; if (files.length && !hasActive && !busy) { e.preventDefault(); stageIncoming(files); } }} placeholder={hasActive ? '正在工作，你可以随时停止…' : pendingFiles.length ? '写上商品信息，再和图片一起发送…' : pendingGate ? gateComposer?.prompt || '在这里回答当前问题…' : '需要修改？在这里输入…'} rows={1} disabled={hasActive || !!busy || !!pendingGate && gateComposer?.canInput === false}/>{hasActive ? <button type="button" className="stop-button" aria-label="停止制作" title="停止后续制作" disabled={!!busy || activeJob.status === 'cancel_requested'} onClick={cancel}><Square size={13} fill="currentColor"/></button> : <button type="submit" className="send-button" aria-label={pendingGate?.kind === "clarification" ? "发送当前题答案" : "发送修改意见"} disabled={!draft.trim() || !!busy || uploading || !online || !!pendingGate && gateComposer?.canInput === false}>{busy === 'message' ? <Spinner/> : <ArrowRight size={19}/>}</button>}</form></div><p className="composer-note">请核对商品信息和生成内容。<span> Enter 发送 · Shift + Enter 换行</span></p><input ref={fileInput} type="file" accept="image/jpeg,image/png,image/webp" multiple hidden onChange={e => { if(e.target.files) stageIncoming(e.target.files); e.target.value = ''; }}/></div>
         </section>
         <div className="panel-resizer" role="separator" tabIndex={0} aria-label="调整对话与画布宽度" aria-orientation="vertical" aria-valuenow={chatWidth} aria-valuemin={300} aria-valuemax={560} onKeyDown={e => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); setChatWidth(w => Math.min(560,Math.max(300,w + (e.key === 'ArrowRight' ? 20 : -20)))); } }} onPointerDown={e => { e.currentTarget.setPointerCapture(e.pointerId); }} onPointerMove={e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) setChatWidth(Math.max(300,Math.min(560,window.innerWidth * .47,e.clientX))); }} onPointerUp={e => { if(e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); }}/>
         <section className="canvas-panel" aria-label="视觉设计与视频画布"><div className="canvas-heading"><span>画布</span><button className="icon-button" aria-label="收起画布，返回对话" title="收起画布" onClick={() => setWorkspaceView('chat')}><PanelLeftOpen size={16}/></button><span className="canvas-saved">{hasActive ? '正在创作' : pendingGate ? '等待你的确认' : '已保存'}</span></div><div className="canvas-scroll">

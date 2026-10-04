@@ -265,6 +265,42 @@ def requests_new_directions(messages):
     return bool(re.search(r"(?:换|重选|重新选|重新推荐|重新给|再给|再推荐).{0,10}(?:方向|思路|创意)|(?:方向|思路|创意).{0,6}(?:重新选|重选|换一批)", latest))
 
 
+_PRODUCT_SUPPLEMENT = re.compile(r"商品|图片|照片|包装|外观|颜色|口味|材料|成分|奶油|原图|实物|这是我")
+_DIRECTION_QUESTION = re.compile(r"(?:什么意思|讲讲|解释一下|解释|说说).{0,16}(?:方向|思路)|(?:方向|思路).{0,10}(?:什么意思|怎么理解|讲讲)")
+
+
+def product_images_are_new(assets, *, brief=None, since=None):
+    """True only for a product image outside the current brief, or one saved after the current choice.
+
+    An empty fact list does not treat every existing image as new.
+    """
+    originals = [asset for asset in assets or []
+                 if isinstance(asset, dict) and asset.get("kind") == "product" and not (asset.get("metadata") or {}).get("generated")]
+    known = {fact.get("source_id") for fact in (brief or {}).get("facts") or []
+             if isinstance(fact, dict) and fact.get("source_kind") == "image" and fact.get("source_id")}
+    if known and any(asset.get("id") not in known for asset in originals):
+        return True
+    if since:
+        return any((asset.get("created_at") or 0) > since for asset in originals)
+    return False
+
+
+def keeps_selected_direction(messages, *, has_new_image=False):
+    """Product images and product facts stay with the direction already in progress.
+
+    Asking what a direction means, or explicitly asking for new directions,
+    still uses the existing choice flow.
+    """
+    if requests_new_directions(messages):
+        return False
+    latest = next((str(message.get("content", "")) for message in reversed(messages or []) if message.get("role") == "user"), "")
+    if _DIRECTION_QUESTION.search(latest):
+        return False
+    if has_new_image:
+        return True
+    return bool(_PRODUCT_SUPPLEMENT.search(latest))
+
+
 def concept_revision_permissions(message: str) -> set[str]:
     """Recognize direct changes, keeping unspecified selected intent stable.
 
@@ -315,7 +351,7 @@ ad_form是服务端已保存偏好，与route不同。非空时原样继承到br
 kind=directions返回完整非null的brief，含本轮facts、unknowns、assumptions及creative_intent。每条fact包含id/text/source_kind/source_id；merchant的text必须是evidence_sources原话连续子串，不加来源标签；image的source_id只引用assets原图。方向的evidence_ids只能引用本次brief.facts。仅reply/clarify可按情况brief=null，不假设程序会补历史事实。
 direction_selection_required不豁免必要澄清。新提案先在concept_pool写恰好6个短概念，每个含id、rule_id、hook_type、brand_world、consumer_insight、big_idea、evidence_ids。hook_type只能使用本次context.allowed_hook_types以及schema里hook_type的enum；这些就是当前广告类型playbook允许的id，不得输出其他钩子。程序按出现顺序给短概念打多样性分并只记录得分最高的3个：相对已留下的，新rule_id加5分，新hook_type加3分，新brand_world加2分，机制族从信息换成情绪或从情绪换成信息加4分，一句话与已留下的重复减8分；同分先留情绪机制（exaggeration、contrast_humor、identity_attitude、ritual_sensory、situational_conflict），再留更靠前的。优先展开这3个。若展开另一组，这3个也必须来自有效短概念，且机制、钩子、品牌世界路径至少各有两种。方向id与短概念一致。程序会用短概念上的机制、钩子、路径、洞察、一句话和evidence_ids覆盖方向里写偏的同名字段。selected_direction_id=null，最多通过根recommended_direction_id推荐一条，不在direction内增加recommended字段。每条须有完整production、film_concept，以及非空audience_value/product_expression/story_summary/attraction_mechanism/consumer_insight/big_idea/hook_type/brand_world。creative_intent与film_concept的语义依共享参考执行；story_summary为兼容字段名，表示创意展开。insight、big_idea、hook、story_summary用观众能说的话，不写关注、呈现、兼顾、纳入、打造、高端质感、满足你对。商品功能与效果必须由evidence_ids里的事实支撑；情绪、场景、夸张和幽默写入创意，不写成功效，也不必另找事实编号。big_idea是一句话概念，不是画面口号或结尾字卡。
 rule_id须来自本轮strategy_rules，适用category且prerequisites由本次facts满足；不可改品类绕过限制。可复用同一合适规则与可靠事实，不输出三套脚本、逐镜时轴或媒体请求。
-existing_direction非空且未明确重开方向时，不重新三选；明确修改用kind=plan，仅返回沿用原id/rule_id的一条方向。已有价值、展开和概念字段保留或依授权更新，不删空；历史缺字段不强补。普通问题用reply，意图冲突无法确认时clarify。
+existing_direction非空且未明确重开方向时，不重新三选；明确修改用kind=plan，仅返回沿用原id/rule_id的一条方向。已有价值、展开和概念字段保留或依授权更新，不删空；历史缺字段不强补。普通问题用reply，意图冲突无法确认时clarify。product_supplement为真时只能kind=plan，把新商品事实并进brief，沿用原方向，不澄清、不重开。direction_reopen非空时才重新三选，并说明先前方向因商家要求而先放下。
 existing_creative_intent非空时，concept_revision_permissions限定可修改的意图字段，其余逐字保留；structure_preference和film_concept.structure仅在reference_intent获准变更时可更新。权限仅限定范围，不提供新事实；本轮明确固定要求与已选核心不能被旧AI执行建议替代。
 遵守reference_capacity及当前production接口；人物讲解使用有效角色和character_dialogue，speech_delivery区分始终可见开口与同一人画外延续，历史缺字段沿用前者。人物与声音方法按Sound Direction执行，不能在后续分镜私自放宽已选约定；不承诺已验证口型、声线或成片效果。实际生成与确认交由程序，不新增表单或确认步骤，不输出内部推理。
 """

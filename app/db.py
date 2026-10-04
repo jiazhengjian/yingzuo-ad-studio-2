@@ -196,14 +196,12 @@ class Store:
                 project["revision"] if revision is None else revision, encoded(data), time.time()))
             if kind == "product" and not data.get("generated"):
                 c.execute("UPDATE projects SET context_version=context_version+1,updated_at=? WHERE id=?", (time.time(), project_id))
-                pending = c.execute("SELECT * FROM gates WHERE project_id=? AND status='pending'", (project_id,)).fetchall()
-                for gate in pending:
-                    now = time.time()
-                    c.execute("UPDATE gates SET status='superseded',answered_at=? WHERE id=?", (now, gate["id"]))
-                    c.execute("UPDATE jobs SET status='canceled',cancel_requested=1,lease_until=0,updated_at=? WHERE id=? AND status='awaiting_input'", (now, gate["job_id"]))
-                    self._event(c, project_id, gate["job_id"], "gate", "新增商品图已替代这次选择，将重新读取素材", "canceled")
+                version = c.execute("SELECT context_version FROM projects WHERE id=?", (project_id,)).fetchone()["context_version"]
+                # A later product image is more material for the current step.
+                # Keep the open question or direction card, and keep its job answerable.
+                pending = self._sync_pending_context(c, project_id, version)
                 if pending:
-                    c.execute("UPDATE projects SET status=CASE WHEN plan IS NULL THEN 'draft' ELSE 'awaiting_generate' END,updated_at=? WHERE id=?", (time.time(), project_id))
+                    self._event(c, project_id, pending[0]["job_id"], "gate", "商品图已保存，当前确认和已选方向仍然有效", "done")
             else:
                 self._event(c, project_id, data.get("job_id"), "artifact", "已保存" + name, "done")
         return self.get_asset(aid)
@@ -832,6 +830,19 @@ class Store:
         self._event(c, project_id, job_id, "message", "需求已保存" if role == "user" else "收到助手回复", "done")
         return {"id": mid, "project_id": project_id, "role": role, "content": content, "created_at": now, "job_id": job_id}
 
+    def _sync_pending_context(self, c, project_id, context_version):
+        """Keep an open card on the new brief version without canceling its job."""
+        pending = c.execute("SELECT id,job_id FROM gates WHERE project_id=? AND status='pending'", (project_id,)).fetchall()
+        now = time.time()
+        for gate in pending:
+            c.execute("UPDATE gates SET context_version=? WHERE id=?", (context_version, gate["id"]))
+            job = c.execute("SELECT id,status,payload FROM jobs WHERE id=?", (gate["job_id"],)).fetchone()
+            if job and job["status"] == "awaiting_input" and job["payload"]:
+                payload = json.loads(job["payload"])
+                payload["context_version"] = context_version
+                c.execute("UPDATE jobs SET payload=?,updated_at=? WHERE id=?", (encoded(payload), now, job["id"]))
+        return pending
+
     def _pending_gate(self, c, project_id, kind=None):
         query, values = "SELECT * FROM gates WHERE project_id=? AND status='pending'", [project_id]
         if kind:
@@ -907,8 +918,10 @@ class Store:
         from .schemas import TurnInput
         from .ad_form import (AD_FORM_LABELS, answer_ad_form, explicit_ad_form,
                              rejects_current_ad_form, unresolved_ad_form_change)
+        from .planning import keeps_selected_direction, product_images_are_new
         body = TurnInput.model_validate(body_dict).model_dump()
         stop_speculation = False
+        retain_offer = False
         with self._connection(True) as c:
             prior = self._request_job(c, project_id, body["client_turn_id"], "turn")
             if prior:
@@ -974,12 +987,19 @@ class Store:
             elif pending:
                 if not content and chosen_form is None:
                     raise ValueError("请回答问题或补充你的需求")
-                if pending["kind"] == "direction" and pending_job:
-                    self._abandon_speculative_plan(c, pending_job)
-                    stop_speculation = True
-                c.execute("UPDATE gates SET status='superseded',answered_at=? WHERE id=?", (time.time(), pending["id"]))
-                c.execute("UPDATE jobs SET status='canceled',cancel_requested=1,lease_until=0,updated_at=? WHERE id=? AND status='awaiting_input'", (time.time(), pending["job_id"]))
-                self._event(c, project_id, pending["job_id"], "gate", "新的需求已替代这次选择", "canceled")
+                if pending["kind"] == "direction" and chosen_form is None and not confirm_form and not withdraw_form:
+                    rows = c.execute("SELECT * FROM assets WHERE project_id=?", (project_id,)).fetchall()
+                    brief = pending_candidates.get("brief") if isinstance(pending_candidates, dict) else None
+                    retain_offer = keeps_selected_direction(
+                        [{"role": "user", "content": content}],
+                        has_new_image=product_images_are_new([self._dict(row) for row in rows], brief=brief, since=pending.get("created_at")))
+                if not retain_offer:
+                    if pending["kind"] == "direction" and pending_job:
+                        self._abandon_speculative_plan(c, pending_job)
+                        stop_speculation = True
+                    c.execute("UPDATE gates SET status='superseded',answered_at=? WHERE id=?", (time.time(), pending["id"]))
+                    c.execute("UPDATE jobs SET status='canceled',cancel_requested=1,lease_until=0,updated_at=? WHERE id=? AND status='awaiting_input'", (time.time(), pending["job_id"]))
+                    self._event(c, project_id, pending["job_id"], "gate", "新的需求已替代这次选择", "canceled")
             if chosen_form is not None and rejects_current_ad_form(body["content"], chosen_form):
                 raise ValueError("广告倾向选择与撤回要求不一致，请保留一个选择")
             form_changed = (chosen_form is not None and chosen_form != p.get("ad_form")) or (withdraw_form and chosen_form is None)
@@ -996,12 +1016,22 @@ class Store:
             c.execute("UPDATE projects SET context_version=context_version+1,updated_at=? WHERE id=?", (time.time(), project_id))
             message = self._message(c, project_id, "user", content) if content else None
             p = self._project(c, project_id)
-            jid = self._new_conversation_job(c, p, {"reference_asset_ids": refs, "base_plan_current": base_plan_current,
-                **({"ad_form_confirmation_required": True} if confirm_form else {}),
-                **({"pending_direction_candidates": pending_candidates} if pending_candidates else {})})
-            if message:
-                c.execute("UPDATE messages SET job_id=? WHERE id=?", (jid, message["id"]))
-                c.execute("UPDATE events SET job_id=? WHERE project_id=? AND kind='message' AND job_id IS NULL AND created_at>=?", (jid, project_id, message["created_at"]))
+            if retain_offer:
+                # The direction card stays. Record the note on that same waiting job
+                # and do not start another strategy request.
+                self._sync_pending_context(c, project_id, p["context_version"])
+                jid = pending["job_id"]
+                if message:
+                    c.execute("UPDATE messages SET job_id=? WHERE id=?", (jid, message["id"]))
+                    c.execute("UPDATE events SET job_id=? WHERE project_id=? AND kind='message' AND job_id IS NULL AND created_at>=?", (jid, project_id, message["created_at"]))
+                self._event(c, project_id, jid, "gate", "商品信息已记下，请继续从当前方向里选择", "waiting")
+            else:
+                jid = self._new_conversation_job(c, p, {"reference_asset_ids": refs, "base_plan_current": base_plan_current,
+                    **({"ad_form_confirmation_required": True} if confirm_form else {}),
+                    **({"pending_direction_candidates": pending_candidates} if pending_candidates else {})})
+                if message:
+                    c.execute("UPDATE messages SET job_id=? WHERE id=?", (jid, message["id"]))
+                    c.execute("UPDATE events SET job_id=? WHERE project_id=? AND kind='message' AND job_id IS NULL AND created_at>=?", (jid, project_id, message["created_at"]))
             c.execute("INSERT INTO turn_requests VALUES(?,?,?,?)", (project_id, body["client_turn_id"], "turn", jid))
             created = self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone())
         if stop_speculation:

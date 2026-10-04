@@ -335,7 +335,7 @@ def test_free_text_supersedes_pending_creative_gate(env):
 
 
 @pytest.mark.parametrize("kind", ["clarification", "creative"])
-def test_upload_supersedes_waiting_gate_and_next_turn_reads_new_product(env, kind):
+def test_upload_keeps_waiting_gate_and_answer_reads_new_product(env, kind):
     c, app, pid, original = env
     store = app.state.store
     if kind == "clarification":
@@ -353,18 +353,29 @@ def test_upload_supersedes_waiting_gate_and_next_turn_reads_new_product(env, kin
     assert after["context_version"] == before["context_version"] + 1
     assert after["current_render_id"] == before["current_render_id"]
     assert after["plan"] == before["plan"]
-    assert not store.pending_gate(pid)
-    assert store.get_job(waiting["id"])["status"] == "canceled"
+    assert after["status"] == before["status"]
+    kept = store.pending_gate(pid)
+    assert kept["id"] == gate["id"] and kept["status"] == "pending"
+    assert kept["context_version"] == after["context_version"]
+    waiting_job = store.get_job(waiting["id"])
+    assert waiting_job["status"] == "awaiting_input" and waiting_job["submission_count"] == 0
+    assert waiting_job["payload"]["context_version"] == after["context_version"]
     detail = store.project_detail(pid)
-    assert detail["gates"][0]["status"] == "superseded"
+    assert detail["gates"][0]["status"] == "pending"
     assert {a["id"] for a in prior_assets}.issubset({a["id"] for a in detail["assets"]})
-    assert any(e["job_id"] == waiting["id"] and e["kind"] == "gate" and e["state"] == "canceled" for e in detail["events"])
-    old = post_turn(env, client_turn_id="old-answer", reply_to_gate_id=gate["id"], answers=[{"question_id": "channel", "option_id": "shop"}])
-    assert old.status_code == 409
-    next_turn = post_turn(env, client_turn_id="with-new-image")
-    assert next_turn.status_code == 200
-    frozen = store.get_job(next_turn.json()["job"]["id"])["payload"]["frozen"]
-    assert {original["id"], added["id"]}.issubset({a["id"] for a in frozen["assets"]})
+    assert any(e["job_id"] == waiting["id"] and e["kind"] == "gate" and "仍然有效" in e["label"] for e in detail["events"])
+    if kind == "clarification":
+        answer = post_turn(env, client_turn_id="with-new-image", reply_to_gate_id=gate["id"], answers=[{"question_id": "channel", "option_id": "shop"}])
+        assert answer.status_code == 200
+        frozen = store.get_job(answer.json()["job"]["id"])["payload"]["frozen"]
+        assert {original["id"], added["id"]}.issubset({a["id"] for a in frozen["assets"]})
+    else:
+        confirmed = c.post(f"/api/projects/{pid}/creative-confirm", json={"gate_id": gate["id"], "accepted_revision": after["revision"], "option_id": "current", "client_turn_id": "keep-creative"})
+        assert confirmed.status_code == 200
+        resumed = store.get_job(waiting["id"])
+        assert resumed["id"] == confirmed.json()["job"]["id"]
+        assert resumed["status"] == "queued" and resumed["submission_count"] == 0
+        assert added["id"] not in resumed["payload"].get("design_asset_ids", [])
 
 
 def test_events_order_resume_and_identical_progress_has_no_fake_steps(env):
