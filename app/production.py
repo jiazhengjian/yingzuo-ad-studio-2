@@ -8,6 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Image and video prompts share this sentence. An explicit other look replaces it.
 DEFAULT_CAST_LINE = "默认出镜为中国人，East Asian Chinese appearance，日常大陆长相。"
+# Bump when the default sheet layout or cast line changes, so an unconfirmed
+# older sheet can be told apart from one generated with this template.
+CHARACTER_SHEET_TEMPLATE = "chinese-horizontal-v1"
 OVERRIDE_CAST_LINE = "外貌按已确认资料中的明确要求绘制。"
 _OTHER_CAST = re.compile(
     r"(?:不要|别用|不要画成|别画成).{0,4}(?:中国人|东亚面孔|华人)"
@@ -31,6 +34,21 @@ def cast_appearance_clause(*texts) -> str:
     if merchant_requests_other_cast(*texts):
         return OVERRIDE_CAST_LINE
     return DEFAULT_CAST_LINE
+
+
+def saved_character_sheet_is_stale(metadata) -> bool:
+    """True unless this saved sheet is the current horizontal Chinese-default template."""
+    data = metadata if isinstance(metadata, dict) else {}
+    return not (data.get("sheet_layout") == "horizontal_16x9"
+                and data.get("template_version") == CHARACTER_SHEET_TEMPLATE)
+
+
+def current_character_sheet_name(key: str, request) -> str:
+    """New-template sheets use their own file so an older 2×2 image is left in place."""
+    if (isinstance(request, dict) and request.get("sheet_layout") == "horizontal_16x9"
+            and request.get("template_version") == CHARACTER_SHEET_TEMPLATE):
+        return f"{key}.{CHARACTER_SHEET_TEMPLATE}.png"
+    return f"{key}.png"
 
 
 def apply_cast_instructions(instructions: str, *texts: str) -> str:

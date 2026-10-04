@@ -17,7 +17,7 @@ from .schemas import AgentDecision, Plan, Segment, segment_durations
 from .video_prompt import expected_grouped_speech
 from .generation_policy import validate_generation_durations
 from .directing import direction_context
-from .production import required_designs, validate_design_assets
+from .production import required_designs, saved_character_sheet_is_stale, validate_design_assets
 
 
 def _segment_closes_film(plan, segment) -> bool:
@@ -821,15 +821,30 @@ class Pipeline:
             if payload.get("creative_confirmed"):
                 raise
             complete = []
+        replace_keys = None
         if complete:
-            saved_ids = [asset["id"] for asset in complete]
-            resumed = copy.deepcopy(plan)
-            for segment in resumed["segments"]:
-                segment["reference_asset_ids"] = list(dict.fromkeys([*segment["reference_asset_ids"], *saved_ids]))
-            self._payload(job["id"], plan=resumed, design_asset_ids=saved_ids)
-            progress = dict(self.store.get_job(job["id"]).get("progress") or {})
-            self.store.update_job(job["id"], progress={**progress, "design_asset_ids": saved_ids})
-            return resumed
+            current_job = self.store.get_job(job["id"])
+            video_submitted = bool(current_job.get("submission_count")) or bool(
+                payload.get("frozen_video_requests") or payload.get("frozen_video_specs"))
+            stale = [asset for asset in complete if asset["kind"] == "character"
+                     and saved_character_sheet_is_stale(asset.get("metadata"))]
+            # A merchant who already confirmed the pictures, or a job that already
+            # paid for video, keeps the saved sheet. Only an unconfirmed, unsubmitted
+            # job replaces a sheet from before the horizontal Chinese-default template.
+            if not stale or payload.get("creative_confirmed") or video_submitted:
+                saved_ids = [asset["id"] for asset in complete]
+                resumed = copy.deepcopy(plan)
+                for segment in resumed["segments"]:
+                    segment["reference_asset_ids"] = list(dict.fromkeys([*segment["reference_asset_ids"], *saved_ids]))
+                self._payload(job["id"], plan=resumed, design_asset_ids=saved_ids)
+                progress = dict(self.store.get_job(job["id"]).get("progress") or {})
+                self.store.update_job(job["id"], progress={**progress, "design_asset_ids": saved_ids})
+                return resumed
+            stale_ids = {asset["id"] for asset in stale}
+            saved = [asset for asset in saved if asset["id"] not in stale_ids]
+            replace_keys = ["character_" + asset["metadata"]["character_id"] for asset in stale]
+            for segment in plan["segments"]:
+                segment["reference_asset_ids"] = [aid for aid in segment.get("reference_asset_ids", []) if aid not in stale_ids]
         if payload.get("creative_confirmed") and plan.get("production") is not None:
             raise ValueError("已确认的场景图与角色图不完整，不能重新出图或提交视频")
         if not callable(create):
@@ -891,6 +906,8 @@ class Pipeline:
         callback = {"on_skill": used_media_skill} if "on_skill" in inspect.signature(create).parameters else {}
         if "on_asset" in inspect.signature(create).parameters:
             callback["on_asset"] = save_design
+        if replace_keys and "replace_keys" in inspect.signature(create).parameters:
+            callback["replace_keys"] = replace_keys
         try:
             results = await create(project, assets, plan, folder,
                                    cancelled=lambda: self.store.is_cancelled(job["id"]) or
@@ -920,7 +937,13 @@ class Pipeline:
         self._payload(job["id"], design_asset_ids=design_ids, plan=plan)
         progress = dict(self.store.get_job(job["id"]).get("progress") or {})
         self.store.update_job(job["id"], progress={**progress, "design_asset_ids": design_ids})
-        self.store.add_event(job["project_id"], job["id"], "artifact", "场景与角色参考图已保存，商品继续使用原图" if expected_characters else "场景图已保存，商品继续使用原图")
+        if replace_keys:
+            saved_note = "角色参考已按当前横版模板重新生成，场景图仍用已保存的"
+        elif expected_characters:
+            saved_note = "场景与角色参考图已保存，商品继续使用原图"
+        else:
+            saved_note = "场景图已保存，商品继续使用原图"
+        self.store.add_event(job["project_id"], job["id"], "artifact", saved_note)
         if not payload.get("pause_for_creative"):
             self.store.add_message(job["project_id"], "assistant", "真实视觉设计图已生成，商品外观仍需核对；正在制作视频。", job_id=job["id"])
         return plan

@@ -52,6 +52,7 @@ def test_each_approved_character_gets_one_four_view_sheet(directed_plan_data):
     assert "2×2" not in request["prompt"]
     assert "默认出镜为中国人，East Asian Chinese appearance，日常大陆长相。" in request["prompt"]
     assert request["aspect_ratio"] == "16:9" and request["sheet_layout"] == "horizontal_16x9"
+    assert request["template_version"] == "chinese-horizontal-v1"
     assert request["skill_trace"][0]["compiled_resource"] == "references/character-template.txt"
     assert plan["segments"][0]["speech_spans"][0]["text"] not in request["prompt"]
     assert plan == before

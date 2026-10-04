@@ -30,7 +30,8 @@ from app.strategy import BriefEvidenceError, CreativeDirection, StrategyRecord, 
 from app.direction_review import (DIRECTION_REVIEW_SYSTEM, direction_review_schema,
                                   salvage_direction_review, review_failure_reasons, reviewed_candidates)
 from app.design import scene_design_request, character_design_request
-from app.production import (required_designs, validate_design_assets, production_authoring_schema,
+from app.production import (CHARACTER_SHEET_TEMPLATE, current_character_sheet_name, required_designs,
+                            validate_design_assets, production_authoring_schema,
                             derive_authored_production_metadata)
 from app.planner_runtime import PLANNER_STAGES, PLANNER_MODEL_CONTEXT_VERSION, planner_model_context, planner_wire_context, stage_request_options, safe_planner_metrics, safe_planner_transport_failure
 from app.planner_transport import (INTERRUPTED_STATUSES, apply_route_effort, fallback_eligible,
@@ -2239,7 +2240,21 @@ class Gateway:
             raise ProviderError("还需要商品信息才能确定广告方向，请通过对话继续补充；尚未开始制作")
         return decision["plan"]
 
-    async def create_designs(self, project, assets, plan, work_dir: Path, cancelled=None, on_skill=None, on_asset=None):
+    @staticmethod
+    def _character_receipt_should_retire(receipt) -> bool:
+        """A finished older sheet can be replaced. An in-flight or failed task cannot."""
+        if not isinstance(receipt, dict) or not receipt:
+            return False
+        state = receipt.get("state")
+        if state in ("submitting", "submitted", "submitted_unknown", "failed"):
+            return False
+        request = receipt.get("design_request") if isinstance(receipt.get("design_request"), dict) else {}
+        if (request.get("sheet_layout") == "horizontal_16x9"
+                and request.get("template_version") == CHARACTER_SHEET_TEMPLATE):
+            return False
+        return state == "completed" or bool(receipt.get("url"))
+
+    async def create_designs(self, project, assets, plan, work_dir: Path, cancelled=None, on_skill=None, on_asset=None, replace_keys=None):
         def check_cancelled():
             if cancelled and cancelled():
                 raise MediaCanceled("图片生成已停止；已受理的任务回执仍保留")
@@ -2262,11 +2277,16 @@ class Gateway:
         if not sources:
             raise ValueError("缺少真实商品参考图")
         check_cancelled()
-        await self._original_reference_url(sources[0])
-        check_cancelled()
         # Original product assets are reused in-place by the pipeline. Legacy product
         # receipts stay on disk for reconciliation and never trigger a redraw.
         instructions = required_designs(plan)
+        if replace_keys is not None:
+            wanted = {key for key in replace_keys if isinstance(key, str)}
+            instructions = [item for item in instructions if item["key"] in wanted]
+        # A character-only replacement must not upload the product again or redraw the scene.
+        if any(item["kind"] == "scene" for item in instructions):
+            await self._original_reference_url(sources[0])
+        check_cancelled()
         results = []
         for instruction in instructions:
             kind, name, key = instruction["kind"], instruction["name"], instruction["key"]
@@ -2279,6 +2299,14 @@ class Gateway:
                     raise ValueError()
             except (ValueError, OSError):
                 raise SubmissionError("图片回执无法读取，已停止自动重复提交；请核对平台任务", uncertain=True) from None
+            if replace_keys is not None and kind == "character" and self._character_receipt_should_retire(receipt):
+                retired = receipt_path.with_name(receipt_path.name + ".replaced")
+                if receipt_path.exists():
+                    if retired.exists():
+                        receipt_path.unlink()
+                    else:
+                        receipt_path.replace(retired)
+                receipt = {}
             report_design_skill(receipt.get("design_request"))
             if receipt.get("state") in ("submitting", "submitted_unknown") and not receipt.get("task_id"):
                 raise SubmissionError("图片提交状态未知，已停止自动重复提交；请核对平台任务", uncertain=True)
@@ -2331,7 +2359,8 @@ class Gateway:
                 if time.monotonic() > deadline:
                     raise ProviderError("图片仍在生成，稍后恢复可继续查询原任务")
                 await asyncio.sleep(self.settings.poll_seconds)
-            path = work_dir / f"{key}.png"
+            path = work_dir / (current_character_sheet_name(key, receipt.get("design_request"))
+                               if kind == "character" else f"{key}.png")
             check_cancelled()
             if not path.exists():
                 downloaded = work_dir / f"{key}.download"
@@ -2367,6 +2396,8 @@ class Gateway:
                 layout = request.get("sheet_layout")
                 if layout in ("horizontal_16x9", "grid_2x2"):
                     design_metadata["sheet_layout"] = layout
+                if request.get("template_version") == CHARACTER_SHEET_TEMPLATE:
+                    design_metadata["template_version"] = CHARACTER_SHEET_TEMPLATE
             review = "请核对场景是否适合商品" if kind == "scene" else (
                 "请核对左侧特写和三张全身是否为同一角色，服装是否一致"
                 if design_metadata.get("sheet_layout") == "horizontal_16x9"

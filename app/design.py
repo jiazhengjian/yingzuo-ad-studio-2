@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from .production import apply_cast_instructions
+from .production import CHARACTER_SHEET_TEMPLATE, apply_cast_instructions
 from .runtime_skills import compiler_template
 
 
@@ -50,5 +50,6 @@ def character_design_request(project, plan, character):
     context = {"name": character["name"], "description": character["description"]}
     return {"version": "character-context-v2", "character_id": character["id"],
             "aspect_ratio": "16:9", "sheet_layout": "horizontal_16x9",
+            "template_version": CHARACTER_SHEET_TEMPLATE,
             "skill_trace": [trace], "prompt": instructions + "\n已确认角色：\n"
             + json.dumps(context, ensure_ascii=False)}

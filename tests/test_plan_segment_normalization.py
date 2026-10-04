@@ -165,20 +165,28 @@ def test_creative_option_uses_the_segment_rate_and_hides_pydantic_text(tmp_path)
     assert "字" * 20 not in saved and "validation errors for" not in saved
 
 
-class _NoRedraw:
+class _HostSheet:
+    """Records which character sheets a resume asks to redraw."""
+
     def __init__(self):
-        self.design_calls = 0
+        self.calls = []
 
-    async def create_designs(self, *args, **kwargs):
-        self.design_calls += 1
-        raise AssertionError("saved design images must not be regenerated")
+    async def create_designs(self, project, assets, plan, folder, cancelled=None, replace_keys=None):
+        self.calls.append(list(replace_keys or []))
+        path = folder / "host-horizontal.png"
+        path.write_bytes(PNG + b"horizontal")
+        from app.production import CHARACTER_SHEET_TEMPLATE
+        return [{"kind": "character", "name": "讲解人 · 四视图", "source_path": path,
+                 "metadata": {"character_id": "char_host", "character_name": "讲解人",
+                              "view_layout": "four_view", "sheet_layout": "horizontal_16x9",
+                              "template_version": CHARACTER_SHEET_TEMPLATE}}]
 
 
-def test_continue_production_reuses_saved_sheets_at_the_plan_rate(tmp_path):
+def _saved_presenter_job(tmp_path, sheet_metadata):
     """uploads/job_36fe_generate_fail.json was not in the workspace.
 
-    The fixture is the described failure: presenter speech that fits 4.8
-    characters/second and fails CreativeOption at 2.9 after the sheets exist.
+    The fixture is that failure: presenter speech that fits 4.8 characters/second,
+    with a scene and a character sheet already saved.
     """
     store = Store(tmp_path / "studio.sqlite3", tmp_path / "media")
     project = store.create_project("转得这么快", "product", duration_seconds=10, ad_form="presenter_pitch")
@@ -187,7 +195,6 @@ def test_continue_production_reuses_saved_sheets_at_the_plan_rate(tmp_path):
     product = store.add_asset(project["id"], "product", "原图", product_path, "image/png")
     plan = _presenter_plan()
     plan["segments"][0].pop("speech_characters_per_tenth")
-    plan["segments"][0]["reference_asset_ids"] = [product["id"]]
     plan["production"] = {"version": "1.0.0",
         "product_constraints": [{"text": "多层切面", "evidence_ids": ["layers"]}],
         "characters": [{"id": "char_host", "name": "讲解人",
@@ -202,28 +209,76 @@ def test_continue_production_reuses_saved_sheets_at_the_plan_rate(tmp_path):
     scene = store.add_asset(project["id"], "scene", "场景参考图", scene_path, "image/png",
                             metadata={"generated": True})
     sheet = store.add_asset(project["id"], "character", "讲解人 · 四视图", sheet_path, "image/png",
-                            metadata={"generated": True, "character_id": "char_host",
-                                      "character_name": "讲解人", "view_layout": "four_view"})
-    before = {item["id"]: item["path"] for item in (scene, sheet)}
+                            metadata=sheet_metadata)
+    plan["segments"][0]["reference_asset_ids"] = [product["id"], scene["id"], sheet["id"]]
     payload = job["payload"]
     payload["design_asset_ids"] = [scene["id"], sheet["id"]]
     payload["plan"] = plan
     store.update_job(job["id"], status="failed", phase="creating_designs",
                      error="4 validation errors for CreativeOption\nsegment.speech_spans.0\n  Value error, 旁白台词超过对应朗读时段的长度",
                      payload=payload)
+    return store, project, plan, scene, sheet, job
+
+
+def _production_settings(tmp_path):
+    return Settings(data_root=tmp_path, deepseek_api_key="TEST_ONLY", tudou_api_key="TEST_ONLY",
+                    ffmpeg_path="TEST_ONLY", max_video_submissions=1, max_active_runs=1,
+                    poll_seconds=0.01, provider_timeout_seconds=1, tts_voice="TEST_ONLY",
+                    video_model="TEST_ONLY")
+
+
+@pytest.mark.parametrize("sheet", ["legacy", "layout_only", "current"])
+def test_continue_production_refreshes_only_an_unconfirmed_stale_character_sheet(tmp_path, sheet):
+    from app.production import CHARACTER_SHEET_TEMPLATE
+    metadata = {"generated": True, "character_id": "char_host", "character_name": "讲解人", "view_layout": "four_view"}
+    if sheet != "legacy":
+        metadata["sheet_layout"] = "horizontal_16x9"
+    if sheet == "current":
+        metadata["template_version"] = CHARACTER_SHEET_TEMPLATE
+    store, project, _, scene, old_sheet, job = _saved_presenter_job(tmp_path, metadata)
     retried = store.update_job(job["id"], status="queued", error=None, phase="queued")
-    settings = Settings(data_root=tmp_path, deepseek_api_key="TEST_ONLY", tudou_api_key="TEST_ONLY",
-                        ffmpeg_path="TEST_ONLY", max_video_submissions=1, max_active_runs=1,
-                        poll_seconds=0.01, provider_timeout_seconds=1, tts_voice="TEST_ONLY",
-                        video_model="TEST_ONLY")
-    gateway = _NoRedraw()
-    result = asyncio.run(Pipeline(store, gateway, settings).execute(retried["id"]))
-    assert gateway.design_calls == 0
+    gateway = _HostSheet()
+    result = asyncio.run(Pipeline(store, gateway, _production_settings(tmp_path)).execute(retried["id"]))
     assert result["status"] == "awaiting_input", result.get("error")
     assert result["phase"] == "awaiting_creative"
     assert result.get("error") in (None, "")
-    assert "validation error" not in (result.get("error") or "").lower()
-    assert result["payload"]["design_asset_ids"] == [scene["id"], sheet["id"]]
     assert store.pending_gate(project["id"], "creative")["options"][0]["segment"]["speech_characters_per_tenth"] == 48
-    for asset_id, path in before.items():
-        assert store.get_asset(asset_id)["path"] == path
+    assert store.get_asset(scene["id"])["path"] == scene["path"]
+    assert store.get_asset(old_sheet["id"])["path"] == old_sheet["path"]
+    ids = result["payload"]["design_asset_ids"]
+    refs = result["payload"]["plan"]["segments"][0]["reference_asset_ids"]
+    if sheet == "current":
+        assert gateway.calls == []
+        assert ids == [scene["id"], old_sheet["id"]]
+        assert old_sheet["id"] in refs
+        return
+    assert gateway.calls == [["character_char_host"]]
+    assert scene["id"] in ids and old_sheet["id"] not in ids
+    assert old_sheet["id"] not in refs and scene["id"] in refs
+    refreshed = store.get_asset(next(item for item in ids if item != scene["id"]))
+    assert refreshed["metadata"]["sheet_layout"] == "horizontal_16x9"
+    assert refreshed["metadata"]["template_version"] == CHARACTER_SHEET_TEMPLATE
+    assert any(event["label"] == "角色参考已按当前横版模板重新生成，场景图仍用已保存的"
+               for event in store.events_after(project["id"])["events"])
+
+
+@pytest.mark.parametrize("hold", ["confirmed", "submitted", "frozen_video"])
+def test_confirmed_or_submitted_jobs_keep_the_saved_character_sheet(tmp_path, hold):
+    store, project, plan, scene, sheet, job = _saved_presenter_job(tmp_path, {
+        "generated": True, "character_id": "char_host", "character_name": "讲解人", "view_layout": "four_view"})
+    payload = store.get_job(job["id"])["payload"]
+    if hold == "confirmed":
+        payload["creative_confirmed"] = True
+    elif hold == "frozen_video":
+        payload["frozen_video_requests"] = {"seg": {"model": "TEST_ONLY"}}
+    store.update_job(job["id"], payload=payload)
+    if hold == "submitted":
+        with store._connection(True) as connection:
+            connection.execute("UPDATE jobs SET submission_count=1 WHERE id=?", (job["id"],))
+    gateway = _HostSheet()
+    resumed = asyncio.run(Pipeline(store, gateway, None)._designs(store.get_job(job["id"]), payload["plan"]))
+    assert gateway.calls == []
+    assert store.get_job(job["id"])["payload"]["design_asset_ids"] == [scene["id"], sheet["id"]]
+    assert sheet["id"] in resumed["segments"][0]["reference_asset_ids"]
+    assert store.get_asset(scene["id"])["path"] == scene["path"]
+    assert store.get_asset(sheet["id"])["path"] == sheet["path"]
