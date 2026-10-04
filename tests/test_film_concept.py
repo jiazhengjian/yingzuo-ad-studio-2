@@ -51,13 +51,24 @@ def test_new_directions_require_explicit_intent_and_concepts(env, location, valu
         StrategyDecision.model_validate(raw)
 
 
-@pytest.mark.parametrize("field", ["key_visual", "memory_anchor", "sound_role"])
 @pytest.mark.parametrize("value", ["", " \n\t ", None])
-def test_film_concept_cannot_replace_visual_or_sound_intent_with_empty_text(env, field, value):
+def test_film_concept_cannot_replace_the_key_visual_with_empty_text(env, value):
     raw = fresh(candidates_for(env))
-    raw["directions"][0]["film_concept"][field] = value
+    raw["directions"][0]["film_concept"]["key_visual"] = value
     with pytest.raises(ValidationError):
         StrategyDecision.model_validate(raw)
+
+
+@pytest.mark.parametrize("field", ["memory_anchor", "sound_role"])
+@pytest.mark.parametrize("value", ["", " \n\t ", None])
+def test_new_film_concept_omits_memory_and_sound_without_inventing_them(env, field, value):
+    raw = fresh(candidates_for(env))
+    if value is None:
+        raw["directions"][0]["film_concept"].pop(field)
+    else:
+        raw["directions"][0]["film_concept"][field] = value
+    decision = StrategyDecision.model_validate(raw)
+    assert not getattr(decision.directions[0].film_concept, field)
 
 
 def test_use_context_and_film_location_remain_distinct_data(env):

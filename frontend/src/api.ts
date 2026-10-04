@@ -1,7 +1,7 @@
 export type Route = 'product' | 'presenter';
 export type AdForm = 'auto' | 'brand_tvc' | 'scene_story' | 'presenter_pitch';
 export type FilmStructure = 'product_visual' | 'world_intercut' | 'lifestyle' | 'scene_action' | 'presenter_explanation';
-export interface FilmConcept { structure: FilmStructure; key_visual: string; memory_anchor: string; sound_role: string }
+export interface FilmConcept { structure: FilmStructure; key_visual: string; memory_anchor?: string; sound_role?: string }
 export interface CreativeIntent { use_context: string; setting_requirement: string; reference_intent: string; structure_preference: 'auto' | 'product_visual' | 'world_intercut' | 'lifestyle' }
 export interface Health { ok: boolean; configured: { planner: boolean; video: boolean }; active_jobs: number; providers: { planner: string; video: string }; capabilities: { video_model: string; max_video_submissions: number; max_image_submissions: number; duration_min_seconds: number; duration_max_seconds: number; default_duration_seconds: number; duration_seconds?: number }; limitations: string[] }
 export interface ProductionDecision { version: '1.0.0'; product_constraints: { text: string; evidence_ids: string[] }[]; characters: { id: string; name: string; description: string; appearance?: 'face_visible' | 'partial_only' | null }[]; speech_mode: 'voiceover' | 'character_dialogue' | 'none'; speech_delivery?: 'visible_only' | 'on_and_off_screen' | null; speaker_id: string; voice_description: string }

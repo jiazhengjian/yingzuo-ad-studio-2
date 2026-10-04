@@ -130,8 +130,7 @@ def concept_pool_for(directions):
     for direction in directions:
         data = direction if isinstance(direction, dict) else direction.model_dump()
         items.append({"id": data["id"], "rule_id": data["rule_id"], "hook_type": data["hook_type"],
-            "brand_world": data["brand_world"], "consumer_insight": data["consumer_insight"],
-            "big_idea": data["big_idea"], "evidence_ids": list(data["evidence_ids"])})
+            "brand_world": data["brand_world"], "evidence_ids": list(data["evidence_ids"])})
     for index in range(3):
         items.append({**items[0], "id": f"spare_{index}"})
     return items
@@ -315,17 +314,17 @@ def test_direction_contract_rejects_auto_selection_and_cosmetic_duplicates(env):
 
 @pytest.mark.parametrize("field", ["story_summary", "attraction_mechanism"])
 @pytest.mark.parametrize("value", [None, "", " \n\t "])
-def test_new_direction_response_requires_nonempty_story_and_attraction(env, field, value):
+def test_new_direction_response_accepts_a_pitch_without_the_old_essays(env, field, value):
     candidate = candidates_for(env)
     payload = {"kind": "directions", "message": "请选择方向", "brief": candidate.brief.model_dump(),
         "directions": [d.model_dump() for d in candidate.directions],
         "concept_pool": concept_pool_for(candidate.directions)}
     if value is None:
-        payload["directions"][1].pop(field)
+        payload["directions"][1].pop(field, None)
     else:
         payload["directions"][1][field] = value
-    with pytest.raises(ValidationError, match="故事概要和吸引观众"):
-        StrategyDecision.model_validate(payload)
+    decision = StrategyDecision.model_validate(payload)
+    assert not getattr(decision.directions[1], field)
 
 
 @pytest.mark.parametrize("omit_brief", [False, True])
@@ -341,18 +340,21 @@ def test_new_direction_response_cannot_inherit_or_omit_brief(env, omit_brief):
     assert StrategyDecision.model_validate({"kind": "reply", "message": "普通答复", "brief": None}).brief is None
 
 
-def test_new_request_schema_requires_stories_without_breaking_historical_schema():
+def test_new_request_schema_drops_essays_and_revisions_keep_saved_stories():
     fresh = strategy_decision_schema(new_directions=True)["$defs"]["CreativeDirection"]
     updating = strategy_decision_schema(retain_direction_story=True)["$defs"]["CreativeDirection"]
     historical = strategy_decision_schema()["$defs"]["CreativeDirection"]
     for field in ("story_summary", "attraction_mechanism"):
-        assert field in fresh["required"]
-        assert fresh["properties"][field]["minLength"] == 1
+        assert field not in fresh["properties"]
         assert field in updating["required"]
         assert updating["properties"][field]["minLength"] == 1
-        assert "default" not in fresh["properties"][field]
         assert field not in historical["required"]
         assert historical["properties"][field]["default"] == ""
+    for field in ("audience_value", "product_expression"):
+        assert field not in fresh["properties"]
+        assert field not in updating["required"]
+    assert fresh["properties"]["big_idea"]["maxLength"] == 30
+    assert fresh["properties"]["hook"]["maxLength"] == 40
 
 
 def historical_candidates(env):
@@ -458,7 +460,10 @@ def test_real_gateway_pauses_then_uses_only_selected_direction(env, monkeypatch,
             assert context["orchestrator_skills"]["stage"] == "orchestrator"
             assert context["allowed_decisions"] == ["reply", "clarify", "directions"]
             required = context["schema"]["$defs"]["CreativeDirection"]["required"]
-            assert {"story_summary", "attraction_mechanism"} <= set(required)
+            assert {"big_idea", "hook_type", "brand_world", "film_concept", "hook", "payoff"} <= set(required)
+            for dropped in ("story_summary", "attraction_mechanism", "audience_value", "product_expression", "consumer_insight"):
+                assert dropped not in required
+                assert dropped not in context["schema"]["$defs"]["CreativeDirection"]["properties"]
             return chat_output(strategy_response)
         if stage == "direction_review":
             assert context["immutable_brief"] == candidates.brief.model_dump()

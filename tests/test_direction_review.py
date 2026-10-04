@@ -122,7 +122,9 @@ def test_historical_candidate_dump_does_not_add_review_and_new_schema_closes_fie
     schema = direction_review_schema(6)
     assert schema["additionalProperties"] is False
     assert "brief" not in schema["properties"]
-    assert {"story_summary", "attraction_mechanism", "production"} <= set(schema["$defs"]["CreativeDirection"]["required"])
+    assert {"production", "film_concept", "hook", "payoff"} <= set(schema["$defs"]["CreativeDirection"]["required"])
+    assert "story_summary" not in schema["$defs"]["CreativeDirection"]["properties"]
+    assert "memory_anchor" not in schema["$defs"]["FilmConcept"]["properties"]
     assert schema["$defs"]["ProductionPlan"]["properties"]["characters"]["maxItems"] == 6
 
 

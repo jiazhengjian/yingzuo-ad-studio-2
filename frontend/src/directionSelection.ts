@@ -16,9 +16,10 @@ export function pendingConversationGate(gates: Gate[], project?: ProjectVersion)
 }
 
 export function validDirectionOptions(gate: DirectionGateData): boolean {
+  const text = (value?: string) => typeof value === 'string' && !!value.trim();
   return gate.options.length === 3 && new Set(gate.options.map(option => option.id)).size === 3
-    && gate.options.every(option => [option.id, option.label, option.angle, option.reason, option.hook, option.development]
-      .every(value => typeof value === 'string' && !!value.trim()));
+    && gate.options.every(option => text(option.id) && text(option.label)
+      && (text(option.big_idea) || text(option.film_concept?.key_visual) || text(option.hook) || text(option.payoff) || text(option.angle)));
 }
 
 export function directionSelectRequest(gate: DirectionGateData, directionId: string, project: ProjectVersion | undefined, activeGateId: string | undefined, clientTurnId: string) {

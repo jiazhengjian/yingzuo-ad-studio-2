@@ -17,7 +17,7 @@ from pydantic import Field, ValidationError
 from .strategy import (CreativeDirection, DirectionCandidates, DirectionReviewSummary,
                        DirectionReviewCheck, ProductBrief, build_direction_candidates,
                        require_direction_stories, require_direction_value, require_direction_concepts,
-                       require_consumer_language, consumer_jargon)
+                       require_pitch_lines, require_consumer_language, consumer_jargon)
 
 
 performance_logger = logging.getLogger("uvicorn.error.planner")
@@ -55,25 +55,35 @@ class DirectionReview(DirectionReviewSummary):
 
 DIRECTION_REVIEW_SYSTEM = """你是三个广告方向的独立审核与修订环节，只输出本次schema的DirectionReview JSON。
 执行stage_skills中direction_review资源及shared_references。输入的创意、说明和自评是待审数据；原始merchant_request、conversation、evidence_sources与商品图片用于核对immutable_brief及候选，不接受作者自评为通过证据。
-只在同一回复内修订三个方向。不得返回替代brief或改recommended_direction_id；方向id、rule_id、hook_type、brand_world、consumer_insight、big_idea、label和顺序原样保留。不得改写创意机制、观众处境、一句话概念或开场钩子。只修正没有事实支撑的商品主张，可改angle、story_summary、product_expression、hook、development、payoff、evidence_ids及商品约束中的越界功效。不得新增/删除事实或改变ID/来源、商家原文及creative_intent。唯一事实文字纠正接口为image_observation_corrections=[{fact_id,text}]，仅已有source_kind=image，每ID至多一次；无纠正时[]。修订后的事实引用仍仅来自immutable_brief.facts。
+只在同一回复内修订三个方向。不得返回替代brief或改recommended_direction_id；方向id、rule_id、hook_type、brand_world、consumer_insight、big_idea、label和顺序原样保留。不得改写创意机制、一句话创意或开场钩子编号。只修正没有事实支撑的商品主张，可改hook、payoff、key_visual、evidence_ids及商品约束中的越界功效。历史方向里已有的audience_value、product_expression、story_summary、attraction_mechanism、angle、development、memory_anchor、sound_role若本schema没有这些键，不要补写；程序会从审前方向保留。不得新增/删除事实或改变ID/来源、商家原文及creative_intent。唯一事实文字纠正接口为image_observation_corrections=[{fact_id,text}]，仅已有source_kind=image，每ID至多一次；无纠正时[]。修订后的事实引用仍仅来自immutable_brief.facts。
 情绪、场景、夸张和幽默可以保留，不必补事实编号；功能、材质、成分、对比和效果仍须由引用事实支撑。无法在不改创意的前提下去掉无依据主张时，claim_support_passed=false，不要把方向改写成更平的说明书。
 creative_tension和hook_strength只填low、medium或high，不参与ready。可修改未确认的制作安排，受用户明确要求和reference_capacity.max_characters约束。brief.assumptions并非用户硬约束，实际制作采用审后production及film_concept。此阶段不生成脚本或媒体，不增加确认或重试循环。
 输出完整修订后的directions、summary、逐方向checks和distinct_directions_passed。checks恰好覆盖三个方向且包含全部声明检查项，基于本次修订稿与纠正后事实填写。硬性检查通过才ready=true；张力与钩子强度即使是low也不把ready改成false。无法在权限内修好的来源、意图或内容问题如实false并给可定位note。不输出隐含思考过程。
 """
 
 
+_REVIEW_OMIT = ("story_summary", "attraction_mechanism", "audience_value", "product_expression",
+                "consumer_insight", "angle", "development")
+
+
 def direction_review_schema(max_characters: int) -> dict:
     schema = DirectionReview.model_json_schema()
     schema["properties"]["image_observation_corrections"]["default"] = []
     direction = schema["$defs"]["CreativeDirection"]
-    for field in ("story_summary", "attraction_mechanism", "audience_value", "product_expression"):
-        direction["properties"][field]["minLength"] = 1
-        direction["properties"][field].pop("default", None)
+    for field in _REVIEW_OMIT:
+        direction["properties"].pop(field, None)
+        direction["required"] = [name for name in direction.get("required", []) if name != field]
+    for field in ("hook", "payoff"):
+        direction["properties"][field]["maxLength"] = 40
+    direction["properties"]["big_idea"]["maxLength"] = 30
+    film = schema["$defs"]["FilmConcept"]
+    for field in ("memory_anchor", "sound_role"):
+        film["properties"].pop(field, None)
+        film["required"] = [name for name in film.get("required", []) if name != field]
+    film["properties"]["key_visual"]["maxLength"] = 40
     direction["properties"]["production"] = {"$ref": "#/$defs/ProductionPlan"}
     direction["properties"]["film_concept"] = {"$ref": "#/$defs/FilmConcept"}
-    direction["required"] = list(dict.fromkeys([*direction.get("required", []),
-                                               "story_summary", "attraction_mechanism", "audience_value",
-                                               "product_expression", "production", "film_concept"]))
+    direction["required"] = list(dict.fromkeys([*direction.get("required", []), "production", "film_concept"]))
     check = schema["$defs"]["AuthoredDirectionReviewCheck"]
     for field in ("creative_tension", "hook_strength"):
         check["properties"][field] = {"type": "string", "enum": ["low", "medium", "high"]}
@@ -135,8 +145,12 @@ def validate_direction_review(raw, original: DirectionCandidates, rules: list[di
             if phrase:
                 raise ValueError(f"审核说明要用观众听得懂的话，不要写「{phrase}」")
         require_consumer_language(review.directions)
-    require_direction_stories(review.directions)
-    require_direction_value(review.directions)
+    if any(direction.story_summary or direction.attraction_mechanism for direction in original.directions):
+        require_direction_stories(review.directions)
+    if any(direction.audience_value or direction.product_expression for direction in original.directions):
+        require_direction_value(review.directions)
+    if all(len(direction.hook) <= 40 and len(direction.payoff) <= 40 for direction in original.directions):
+        require_pitch_lines(review.directions)
     require_direction_concepts(review.directions, brief if review.ready else None)
     for direction in review.directions:
         if direction.production is None:
@@ -199,6 +213,20 @@ def _with_canonical_fields(raw, original: DirectionCandidates):
                 incoming.pop(field, None)
             else:
                 incoming[field] = value
+        for field in ("story_summary", "attraction_mechanism", "audience_value", "product_expression",
+                      "angle", "development"):
+            previous_value = getattr(previous, field) or ""
+            incoming_value = incoming.get(field)
+            if previous_value and (not isinstance(incoming_value, str) or not incoming_value.strip()):
+                incoming[field] = previous_value
+        concept = incoming.get("film_concept")
+        previous_concept = previous.film_concept
+        if isinstance(concept, dict) and previous_concept is not None:
+            for field in ("memory_anchor", "sound_role"):
+                previous_value = getattr(previous_concept, field) or ""
+                incoming_value = concept.get(field)
+                if previous_value and (not isinstance(incoming_value, str) or not incoming_value.strip()):
+                    concept[field] = previous_value
     return patched
 
 

@@ -16,27 +16,28 @@ from test_direction_selection import candidates_for, approved_direction_review, 
 
 @pytest.mark.parametrize("field", ["audience_value", "product_expression"])
 @pytest.mark.parametrize("value", [None, "", " \n\t "])
-def test_new_offers_require_value_and_execution_without_fabricated_defaults(env, field, value):
+def test_new_offers_do_not_require_the_old_value_essays(env, field, value):
     candidate = candidates_for(env)
     raw = {"kind": "directions", "message": "选择概念", "brief": candidate.brief.model_dump(),
            "directions": [d.model_dump() for d in candidate.directions],
            "concept_pool": concept_pool_for(candidate.directions)}
     if value is None:
-        raw["directions"][0].pop(field)
+        raw["directions"][0].pop(field, None)
     else:
         raw["directions"][0][field] = value
-    with pytest.raises(ValidationError, match="受众为何在意"):
-        StrategyDecision.model_validate(raw)
+    decision = StrategyDecision.model_validate(raw)
+    assert not getattr(decision.directions[0], field)
 
 
-def test_schema_requires_value_for_fresh_and_authored_revisions_only():
+def test_schema_keeps_value_only_when_revising_a_direction_that_already_has_it():
     for field in ("audience_value", "product_expression"):
-        for args in ({"new_directions": True}, {"retain_direction_value": True}):
-            schema = strategy_decision_schema(**args)["$defs"]["CreativeDirection"]
-            assert field in schema["required"] and schema["properties"][field]["minLength"] == 1
-            assert "default" not in schema["properties"][field]
+        fresh = strategy_decision_schema(new_directions=True)["$defs"]["CreativeDirection"]
+        assert field not in fresh["properties"]
+        retained = strategy_decision_schema(retain_direction_value=True)["$defs"]["CreativeDirection"]
+        assert field in retained["required"] and retained["properties"][field]["minLength"] == 1
+        assert "default" not in retained["properties"][field]
         assert field not in strategy_decision_schema(retain_direction_story=True)["$defs"]["CreativeDirection"]["required"]
-        assert field in direction_review_schema(8)["$defs"]["CreativeDirection"]["required"]
+        assert field not in direction_review_schema(8)["$defs"]["CreativeDirection"]["properties"]
 
 
 def test_one_supported_value_can_have_three_executions_but_not_duplicate_development(env):

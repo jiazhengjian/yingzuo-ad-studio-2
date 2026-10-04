@@ -4,7 +4,7 @@
 
 读取商品事实、已选方向、受众/场景、目标时长、`production` 与运行时容量。按共同加载的 [分类脚本与声音表达](../shared/script-expression.md) 区分事实、用户固定内容、创意含义和作者解释。这里写可由分镜协调的内部初稿，不把它标为审定稿，也不重开方向选择。
 
-`story_summary` 与 `attraction_mechanism` 交接核心和观看期待；有 `film_concept` 时保留其结构、核心画面、记忆点和声音任务。结合 `brief.creative_intent` 区分用途环境与明确片场，不因职业或字段含 story 就给纯产品概念添加剧情。历史方向缺少新字段时沿原开场、推进与收束，不补造已选概念。重点与 `product_expression` 承接的必要支撑信息一起展开，允许调整声画分工，不遗漏用户要求或从未选方向补内容。
+已选方向给出一句话、核心画面、开头和收尾。若还有 `story_summary`、`attraction_mechanism`、`product_expression`、`memory_anchor` 或 `sound_role`，沿用这些旧文字；若没有，就从一句话、核心画面、开头、收尾、`production` 和 `brief` 写出展开、观看过程和声音任务，不要把缺字段当成还没选方向。结合 `brief.creative_intent` 区分用途环境与明确片场，不因职业或字段含 story 就给纯产品概念添加剧情。不遗漏用户要求，也从未选方向补内容。
 
 ## 执行
 

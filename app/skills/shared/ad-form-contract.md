@@ -27,15 +27,14 @@
 每个新方向的 `film_concept` 只有一组概念约定：
 
 - `structure`：产品展示可用 `product_visual`、`world_intercut`、`lifestyle`；剧情和人物讲解分别为 `scene_action`、`presenter_explanation`。明确结构偏好须兑现，无偏好时可同结构或不同结构，不强制三种各一条。
-- `key_visual`：具体核心画面及变化关系。写清对象与视觉关系如何变化，不能仅写高级光影或酷炫运镜。
-- `memory_anchor`：观众应记住的一个产品认识或可辨认视觉记忆，不是泛用口号或转化承诺。
-- `sound_role`：声音的信息或节奏任务，与 `production.speech_mode` 一致。纯产品不等于无人声；视觉难以准确表达功能时可用短旁白补充已知意义，无需话语时可无人声。这里不写完整台词或动作解说。
+- `key_visual`：一句核心画面及变化关系，约 30 字、不超过 40 字。写清对象与视觉关系如何变化，不能仅写高级光影或酷炫运镜。
+- `memory_anchor`、`sound_role`：新方向不写。旧记录里若已有，修订时保留，不要删空，也不要为新卡片补写。声音形式看 `production.speech_mode`。
 
-`angle` 写主打特点，`audience_value` 写受众为何在意，`product_expression` 说明哪段实际内容让该特点被理解；均遵守 [商品依据](product-evidence.md)。`consumer_insight` 是一句观众卡住的处境，`big_idea` 是 4 到 28 字的一句话概念，不是画面口号或结尾字卡。`hook_type` 用当前类型 playbook 里的具名开场，`brand_world` 只在概念层标功能环境、身份态度或感官仪式，不是商品事实。这些字段和展开都用观众能说的话。`story_summary` 保留历史键名，承担唯一的简短创意展开，不要求三类都写成故事；`hook/development/payoff` 分记同一创意的进入、展开和落点，`attraction_mechanism` 说明具体观看期待，不另起一套稿。
+`big_idea` 是不超过 30 字的一句话创意，不是画面口号或结尾字卡。`hook` 和 `payoff` 各一句，说明怎么开头、怎么收尾。`hook_type` 用当前类型 playbook 里的具名开场编号，`brand_world` 只在概念层标功能环境、身份态度或感官仪式，不是商品事实。这些短句用观众能说的话。`audience_value`、`product_expression`、`story_summary`、`attraction_mechanism`、`consumer_insight`、`angle`、`development` 是历史字段：新方向不写，脚本和分镜从已选短句与简报推导；旧记录保留原文字，修订时不要删空。
 
 ## 选择与历史兼容
 
-新候选完整填写上述字段；普通局部修订保留既有核心与对应关系，只按用户要求及本轮修订权限更新。旧记录原本缺少的新字段不强补，不改写历史，不因此重开选择。选定后交接创作意图、影片概念、产品价值和制作决定，具体时长与台词仍由后续落实；不能把选方向当成逐字逐秒审定。
+新候选只填上面的短句、结构、制作决定和编号。普通局部修订保留既有核心与对应关系，只按用户要求及本轮修订权限更新。旧记录原本缺少的字段不强补，已有长文不删空，不因此重开选择。选定后交接这一句创意、核心画面、开头收尾和制作决定；展开、受众理由和声音任务由后续脚本落实。不能把选方向当成逐字逐秒审定。
 
 作者写入 `brief.assumptions` 的初稿声音、人物或场景设想不等于用户硬要求；审核后实际制作安排以审后选中的 `production`、`film_concept` 为准，同时保留用户明确限制。
 

@@ -22,7 +22,7 @@
 
 ## 同次修订的权限
 
-在这一回复内修好尚未确认的候选，再对实际修订稿判断；不只改审核说明，也不追加模型阶段、媒体或确认。保留方向 ID、rule_id、顺序、`hook_type`、`brand_world`、`consumer_insight`、`big_idea`、`label`、商家事实与用户明确要求。只改没有事实支撑的商品主张，可改 `angle`、`story_summary`、`product_expression`、`hook`、`development`、`payoff` 和 `evidence_ids`。改不掉时把 `claim_support_passed` 设为 false，不要把创意改成更平的说明书。情绪、场景、夸张和幽默可以留下。遵守本轮参考容量。
+在这一回复内修好尚未确认的候选，再对实际修订稿判断；不只改审核说明，也不追加模型阶段、媒体或确认。保留方向 ID、rule_id、顺序、`hook_type`、`brand_world`、`consumer_insight`、`big_idea`、`label`、商家事实与用户明确要求。只改没有事实支撑的商品主张，可改 `hook`、`payoff`、`key_visual` 和 `evidence_ids`。schema 里没有的历史长文不要新写；若审前方向里已经有，留在原处。改不掉时把 `claim_support_passed` 设为 false，不要把创意改成更平的说明书。情绪、场景、夸张和幽默可以留下。遵守本轮参考容量。
 
 图片观察含推断时，可返回 `image_observation_corrections=[{"fact_id":"原事实ID","text":"原图支持的观察"}]`，无需纠正时为空。只修改已有 `source_kind=image` 的文字，不增删事实、不改 ID 或来源；其余 brief 冻结。保留可靠可见部分，同步清理三个候选及商品约束中的旧断言。无法在此权限内处理的来源或意图错误如实不通过。
 

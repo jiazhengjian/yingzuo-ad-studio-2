@@ -13,8 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .schemas import Question, shot_beat_ids, shot_beat_sequence
 from .ad_form import explicit_ad_form, strip_ad_form_declarations
 from .strategy import (ConceptSketch, CreativeDirection, ProductBrief, playbook_hook_ids,
-                       require_direction_stories, require_direction_value, require_direction_concepts,
-                       validate_direction_offer)
+                       require_direction_concepts, validate_direction_offer)
 from .beat_timing import allocate_beat_ticks, beat_minimum_ticks, speech_ticks, visual_ticks
 
 
@@ -187,8 +186,6 @@ class StrategyDecision(BaseModel):
                 raise ValueError("方向阶段需要恰好三个候选，不得替用户选中或先写方案")
             if self.recommended_direction_id is not None and self.recommended_direction_id not in {d.id for d in self.directions}:
                 raise ValueError("推荐标记必须指向本组候选")
-            require_direction_stories(self.directions)
-            require_direction_value(self.directions)
             require_direction_concepts(self.directions, self.brief)
             self.directions, self.concept_pool = validate_direction_offer(
                 self.brief, self.directions, self.concept_pool)
@@ -221,17 +218,28 @@ def strategy_decision_schema(*, new_directions: bool = False, retain_direction_s
     directions response, without forcing an old selected direction to upgrade.
     """
     schema = StrategyDecision.model_json_schema()
-    if new_directions or retain_direction_story or retain_direction_value:
+    if retain_direction_story or retain_direction_value:
         direction = schema["$defs"]["CreativeDirection"]
-        required = (["story_summary", "attraction_mechanism"] if new_directions or retain_direction_story else [])
-        if new_directions or retain_direction_value:
+        required = (["story_summary", "attraction_mechanism"] if retain_direction_story else [])
+        if retain_direction_value:
             required += ["audience_value", "product_expression"]
-        if new_directions:
-            required += ["consumer_insight", "big_idea", "hook_type", "brand_world"]
         for field in required:
             direction["properties"][field].pop("default", None)
             direction["properties"][field]["minLength"] = 1
             direction.setdefault("required", []).append(field)
+    if new_directions:
+        direction = schema["$defs"]["CreativeDirection"]
+        for field in ("audience_value", "product_expression", "story_summary", "attraction_mechanism",
+                      "consumer_insight", "angle", "development"):
+            direction["properties"].pop(field, None)
+            direction["required"] = [name for name in direction.get("required", []) if name != field]
+        for field in ("big_idea", "hook_type", "brand_world"):
+            direction["properties"][field].pop("default", None)
+            direction.setdefault("required", []).append(field)
+        direction["properties"]["big_idea"]["minLength"] = 4
+        direction["properties"]["big_idea"]["maxLength"] = 30
+        for field in ("hook", "payoff"):
+            direction["properties"][field]["maxLength"] = 40
     if new_directions or retain_direction_concept:
         for definition, field, target in (("CreativeDirection", "film_concept", "FilmConcept"),
                                            ("ProductBrief", "creative_intent", "CreativeIntent")):
@@ -240,9 +248,12 @@ def strategy_decision_schema(*, new_directions: bool = False, retain_direction_s
             item["required"] = list(dict.fromkeys([*item.get("required", []), field]))
     if new_directions:
         direction = schema["$defs"]["CreativeDirection"]
-        for field, limit in (("consumer_insight", 80), ("big_idea", 28)):
-            direction["properties"][field]["minLength"] = 4
-            direction["properties"][field]["maxLength"] = limit
+        film = schema["$defs"]["FilmConcept"]
+        for field in ("memory_anchor", "sound_role"):
+            film["properties"].pop(field, None)
+            film["required"] = [name for name in film.get("required", []) if name != field]
+        film["properties"]["key_visual"]["minLength"] = 4
+        film["properties"]["key_visual"]["maxLength"] = 40
         hook_enum = playbook_hook_ids(ad_form)
         for definition in ("CreativeDirection", "ConceptSketch"):
             schema["$defs"][definition]["properties"]["hook_type"] = {"type": "string", "enum": hook_enum}
@@ -349,7 +360,7 @@ STRATEGY_SELECTION_SYSTEM = """你是中文商品广告策划入口，只输出�
 先判断allowed_decisions允许的分支。普通问题用reply；无商品原图不进入directions或plan。必要澄清按Orchestrator执行，每轮最多3题；planning_requested=true或用户明确授权决定时可用保守创作假设继续，未知商品事实不能猜测。
 ad_form是服务端已保存偏好，与route不同。非空时原样继承到brief.ad_form，不重复询问；只可确认实际保存值，不能口头宣布另一类型。明确改类型但保存值未对应时用固定id=ad_form问题确认，不生成旧类型方向。空值且准备策划时询问该固定问题；普通reply不强塞问题。固定选项“根据商品推荐”合法，其他未知事实问题仍按Skill使用options=[]。auto保持auto，不代用户改值。
 kind=directions返回完整非null的brief，含本轮facts、unknowns、assumptions及creative_intent。每条fact包含id/text/source_kind/source_id；merchant的text必须是evidence_sources原话连续子串，不加来源标签；image的source_id只引用assets原图。方向的evidence_ids只能引用本次brief.facts。仅reply/clarify可按情况brief=null，不假设程序会补历史事实。
-direction_selection_required不豁免必要澄清。新提案先在concept_pool写恰好6个短概念，每个含id、rule_id、hook_type、brand_world、consumer_insight、big_idea、evidence_ids。hook_type只能使用本次context.allowed_hook_types以及schema里hook_type的enum；这些就是当前广告类型playbook允许的id，不得输出其他钩子。程序按出现顺序给短概念打多样性分并只记录得分最高的3个：相对已留下的，新rule_id加5分，新hook_type加3分，新brand_world加2分，机制族从信息换成情绪或从情绪换成信息加4分，一句话与已留下的重复减8分；同分先留情绪机制（exaggeration、contrast_humor、identity_attitude、ritual_sensory、situational_conflict），再留更靠前的。优先展开这3个。若展开另一组，这3个也必须来自有效短概念，且机制、钩子、品牌世界路径至少各有两种。方向id与短概念一致。程序会用短概念上的机制、钩子、路径、洞察、一句话和evidence_ids覆盖方向里写偏的同名字段。selected_direction_id=null，最多通过根recommended_direction_id推荐一条，不在direction内增加recommended字段。每条须有完整production、film_concept，以及非空audience_value/product_expression/story_summary/attraction_mechanism/consumer_insight/big_idea/hook_type/brand_world。creative_intent与film_concept的语义依共享参考执行；story_summary为兼容字段名，表示创意展开。insight、big_idea、hook、story_summary用观众能说的话，不写关注、呈现、兼顾、纳入、打造、高端质感、满足你对。商品功能与效果必须由evidence_ids里的事实支撑；情绪、场景、夸张和幽默写入创意，不写成功效，也不必另找事实编号。big_idea是一句话概念，不是画面口号或结尾字卡。
+direction_selection_required不豁免必要澄清。新提案先在concept_pool写恰好6个短概念，每个只含id、rule_id、hook_type、brand_world、evidence_ids，不写句子。hook_type只能使用本次context.allowed_hook_types以及schema里hook_type的enum；这些就是当前广告类型playbook允许的id，不得输出其他钩子。优先展开机制、钩子和品牌世界彼此不同的三个。若换一组，也必须来自有效短概念，且这三项至少各有两种。方向id与短概念一致。程序用短概念上的机制、钩子、品牌世界和evidence_ids覆盖方向里写偏的同名字段。一句话只写在方向的big_idea上。selected_direction_id=null，最多通过根recommended_direction_id推荐一条，不在direction内增加recommended字段。每条须有完整production、film_concept（只要structure和一句key_visual），以及非空big_idea、hook、payoff、hook_type、brand_world。不要写受众价值、创意展开、观看理由、观众处境、主打说明、中段、记忆点或声音任务；脚本和分镜从一句话、核心画面、开头、收尾和brief展开。big_idea不超过30字，key_visual、hook、payoff各不超过40字，用观众能说的话，不写关注、呈现、兼顾、纳入、打造、高端质感、满足你对。商品功能与效果必须由evidence_ids里的事实支撑；情绪、场景、夸张和幽默写入创意，不写成功效，也不必另找事实编号。big_idea是一句话创意，不是画面口号或结尾字卡。
 rule_id须来自本轮strategy_rules，适用category且prerequisites由本次facts满足；不可改品类绕过限制。可复用同一合适规则与可靠事实，不输出三套脚本、逐镜时轴或媒体请求。
 existing_direction非空且未明确重开方向时，不重新三选；明确修改用kind=plan，仅返回沿用原id/rule_id的一条方向。已有价值、展开和概念字段保留或依授权更新，不删空；历史缺字段不强补。普通问题用reply，意图冲突无法确认时clarify。product_supplement为真时只能kind=plan，把新商品事实并进brief，沿用原方向，不澄清、不重开。direction_reopen非空时才重新三选，并说明先前方向因商家要求而先放下。
 existing_creative_intent非空时，concept_revision_permissions限定可修改的意图字段，其余逐字保留；structure_preference和film_concept.structure仅在reference_intent获准变更时可更新。权限仅限定范围，不提供新事实；本轮明确固定要求与已选核心不能被旧AI执行建议替代。
@@ -359,8 +370,8 @@ existing_creative_intent非空时，concept_revision_permissions限定可修改�
 
 FILM_CONCEPT_SYSTEM = """
 新提案先区分 audience（给谁看）、creative_intent.use_context（产品用途环境）、creative_intent.setting_requirement（用户明确要求的成片地点）和creative_intent.reference_intent（用户所述视觉目标或实际取得的参考特点）。没有明确指定地点时setting_requirement为空；给造型师在理发店使用不等于整片必须拍理发店，旧AI稿的地点也不是用户要求。brief.scenario是兼容情境摘要，不能覆盖上述区分；direction.scenario记录该创意实际拟用的画面环境。未经访问的视频不可声称已分析，可如实承接用户用文字描述的参考意图。
-新三选必须填写brief.creative_intent。structure_preference只在用户明确要求或参考明确限定时选product_visual/world_intercut/lifestyle，否则auto；不要按品类或用途自动锁定。每条film_concept必须填写structure、key_visual、memory_anchor、sound_role。三种产品结构是构思方法：product_visual让产品本身及有依据的特征独立组织全片，不强制拆零件或无人；world_intercut让产品世界与环境/品牌世界轮流展开，通过具体视觉关系衔接；lifestyle让产品留在生活或使用世界内呈现。剧情主要行动用scene_action，人物面向观众讲解用presenter_explanation；这些不是三种广告倾向的替代，也不能为了三个方向每种结构硬凑一条。
-先形成具体核心画面，再组织展开。key_visual写可想象的主体、画面关系与变化，memory_anchor写与主打特点相连的产品记忆点；story_summary承担全片简短展开，product_expression解释画面如何关联卖点，避免几个字段互抄。sound_role明确人声补充何种信息或音乐音效如何参与，可无人声，不提前写完整台词。光影、形态与运动关系本身可以表达有依据的设计/功能概念，不强迫视觉广告补人物故事；但纯摄影词或三个部位清单不构成概念。抽象隐喻不作为实测、内部机理或效果证明，不用前后对照暗示未知功效。
+新三选必须填写brief.creative_intent。structure_preference只在用户明确要求或参考明确限定时选product_visual/world_intercut/lifestyle，否则auto；不要按品类或用途自动锁定。每条film_concept只填写structure和一句key_visual，不写memory_anchor或sound_role。三种产品结构是构思方法：product_visual让产品本身及有依据的特征独立组织全片，不强制拆零件或无人；world_intercut让产品世界与环境/品牌世界轮流展开，通过具体视觉关系衔接；lifestyle让产品留在生活或使用世界内呈现。剧情主要行动用scene_action，人物面向观众讲解用presenter_explanation；这些不是三种广告倾向的替代，也不能为了三个方向每种结构硬凑一条。
+先形成一句核心画面。key_visual写可想象的主体、画面关系与变化，约30字。不要在方向里写memory_anchor、sound_role、story_summary或product_expression；记忆点、声音任务和卖点怎样被看懂，由选中后的脚本从这句画面、开头、收尾和简报来写。声音形式只放在production。光影、形态与运动关系本身可以表达有依据的设计/功能概念，不强迫视觉广告补人物故事；但纯摄影词或三个部位清单不构成概念。抽象隐喻不作为实测、内部机理或效果证明，不用前后对照暗示未知功效。
 用户明确参考纯产品概念时，三条都在product_visual内构思，可以共享同一卖点和规则，凭视觉组织、变化及产品记忆点形成实质区别。auto不强求三种结构各一；只有结构名、色彩、机位或标题不同不等于三种创意。现有rule_id是产品价值切入方法，不代替film_concept，也不能把旧规则里的故事/疑问示例当所有广告的固定骨架。
 修订已选方向时，已有film_concept与creative_intent必须保留或依据最新用户需求同步更新；不能删空、退成通用人物故事或把use_context变成拍摄硬要求。历史缺少这些字段时不强制补写，不重新三选。用户已选定的核心视觉、卖点联系与声音职责交给后续展开，具体动作密度仍服从时长。
 existing_creative_intent非空时，concept_revision_permissions列明本轮可按用户要求更改的意图字段，未列出的字段逐字保留；structure_preference和film_concept.structure仅在reference_intent获准变更时可更新。普通文案、声音、时长修改不释放影片结构和参考要求；无法确定用户是否要改变核心意图时沿用当前clarify分支，不能自行清空要求。这个列表只授权范围，不提供新商品事实。
@@ -474,10 +485,10 @@ audience和scenario可用商家信息或保守创意设定，推断必须记在a
 本兼容分支的候选的rule_id各不相同，每个方向引用一个适用品类、满足前提的规则，angle说明具体表达侧面；不为满足规则数量编造商品特点，资料受限时允许只给一个方向，保持事实可靠。差异体现在产品认识的展开、信息组织、商品参与方式或观看期待，不能只是换标题或运镜，也不能只换场所或角色。新三选流程可以共享同一可靠卖点和规则，本兼容分支不强凑三个不同功效。
 严格检查 rule.categories 包含 brief.category；特别是 appliance 不能使用 sensory_detail。不为凑数使用不适用品类或无证据的规则。sensory_detail和appearance_reveal如果都只是“特写再拉远”，不算两个不同概念；应在选定形式内重新组织具体内容，或只给一个有依据的推荐。
 所有候选都符合已选brief.ad_form：产品展示以产品已知特点、用途和视觉组织为中心，不强加人物短剧；剧情／场景通过商品参与的人物处境、行动与变化表达；人物讲解由角色主要面向观众解释或演示商品，仅有人出现和画外音工作蒙太奇不算。auto保留auto，在每个reason说明所推荐主要表达方式及理由，不扩成三类各三条。production与实际展开一致，人物讲解使用character_dialogue并指定有效说话角色；当前执行能力要求角色说话时保持可见开口，商品独立特写放在停顿或非说话处，不承诺同人画外延续。其他形式按内容选择声音，不承诺真实口型效果已通过。
-说明对谁、在什么情境、主打什么angle、为什么该受众在意audience_value、通过什么具体内容表达product_expression，以及hook、development、payoff、evidence_ids、reason和production_notes。新方向填写非空audience_value、product_expression、story_summary、attraction_mechanism；story_summary保留历史键名但含义为创意展开，可以是展示的产品发现、剧情行动或讲解的认识过程，不强制三类都编故事。局部修订旧选定方向时，已有字段保留或按要求更新，历史缺少的新字段不强补。evidence_ids只能来自brief.facts且非空，其事实必须实际支持该方向的商品主张，规则不能作为商品事实。
+新方向只写商家会扫到的四句：label、big_idea、key_visual、hook与payoff，外加影响成本的production，以及用来区分三条方向的rule_id、hook_type、brand_world、evidence_ids。不要写audience_value、product_expression、story_summary、attraction_mechanism、consumer_insight、angle、development。局部修订旧选定方向时，已有长文保留或按要求更新，历史缺少的字段不强补，也不要为了新卡片把旧长文删掉。evidence_ids只能来自brief.facts且非空，其事实必须实际支持该方向的商品主张，规则不能作为商品事实。
 selected_direction_id必须指向其中一个真实方向。优先考虑用户目的、可证明内容、原图条件、本轮生成段时长上限和模型可执行性；没有证据就不要选择功效演示或对比证明。原图只有外观时可以做外观、质地可见细节和使用情境，不假装已试吃/试用。
-angle用一句话确定主打哪项已知特点、用途或设计，不是摄影任务；“淋面滴落”“特写再拉远”只属于画面安排，不能独自充当angle。audience_value说明此特点对该受众的意义，购买或观看动机若是创意假设，记录在assumptions，不把用户想要的好处写成商品实测结果。product_expression指出具体展示、情节作用或讲解内容怎样让该特点被理解，不能只写突出卖点、自然植入或结尾露出。
-先连通商品依据、顾客关注理由与具体呈现，再写创意展开及hook、development、payoff。只有外观资料时，可选择有观看价值的设计发现或商品与具体使用情境的关系；不能借场景暗示提神、缓解压力等未知功效。商家在卖点问题中明确声明“风速、温度控制、护发功能”时可在其原话功能层级表达，但不能扩成快干、恒温、不伤发或效果对照。核心表达需要未知机制或效果时，只澄清该关键缺口，不能编造，也不暗中替换用户的主推目标。整条内容应让人知道商品是什么、此时为何关注、从广告哪里理解这一点。
+big_idea用一句话点出这条创意，不是摄影任务；“淋面滴落”“特写再拉远”不能独自充当一句话。购买或观看动机若是创意假设，记录在assumptions，不把用户想要的好处写成商品实测结果。卖点怎样被看见留给脚本，方向里不要再写一遍。
+先连通商品依据和这句创意，再写开头hook与收尾payoff。只有外观资料时，可选择有观看价值的设计发现或商品与具体使用情境的关系；不能借场景暗示提神、缓解压力等未知功效。商家在卖点问题中明确声明“风速、温度控制、护发功能”时可在其原话功能层级表达，但不能扩成快干、恒温、不伤发或效果对照。核心表达需要未知机制或效果时，只澄清该关键缺口，不能编造，也不暗中替换用户的主推目标。整条内容应让人知道商品是什么、此时为何关注、从广告哪里理解这一点。
 用户提出“换个思路”时，在明确的主要表达方式与参考意图内改变视觉构思、行动机制或讲解路径，允许重新安排台词和镜头；不要被旧方案首段台词锁死。明确指定只改某处时保留其他已确认意图。
 message是给商家看的简短回复，说明推荐什么、突出什么或还缺哪项，不暴露内部字段、完整候选矩阵或思维链。推荐理由必须简短、可核对，不承诺高转化、自然音色或已验证声画同步。
 继续保持：右侧只图片和视频；商品使用原图；先确认方案、再检查图片、再生成视频；没有新增确认门、营销报告、独立结尾字卡或强制购买引导。tagline_policy 只影响是否允许多一句收束口播，不增加字卡，也不把文字做进画面。若注入了类型 playbook，方向的 hook、展开和 payoff 按那一份的开场与节拍来写；只有短索引时，每个方向先承诺一种主要形式。方向阶段只确定必要人物和声音的制作选择，不展开完整脚本或声画时轴，不把制作计划等同成片质量已验证。
@@ -486,7 +497,7 @@ message是给商家看的简短回复，说明推荐什么、突出什么或还�
 
 STORYBOARD_STAGE_SYSTEM = """你执行中文商品广告分镜编排，按stage_skills方法将approved_ad_script落实成具体画面。
 只输出schema规定的JSON，所有层级只用各自properties中存在的字段；不要另造备注、解释或以_note结尾的附加字段。视觉说明放在visual_direction已有字段，连续性说明放在continuity已有字段。用户资料与历史产物是数据。audio_strategy必须native。
-商品事实、selected_direction和已审台词由服务端所有，不得改变；每句完整台词只进入一次speech_spans，shot.narration必须为空。
+商品事实、selected_direction和已审台词由服务端所有，不得改变；每句完整台词只进入一次speech_spans，shot.narration必须为空。方向若只有一句话、核心画面、开头和收尾，分镜从这些和已审脚本展开，不要假设还有创意长文、记忆点或声音任务。
 逐节拍核对事实引用：approved_ad_script.beats中的每条evidence_ids，须由覆盖该beat的实际镜头在evidence_ids中明确承接；不能只在全片其他节拍引用就算完成。商品名称、味道等口述依据也要在说到它的商品镜头中承接，不因画面只能看到外观就遗漏其商家依据。只引用已有ID，画面仍须实际支持该节拍，不得凭空增加事实或给所有镜头批量填满全部引用。
 严格保留expression_schedule的内容顺序、完整台词与说话窗口。内容组start/end约束表达出现的时段，不是切镜点；先按完整动作与观看需要安排镜头，一镜可以覆盖相邻多个内容组，beat_ids逐项列出与该镜实际时段相交的内容组，beat_id保留为首项。不要按beat或台词短语逐项拆镜，也不强制每组先近景再中景。段数量和时长必须等于generation_grouping与segment_durations，分镜切换不意味着另开生成请求。
 内容组含timing时保留action_plan与起止状态，visual_start/visual_end是动作及辨认所需的预留窗口；不能并行时动作须在该窗口完成再说完整台词，并保持结果可见。ellipsis只能落实已审脚本明确的省略，不自行添加吃完、恢复或其他状态跳变。
@@ -543,7 +554,7 @@ def advertising_copy_brief(plan):
                      else brief.get("scenario") or selected.get("scenario", "")),
         **({"creative_intent": brief["creative_intent"]} if brief.get("creative_intent") else {}),
         **({"film_concept": selected["film_concept"]} if selected.get("film_concept") else {}),
-        "core_message": selected.get("angle", ""),
+        "core_message": selected.get("big_idea") or selected.get("angle") or "",
         "story": {key: selected.get(key, "") for key in ("hook", "development", "payoff")},
         "supported_facts": [fact for fact in brief.get("facts", []) if fact["id"] in evidence_ids],
         "unknowns": brief.get("unknowns", []),

@@ -19,19 +19,36 @@ from test_direction_selection import approved_direction_review, candidates_for, 
 from test_strategy import brief, direction
 
 
-def sketch(identifier, rule="appearance_reveal", hook="macro_detail", world="functional",
-           idea="先看见一条轮廓"):
+def sketch(identifier, rule="appearance_reveal", hook="macro_detail", world="functional", idea=None):
     return ConceptSketch(id=identifier, rule_id=rule, hook_type=hook, brand_world=world,
-        consumer_insight="还没看清整只瓶子，就想知道它长什么样。",
-        big_idea=idea, evidence_ids=["appearance"])
+        evidence_ids=["appearance"])
 
 
-def test_fresh_schema_requires_the_concept_and_six_sketches_historical_does_not():
+def test_fresh_direction_schema_stays_smaller_than_the_essay_contract():
+    import json
+    def packed(ad_form=None):
+        return json.dumps(strategy_decision_schema(new_directions=True, ad_form=ad_form),
+                           ensure_ascii=False, separators=(",", ":"))
+    # With a saved ad form the essay contract was 11425 characters on 2026-10-04.
+    typed = packed("brand_tvc")
+    assert len(typed) <= 9842
+    assert len(packed()) < 10200
+    direction = strategy_decision_schema(new_directions=True, ad_form="brand_tvc")["$defs"]["CreativeDirection"]["properties"]
+    film = strategy_decision_schema(new_directions=True, ad_form="brand_tvc")["$defs"]["FilmConcept"]["properties"]
+    assert "key_visual" in film and "memory_anchor" not in film
+    for field in ("story_summary", "attraction_mechanism", "audience_value", "product_expression", "consumer_insight"):
+        assert field not in direction
+
+
+def test_fresh_schema_requires_the_pitch_and_six_id_sketches():
     fresh = strategy_decision_schema(new_directions=True)
     direction_schema = fresh["$defs"]["CreativeDirection"]
-    for field in ("consumer_insight", "big_idea", "hook_type", "brand_world"):
+    for field in ("big_idea", "hook_type", "brand_world"):
         assert field in direction_schema["required"]
-    assert direction_schema["properties"]["big_idea"]["maxLength"] == 28
+    assert "consumer_insight" not in direction_schema["properties"]
+    assert direction_schema["properties"]["big_idea"]["maxLength"] == 30
+    assert "consumer_insight" not in fresh["$defs"]["ConceptSketch"]["properties"]
+    assert "big_idea" not in fresh["$defs"]["ConceptSketch"]["properties"]
     assert direction_schema["properties"]["hook_type"]["enum"][0] == "macro_detail"
     presenter = strategy_decision_schema(new_directions=True, ad_form="presenter_pitch")
     presenter_hooks = ["direct_question", "counterintuitive", "result_first"]
@@ -67,17 +84,12 @@ def test_selector_prefers_a_new_mechanism_hook_world_and_keeps_earlier_ties():
     assert set(emotional) == {"joke", "plain", "context"}
 
 
-def test_repeated_one_liner_loses_to_a_different_idea():
-    chosen = select_concept_ids([
-        sketch("first", idea="先看见一条轮廓"),
-        sketch("echo", "everyday_context", "scale_shift", "identity", "先看见一条轮廓"),
-        sketch("other", "sensory_detail", "silhouette", "sensory", "光线停在瓶身上"),
-        sketch("spare", "problem_solution", "signature_sound", "functional", "放下以后才安心"),
-        sketch("dup"),
-        sketch("dup2"),
-    ])
-    assert "echo" not in chosen
-    assert chosen == ["first", "other", "spare"]
+def test_repeated_one_liner_is_rejected_on_the_directions(env):
+    offer = candidates_for(env)
+    repeated = offer.directions[0].big_idea
+    directions = [direction.model_copy(update={"big_idea": repeated}) for direction in offer.directions]
+    with pytest.raises(ValueError, match="一句话概念"):
+        validate_direction_offer(offer.brief, directions, concept_pool_for(directions))
 
 
 def test_emotional_rules_stay_in_the_full_catalog_and_still_need_a_real_fact():
@@ -139,13 +151,10 @@ def test_distinct_non_top_trio_is_accepted_and_program_pick_is_only_a_metric(env
     pool = concept_pool_for(offer.directions)[:3]
     pool.extend([
         {"id": "alt_0", "rule_id": "appearance_reveal", "hook_type": "macro_detail", "brand_world": "functional",
-            "consumer_insight": "还没看清整只瓶子，就想先认出新的轮廓。", "big_idea": "先看见一条新轮廓",
             "evidence_ids": ["appearance"]},
         {"id": "alt_1", "rule_id": "everyday_context", "hook_type": "scale_shift", "brand_world": "identity",
-            "consumer_insight": "桌面已经很满，还想再给瓶子留一个位置。", "big_idea": "桌角又多了一处",
             "evidence_ids": ["appearance"]},
         {"id": "alt_2", "rule_id": "appearance_reveal", "hook_type": "silhouette", "brand_world": "sensory",
-            "consumer_insight": "光线一变，仍想认出还是不是同一只瓶子。", "big_idea": "另一束光里的瓶子",
             "evidence_ids": ["appearance"]},
     ])
     program = select_concept_ids([ConceptSketch.model_validate(item) for item in pool])
@@ -162,24 +171,26 @@ def test_distinct_non_top_trio_is_accepted_and_program_pick_is_only_a_metric(env
         validate_direction_offer(offer.brief, outside, pool)
 
 
-def test_mismatched_insight_is_copied_from_the_sketch(env, caplog):
+def test_one_liner_stays_on_the_direction_while_hook_ids_follow_the_sketch(env, caplog):
     offer = candidates_for(env)
     pool = concept_pool_for(offer.directions)
-    paraphrased = "这句话和短概念不一样，但仍然说得清。"
-    directions = [direction.model_copy(update={"consumer_insight": paraphrased}) for direction in offer.directions]
+    ideas = ("先看见一条轮廓", "桌角终于有了它", "光线换了瓶子还在")
+    directions = [direction.model_copy(update={"hook_type": "silhouette", "big_idea": ideas[index]})
+                  for index, direction in enumerate(offer.directions)]
     with caplog.at_level(logging.INFO, logger="uvicorn.error.planner"):
         corrected, kept = validate_direction_offer(offer.brief, directions, pool)
     assert "strategy_salvage" in caplog.text
     sketches = {item.id: item for item in kept}
-    assert corrected[0].consumer_insight == sketches[corrected[0].id].consumer_insight
-    assert corrected[0].consumer_insight != paraphrased
+    assert corrected[0].hook_type == sketches[corrected[0].id].hook_type
+    assert corrected[0].hook_type != "silhouette"
+    assert corrected[0].big_idea == ideas[0]
     decision = StrategyDecision.model_validate({
         "kind": "directions", "message": "三个方向", "brief": offer.brief.model_dump(),
         "directions": [item.model_dump() for item in directions], "concept_pool": pool,
         "selected_direction_id": None,
     })
-    assert decision.directions[0].consumer_insight == offer.directions[0].consumer_insight
-    assert decision.directions[0].big_idea == offer.directions[0].big_idea
+    assert decision.directions[0].big_idea == ideas[0]
+    assert decision.directions[0].hook_type == offer.directions[0].hook_type
 
 
 def test_disallowed_direction_hook_is_coerced_to_the_structure_playbook(env, caplog):
