@@ -113,9 +113,13 @@ def test_validate_script_uses_the_type_cap_and_keeps_the_legacy_beat_limit():
     assert context["schedule_rules"]["max_beat_characters"] == 48
     assert any(item["id"] == "ad-form-playbook-presenter-pitch" for item in context["stage_skills"]["shared_references"])
     assert context["tagline_policy"]["enabled"] is False
-    assert "点下面" in context["ending_policy"]["instruction"]
+    assert "不要说去哪里" in context["ending_policy"]["instruction"]
+    assert "点下面" not in context["ending_policy"]["instruction"]
+    from app.ad_form_playbook import ending_policy as ending
+    assert "点下面链接看看" in ending("presenter_pitch", "link")["instruction"]
+    assert "点下面" not in ending("presenter_pitch", "ai_decide")["instruction"]
     assert "英雄定格" in ending_policy("brand_tvc")["instruction"]
-    assert "回扣开头" in ending_policy("scene_story")["instruction"]
+    assert "定格" in ending_policy("scene_story")["instruction"]
 
 
 def test_tagline_stays_off_until_the_flag_is_set(monkeypatch):

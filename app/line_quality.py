@@ -404,7 +404,9 @@ _SUBJECT = re.compile(r"这款|它|我用")
 _BARE_ATTRIBUTE = re.compile(r"^(?:风[大小很太]|声音[大小很太]|带|负离子)")
 _PRESENTER_CLAIM = re.compile(r"风[大小]|声音|负离子|吹开|吹干|听得清|听得见|马达|不毛躁|几下就")
 _CTA_LINE = re.compile(r"链接|点下面|小黄车|去看看|下方")
-_SHOT_DESCRIPTION = re.compile(r"亮起|光扫|扫过|飘起|飘起来|镜头|推近|特写|银线|一道线|闪过|映出")
+_SHOT_DESCRIPTION = re.compile(
+    r"亮起|光扫|扫过|飘起|飘起来|镜头|推近|特写|银线|一道线|闪过|映出|放在|台面|桌上|摆在|银色|风很大"
+)
 _STORY_PRODUCT = re.compile(
     r"它|这款|这个|这块|这只|喜欢|想要|好吃|好喝|好用|尝尝|给你|按这里|按这边|扣上|轮廓|(?<!吹)开了"
 )
@@ -520,7 +522,9 @@ def _script_line_offenses(script, strategy, locked_lines, plan=None):
     if form == "brand_tvc":
         for beat in spoken:
             text = beat["narration"]
-            if _SHOT_DESCRIPTION.search(text):
+            core = _spoken_core(text)
+            bare_name = any(core and core == _spoken_core(name) for name in names)
+            if _SHOT_DESCRIPTION.search(text) or bare_name:
                 add(beat, indexes.get(id(beat), 0), "只描述画面")
             if any(_shares_a_long_stretch(text, description) for description in _shot_blurbs(plan, beat.get("id"))):
                 add(beat, indexes.get(id(beat), 0), "台词贴着画面")
@@ -642,7 +646,7 @@ LINE_REWRITE_SYSTEM = """你只重写列出的中文广告台词，只输出 sch
 开场句要单独听得懂：说出商品叫法或用当下动作指着它。
 承接 big_idea 和 hook 的意思，不要照抄策划词。只使用该句和 facts 里已经有的商品信息，不新增功效、数字、体验或比较。
 不写关注、呈现、兼顾、打造、采用某技术、高端质感、赋能、满足你对、卖点，也不写最、第一、根治、国家级、绝对、永久。
-不写购买、下单、抢购。优惠、限时、活动只在资料里已经有这些词时才能说。收束句可以指路，例如「想要的话，点下面看看」，不写催单。
+不写购买、下单、抢购。优惠、限时、活动、价格和数字只在资料里已经有时才能说。结尾去向只按 ending_policy：没有指定时不说点链接、私信或到店。
 每句不超过该句 max_characters，标点也算。用户固定台词原样留在句子里。
 相邻两句不要近义重复。剧情广告全片只用一种人称，不要旁白说「她走过」同时又用「我」或「吧」。不要只复述看得见的动作。开场如果是问句，后面要有一句回答。
 人物讲解的每一句卖点都要有主语：这款、它，或「我用它」。不要用「风大」「带负离子」这种没有主语的开头。卖点之间用而且、还、另外、所以或关键是接上。

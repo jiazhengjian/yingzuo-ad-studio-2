@@ -95,6 +95,7 @@ class Store:
                                                ("projects", "duration_seconds", "INTEGER NOT NULL DEFAULT 20"),
                                                ("projects", "ad_form", "TEXT"),
                                                ("projects", "ad_form_updated_context_version", "INTEGER NOT NULL DEFAULT 0"),
+                                               ("projects", "cta_target", "TEXT"),
                                                ("messages", "job_id", "TEXT"),
                                                ("jobs", "started_at", "REAL")):
                 columns = {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}
@@ -135,6 +136,7 @@ class Store:
         from .schemas import segment_durations
         segment_durations(duration_seconds)
         from .ad_form import AD_FORM_LABELS, infer_ad_form
+        from .cta import stated_cta
         if ad_form is not None and ad_form not in AD_FORM_LABELS:
             raise ValueError("广告倾向无效")
         ad_form = ad_form or infer_ad_form(brief)
@@ -144,8 +146,8 @@ class Store:
             raise ValueError("请填写商品或广告要求")
         pid, now = identifier("project"), time.time()
         with self._connection(True) as c:
-            c.execute("INSERT INTO projects(id,title,brief,route,status,revision,plan,current_render_id,created_at,updated_at,duration_seconds,ad_form) VALUES(?,?,?,?,?,0,NULL,NULL,?,?,?,?)",
-                      (pid, title or str(brief).strip()[:32], brief, route, "draft", now, now, duration_seconds, ad_form))
+            c.execute("INSERT INTO projects(id,title,brief,route,status,revision,plan,current_render_id,created_at,updated_at,duration_seconds,ad_form,cta_target) VALUES(?,?,?,?,?,0,NULL,NULL,?,?,?,?,?)",
+                      (pid, title or str(brief).strip()[:32], brief, route, "draft", now, now, duration_seconds, ad_form, stated_cta(brief)))
         return self.get_project(pid)
 
     def get_project(self, project_id):
@@ -409,7 +411,8 @@ class Store:
             progress = job.get("progress") or {}
             payload = dict(job.get("payload") or {})
             checkpoint = payload.get("planning_checkpoint")
-            structure_resume = "结构不完整" in str(job.get("error") or "")
+            structure_resume = any(token in str(job.get("error") or "")
+                                    for token in ("结构不完整", "未能满足已确认要求", "容量仍未改善"))
             if structure_resume:
                 if isinstance(checkpoint, dict):
                     resumed = drop_storyboard_checkpoint(checkpoint)
@@ -975,6 +978,7 @@ class Store:
         from .schemas import TurnInput
         from .ad_form import (AD_FORM_LABELS, answer_ad_form, explicit_ad_form, infer_ad_form,
                              rejects_current_ad_form, unresolved_ad_form_change)
+        from .cta import answer_cta, stated_cta
         from .planning import keeps_selected_direction, product_images_are_new
         body = TurnInput.model_validate(body_dict).model_dump()
         stop_speculation = False
@@ -1013,6 +1017,7 @@ class Store:
                 pending_job = self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (pending["job_id"],)).fetchone())
                 pending_candidates = pending_job["payload"].get("direction_candidates")
             base_plan_current = bool(p["plan"] and p["plan_context_version"] == p["context_version"] and not pending)
+            chosen_cta = stated_cta(body.get("content") or "")
             if body["reply_to_gate_id"]:
                 gate = self._dict(c.execute("SELECT * FROM gates WHERE id=? AND project_id=?", (body["reply_to_gate_id"], project_id)).fetchone())
                 if not gate or gate["status"] != "pending" or gate["kind"] != "clarification" or gate["context_version"] != p["context_version"] or gate["revision"] != p["revision"]:
@@ -1036,6 +1041,8 @@ class Store:
                         chosen_form = chosen_form or gate_form
                         if gate_form is None:
                             confirm_form = True
+                    if q["id"] == "cta_target":
+                        chosen_cta = answer_cta(a)
                     lines.append(q["prompt"] + "：" + (options[a["option_id"]] if a["option_id"] else a["text"] if a["text"] else "暂不确定，请使用谨慎表达"))
                 content = (content + "\n" if content else "") + "\n".join(lines)
                 c.execute("UPDATE gates SET status='answered',answers=?,answered_at=? WHERE id=?", (encoded(answers), time.time(), gate["id"]))
@@ -1062,6 +1069,8 @@ class Store:
             if chosen_form is not None and rejects_current_ad_form(body["content"], chosen_form):
                 raise ValueError("广告倾向选择与撤回要求不一致，请保留一个选择")
             form_changed = (chosen_form is not None and chosen_form != p.get("ad_form")) or (withdraw_form and chosen_form is None)
+            if chosen_cta:
+                c.execute("UPDATE projects SET cta_target=? WHERE id=?", (chosen_cta, project_id))
             if form_changed:
                 c.execute("UPDATE projects SET ad_form=?,ad_form_updated_context_version=context_version+1 WHERE id=?", (chosen_form, project_id))
                 base_plan_current = False

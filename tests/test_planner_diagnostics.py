@@ -40,6 +40,30 @@ def test_truncated_response_reports_stage_without_logging_private_content(env, m
     assert logged["usage"]["reasoning_tokens"] == 21900
 
 
+def test_plan_review_length_retries_once_before_the_card(env, monkeypatch):
+    requests = []
+    original_client = httpx.AsyncClient
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return httpx.Response(200, json={"choices": [{"finish_reason": "length", "message": {
+                "content": "PRIVATE_PARTIAL_REVIEW"}}]})
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {
+            "content": "{\"ready\":true}"}}]})
+
+    monkeypatch.setattr(gateway_module.httpx, "AsyncClient",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(respond), **kwargs))
+    result = asyncio.run(Gateway(env[1].state.settings)._planner_json(
+        "json", {"stage": "plan_review"}, []))
+    assert result == {"ready": True}
+    assert len(requests) == 2
+    assert "写超了" in json.dumps(requests[1], ensure_ascii=False)
+    files = list((env[1].state.settings.data_root / "diagnostics").glob("*.json"))
+    assert len(files) == 1
+    assert "PRIVATE_PARTIAL_REVIEW" in files[0].read_text()
+
+
 def test_invalid_json_keeps_bounded_final_output_only_for_private_replay(env, monkeypatch, caplog):
     original_client = httpx.AsyncClient
     def respond(request):

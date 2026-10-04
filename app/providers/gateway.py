@@ -1474,6 +1474,20 @@ class Gateway:
                     "content_characters": len(final_text) if isinstance(final_text, str) else None,
                     "usage": safe_usage}))
                 if choice.get("finish_reason") == "length":
+                    stage_name = context.get("stage") if isinstance(context, dict) else None
+                    if (stage_name == "plan_review" and isinstance(context, dict)
+                            and not context.get("review_length_retried")):
+                        save_failed_planner_output(self.settings, {
+                            "stage": "plan_review",
+                            "model": route.model,
+                            "raw_output": {"unparsed_content": final_text if isinstance(final_text, str) else "",
+                                           "finish_reason": "length"},
+                        })
+                        shorter = {**context, "review_length_retried": True,
+                            "length_note": "上一份审核写超了。通过项 note 不超过8个字，失败项只留一句，不要复述镜头原文。"}
+                        return await self._planner_json(
+                            system, shorter, sources, min(max_tokens, 4096), route=route,
+                            on_first_token=on_first_token, allow_fallback=allow_fallback, recovery=recovery)
                     raise PlannerInvalidResponse("策划回复达到本轮长度上限，未返回完整方案；尚未开始图片或视频生成")
                 raise ValueError()
             output_content = choice["message"]["content"]
@@ -1521,6 +1535,7 @@ class Gateway:
         calls are durably replayed; empty/transport retries share per-turn budgets.
         No media is generated here.
         """
+        from app.cta import project_cta_mode
         if project.get("ad_form_confirmation_required"):
             return ad_form_confirmation(project)
         if not planner_api_key(self.settings):
@@ -1575,6 +1590,9 @@ class Gateway:
             data.update(merchant_request=merchant_request, initial_brief=initial_brief)
             if "ad_form" in project:
                 data["ad_form"] = project["ad_form"]
+            cta_mode = project_cta_mode(project)
+            if cta_mode is not None:
+                data["cta_target"] = cta_mode
             traces = []
             if choice_enabled:
                 from app.planner_stage import enrich_planner_stage
@@ -2001,7 +2019,7 @@ class Gateway:
                 if on_progress:
                     on_progress("writing_script")
                 script_input = script_context(strategy, duration, generation_strategy=generation_strategy,
-                    skill_stage="ad_script" if choice_enabled else None)
+                    skill_stage="ad_script" if choice_enabled else None, cta_target=project_cta_mode(project))
                 script_input.update(stage="ad_script", schema=script_stage_schema(max_beat_characters=speech.max_beat_characters, key_lines=True) if choice_enabled else AdScript.model_json_schema(),
                                     merchant_request=merchant_request, conversation=context["conversation"])
                 if choice_enabled:
@@ -2026,9 +2044,14 @@ class Gateway:
                     draft = copy.deepcopy(raw_draft)
             if choice_enabled and getattr(self.settings, "progressive_planning_enabled", False):
                 def record_progressive_failure(candidate):
+                    if last_stage_result is None or last_stage_result.get("_diagnostic_saved"):
+                        if last_stage_result is not None and candidate is not None:
+                            last_stage_result["validation_candidate"] = copy.deepcopy(candidate)
+                        return
                     if candidate is not None:
                         last_stage_result["validation_candidate"] = copy.deepcopy(candidate)
                     save_failed_planner_output(self.settings, last_stage_result)
+                    last_stage_result["_diagnostic_saved"] = True
 
                 plan = await progressive_plan(stage_call=stage_call, on_progress=on_progress,
                     record_failure=record_progressive_failure, strategy=strategy, draft=draft,
@@ -2038,7 +2061,7 @@ class Gateway:
                     speech_only=speech_only,
                     max_refinements=getattr(self.settings, "planner_max_refinements", MAX_PLAN_REFINEMENTS),
                     refinement_format=getattr(self.settings, "planner_refinement_format", "sparse_or_full"),
-                    diagnostic_settings=self.settings)
+                    diagnostic_settings=self.settings, cta_target=project_cta_mode(project))
                 plan["skill_trace"] = copy.deepcopy(skill_trace)
                 return AgentDecision.model_validate({"kind": "plan",
                     "message": "广告方案已准备好，创意摘要和分镜见下方。需要修改，直接告诉我；确认后再准备图片。",
@@ -2052,7 +2075,7 @@ class Gateway:
                 if on_progress:
                     on_progress("refining_script" if script_feedback else "reviewing_script")
                 review_input = script_context(strategy, duration, script=None if draft_enum_issues else draft, generation_strategy=generation_strategy,
-                    skill_stage="script_review" if choice_enabled else None)
+                    skill_stage="script_review" if choice_enabled else None, cta_target=project_cta_mode(project))
                 if draft_enum_issues:
                     review_input.update(draft_script=copy.deepcopy(draft), draft_validation_issues=draft_enum_issues,
                         draft_schedule_status="unavailable_until_schema_repaired",
@@ -2396,11 +2419,13 @@ class Gateway:
                 setattr(error, field, getattr(exc, field))
             raise error from None
         except ProgressivePlanningError as exc:
-            if last_stage_result is not None and "validation_candidate" not in last_stage_result:
+            if (last_stage_result is not None and not last_stage_result.get("_diagnostic_saved")
+                    and "validation_candidate" not in last_stage_result):
                 save_failed_planner_output(self.settings, last_stage_result)
+                last_stage_result["_diagnostic_saved"] = True
             error = ProviderError(str(exc))
             error.error_code, error.retryable = exc.error_code, False
-            if "结构不完整" in str(exc):
+            if any(token in str(exc) for token in ("结构不完整", "未能满足已确认要求", "容量仍未改善")):
                 error.retryable = True
                 error.retry_action = "retry_planning"
             else:

@@ -425,7 +425,7 @@ class QuestionOption(ConversationModel):
 class Question(ConversationModel):
     id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,48}$")
     prompt: str = Field(min_length=1, max_length=500)
-    options: list[QuestionOption] = Field(default_factory=list, max_length=4, description="实际答案选项；不得添加自填、其他或让用户转到输入框的伪选项")
+    options: list[QuestionOption] = Field(default_factory=list, max_length=5, description="实际答案选项；不得添加自填、其他或让用户转到输入框的伪选项")
     allow_custom: bool = True
     allow_skip: bool = True
 

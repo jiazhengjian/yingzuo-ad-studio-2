@@ -216,7 +216,12 @@ _CAPACITY_ERRORS = frozenset({
 
 
 def _is_capacity_error(error):
-    return not isinstance(error, ValidationError) and str(error) in _CAPACITY_ERRORS
+    text = str(error)
+    if "旁白台词超过对应朗读时段的长度" in text:
+        return True
+    if "最后一句需在" in text and "停住" in text:
+        return True
+    return not isinstance(error, ValidationError) and text in _CAPACITY_ERRORS
 
 
 _CONTRACT_FIELDS = {"evidence_ids", "character_ids", "product_anchor_ids"}
@@ -398,10 +403,12 @@ def _validate_authored_contract(draft, strategy, duration, generation_strategy, 
     return script
 
 
-def compile_director(raw, strategy, duration, generation_strategy, asset_ids, locked=()):
+def compile_director(raw, strategy, duration, generation_strategy, asset_ids, locked=(), cta_target=None):
     """Own all final timings/text projections; never repair authored semantics."""
     draft = canonical_director(raw, strategy, duration_seconds=duration, locked_lines=locked)
     script = _validate_authored_contract(draft, strategy, duration, generation_strategy, locked)
+    from .cta import apply_spoken_policy
+    script = apply_spoken_policy(script, strategy, cta_target, locked)
     script = validate_script(script, strategy, duration, generation_strategy=generation_strategy)
     narration = script_narration(script)
     tenth = speech_profile_for_strategy(strategy).characters_per_tenth
@@ -1020,7 +1027,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                            merchant_request, current_plan, initial_brief=None, content_only=False,
                            speech_only=False, max_refinements=MAX_PLAN_REFINEMENTS,
                            refinement_format="sparse_or_full", diagnostic_settings=None,
-                           skip_review=False):
+                           skip_review=False, cta_target=None):
     from .av_review import review_execution_windows, review_speech_requirements, review_transition_boundaries
     from .beat_timing import script_capacity_budget
     from .line_quality import offending_lines, rewrite_director_if_needed, script_line_offenses
@@ -1153,7 +1160,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                     try:
                         validate_local_refinement(before, restored, scope, reviewed_timing=reviewed_timing)
                         compile_director(restored, strategy, duration, generation_strategy,
-                                         [a["id"] for a in assets], locked)
+                                         [a["id"] for a in assets], locked, cta_target)
                     except (TimingReductionError, ValueError, KeyError, TypeError):
                         restored = None
                     else:
@@ -1167,7 +1174,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 capacity_issue = None
                 try:
                     compile_director(revised, strategy, duration, generation_strategy,
-                                     [a["id"] for a in assets], locked)
+                                     [a["id"] for a in assets], locked, cta_target)
                 except ValueError as compile_error:
                     if not _is_capacity_error(compile_error):
                         record_failure(plan)
@@ -1225,7 +1232,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     while True:
         try:
             plan, schedule, coordinated = compile_director(raw, strategy, duration, generation_strategy,
-                                                           [a["id"] for a in assets], locked)
+                                                           [a["id"] for a in assets], locked, cta_target)
         except (ValueError, KeyError, TypeError) as error:
             # A known reference-to-shot mapping error can use one remaining
             # repair. A storyboard that cannot even be read is repaired inside
@@ -1322,7 +1329,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 if called and replacement is not None:
                     try:
                         compile_director(replacement, strategy, duration, generation_strategy,
-                                         [a["id"] for a in assets], locked)
+                                         [a["id"] for a in assets], locked, cta_target)
                     except (ValueError, KeyError, TypeError):
                         replacement = None
                     else:
@@ -1342,7 +1349,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             else:
                 try:
                     compile_director(revised, strategy, duration, generation_strategy,
-                                     [a["id"] for a in assets], locked)
+                                     [a["id"] for a in assets], locked, cta_target)
                 except (ValueError, KeyError, TypeError):
                     craft_accepted = _accept_craft_issue(diagnostic_settings, craft_request) or craft_accepted
                 else:

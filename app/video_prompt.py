@@ -243,8 +243,11 @@ def _compile_grouped_video(segment, template):
             lines.append("  仅局部出镜、不增加露脸：" + "、".join(characters[cid] for cid in partial)
                          + "；依实际镜头拍摄其手、头发或其他已确认局部，不把身份参考的组合版式当成本镜构图。")
         continuity = shot.get("continuity")
-        if (shot.get("id") == first_speaking_shot and isinstance(continuity, dict) and spans
-                and abs(float(spans[0].get("start", 1)) - float(shot.get("start", 1))) < 0.05):
+        speaking_face = (production and production.get("speech_mode") == "character_dialogue" and spans
+                         and any(_speech_overlaps(shot, span) for span in spans)
+                         and production.get("speaker_id") in shot.get("character_ids", [])
+                         and _speaker_face_visible(shot))
+        if speaking_face and isinstance(continuity, dict):
             continuity = {**continuity, "start_state": _mouth_open_state(continuity.get("start_state"))}
         lines.extend(_continuity_lines(continuity, shot["description"]))
         hand_line = _hand_product_line(shot)

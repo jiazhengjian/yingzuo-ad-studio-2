@@ -26,7 +26,7 @@ def enrich_planner_stage(data, *, legacy_storyboard=False):
     playbook_form = (resolve_playbook_form(data.get("ad_form"), structure_from_stage_data(data))
                      if "ad_form" in data else None)
     data["tagline_policy"] = tagline_policy()
-    data["ending_policy"] = ending_policy(playbook_form)
+    data["ending_policy"] = ending_policy(playbook_form, data.get("cta_target"))
     bundle = (stage_skill_context(skill_stage, playbook_form=playbook_form) if playbook_form
               else stage_skill_context(skill_stage))
     data["stage_skills"] = bundle

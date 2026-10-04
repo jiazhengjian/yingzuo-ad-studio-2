@@ -101,8 +101,8 @@ def guard_ad_form_confirmation(raw, project):
 
 _INFER_FORMS = (
     ("presenter_pitch", re.compile(r"口播|讲解|主播")),
-    ("scene_story", re.compile(r"剧情|故事")),
-    ("brand_tvc", re.compile(r"品牌片|质感|TVC", re.I)),
+    ("scene_story", re.compile(r"剧情短视频|小剧情|剧情|故事")),
+    ("brand_tvc", re.compile(r"产品展示|不出镜|品牌片|质感|TVC", re.I)),
 )
 _NOT_A_FORM_CHOICE = re.compile(r"里的|台词|演员|文案|改一下|缩短")
 
@@ -236,6 +236,8 @@ def intake_strategy_response(raw, project, *, ask_preference=True):
             # A redundant form-only clarification should not force a user to
             # answer again. The existing one-shot correction can reroute it.
             raise ValueError("广告倾向已确认，不应重复提问；根据已有信息回复或继续策划")
+        from .cta import attach_cta_question
+        result = attach_cta_question(result, project)
     elif ask_preference and kind in ("directions", "plan") and needs_ad_form_choice(project):
         result = {"kind": "clarify", "message": "先确认这条广告的表达倾向，再继续准备方案。",
                   "questions": [ad_form_question()]}

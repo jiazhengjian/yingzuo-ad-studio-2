@@ -73,60 +73,92 @@ def storyboard_schedule(script, durations, *, beat_groups=None, characters_per_t
 
 
 def ending_hold_seconds(script, ad_form):
-    """Silent tail reserved for a product freeze, or the still moment after a spoken CTA."""
+    """Silent tail reserved after the last spoken line, for every ad type."""
     if ad_form not in ("brand_tvc", "scene_story", "presenter_pitch"):
         return 0
-    last = ""
-    beats = getattr(script, "beats", None)
-    if beats is None and isinstance(script, dict):
-        beats = script.get("beats") or []
-    for beat in beats or []:
-        text = getattr(beat, "narration", None)
-        if text is None and isinstance(beat, dict):
-            text = beat.get("narration")
-        if isinstance(text, str) and text.strip():
-            last = text
-    if ad_form == "presenter_pitch" and re.search(r"点下面|下方链接|链接放|去看看|小黄车", last):
-        return 1.5
     return 2.0
 
 
-def _cap_ending_speech(segment, silence):
-    """Keep the last spoken line from running through the reserved ending hold."""
+def _speech_fits(text, start, end, characters_per_tenth):
+    from .schemas import shot_character_limit
+    if end <= start + 1e-9:
+        return False
+    return len(text) <= shot_character_limit(start, end, characters_per_tenth)
+
+
+def _minimum_speech_seconds(text, characters_per_tenth):
+    from .schemas import shot_character_limit
+    width = max(0.1, speech_ticks(text, characters_per_tenth) / 10)
+    for _ in range(50):
+        if len(text) <= shot_character_limit(0, width, characters_per_tenth):
+            return round(width, 1)
+        width = round(width + 0.1, 1)
+    return width
+
+
+def _cap_ending_speech(segment, silence, characters_per_tenth=29):
+    """End the last line before the hold, and keep that line inside its window.
+
+    If clipping the end would overflow the character budget, the line starts
+    earlier. When this group is too short, the previous group gives up spare
+    time. A line that still cannot finish raises a capacity error.
+    """
     groups = segment.get("groups") or []
-    spoken = [group for group in groups if group.get("text") and "speech_end" in group and "speech_start" in group]
+    spoken = [index for index, group in enumerate(groups)
+              if group.get("text") and "speech_end" in group and "speech_start" in group]
     if not spoken or silence <= 0:
         return
-    duration = segment.get("duration_seconds") or 0
+    duration = float(segment.get("duration_seconds") or 0)
     deadline = round(duration - silence, 1)
-    last = spoken[-1]
-    if deadline <= 0 or last["speech_end"] <= deadline + 1e-6:
+    last_index = spoken[-1]
+    last = groups[last_index]
+    text = last["text"]
+    need = _minimum_speech_seconds(text, characters_per_tenth)
+    if deadline <= 0:
+        raise ValueError(f"最后一句需在{need:g}秒内说完、留{silence:g}秒停住")
+    if (last["speech_end"] <= deadline + 1e-6
+            and _speech_fits(text, last["speech_start"], last["speech_end"], characters_per_tenth)):
         return
-    if last["speech_start"] < deadline:
-        last["speech_end"] = deadline
+    target_end = round(min(float(last.get("end") or deadline), deadline), 1)
+    if (last["speech_start"] < target_end
+            and _speech_fits(text, last["speech_start"], target_end, characters_per_tenth)):
+        last["speech_end"] = target_end
         return
     floor = last["start"]
     timing = last.get("timing") or {}
-    if timing and not timing.get("speech_overlap", True) and "visual_end" in last:
+    if timing and not timing.get("speech_overlap", True) and last.get("visual_end") is not None:
         floor = max(floor, last["visual_end"])
-    new_end = round(min(last["end"], deadline), 1)
-    if floor >= new_end and len(groups) > 1 and last is groups[-1]:
-        previous = groups[-2]
-        room = round(previous["end"] - previous["start"] - 0.2, 1)
-        shift = round(min(max(0, room), last["start"] - max(0, deadline - 0.4)), 1)
-        if shift > 0:
-            previous["end"] = round(previous["end"] - shift, 1)
-            if previous.get("speech_end") is not None:
-                previous["speech_end"] = min(previous["speech_end"], previous["end"])
-            last["start"] = round(last["start"] - shift, 1)
+    target_start = round(target_end - need, 1)
+    if target_start < floor - 1e-6 and last_index > 0:
+        previous = groups[last_index - 1]
+        boundary = previous["start"]
+        if previous.get("text") and previous.get("speech_end") is not None:
+            boundary = max(boundary, previous["speech_end"])
+        elif not previous.get("text"):
+            boundary = round(previous["start"] + 0.1, 1)
+        room = round(previous["end"] - boundary, 1)
+        take = min(max(0, room), round(floor - target_start, 1))
+        if take > 0:
+            previous["end"] = round(previous["end"] - take, 1)
+            if previous.get("speech_end") is not None and previous["speech_end"] > previous["end"]:
+                previous["speech_end"] = previous["end"]
+            last["start"] = round(last["start"] - take, 1)
             if "visual_start" in last:
                 last["visual_start"] = last["start"]
             floor = last["start"]
-            new_end = round(min(last["end"], deadline), 1)
-    new_start = round(min(last["speech_start"], max(floor, new_end - 0.4)), 1)
-    if new_start < new_end:
-        last["speech_start"] = new_start
-        last["speech_end"] = new_end
+            if timing and not timing.get("speech_overlap", True) and last.get("visual_end") is not None:
+                floor = max(floor, last["visual_end"])
+    start = round(max(floor, target_start), 1)
+    while start > floor + 1e-6 and not _speech_fits(text, start, target_end, characters_per_tenth):
+        start = round(start - 0.1, 1)
+    if not _speech_fits(text, min(start, floor), target_end, characters_per_tenth):
+        raise ValueError(f"最后一句需在{need:g}秒内说完、留{silence:g}秒停住")
+    last["speech_start"] = round(min(start, floor) if not _speech_fits(text, start, target_end, characters_per_tenth) else start, 1)
+    if not _speech_fits(text, last["speech_start"], target_end, characters_per_tenth):
+        last["speech_start"] = round(floor, 1)
+    if not _speech_fits(text, last["speech_start"], target_end, characters_per_tenth):
+        raise ValueError(f"最后一句需在{need:g}秒内说完、留{silence:g}秒停住")
+    last["speech_end"] = target_end
 
 
 def expression_schedule(script, durations, *, beat_groups=None, characters_per_tenth=29, ad_form=None):
@@ -167,7 +199,7 @@ def expression_schedule(script, durations, *, beat_groups=None, characters_per_t
                        "duration_seconds": segment["duration_seconds"], "groups": groups})
     silence = ending_hold_seconds(script, ad_form)
     if silence and result:
-        _cap_ending_speech(result[-1], silence)
+        _cap_ending_speech(result[-1], silence, characters_per_tenth)
     return result
 
 

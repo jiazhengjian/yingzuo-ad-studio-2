@@ -21,7 +21,7 @@ export function recoveryForJob(job?: Job): JobRecovery | null {
   // A content failure must not silently start the same planning loop again.
   // Older planning jobs have no classification and are treated conservatively.
   if (job.kind === 'plan') {
-    if (/结构不完整/.test(job.error || '')) return { kind: 'retry_planning', label: '继续处理' };
+    if (/结构不完整|未能满足已确认要求|容量仍未改善/.test(job.error || '')) return { kind: 'retry_planning', label: '继续处理' };
     if (job.progress.error_code === 'planning_configuration_failed') return { kind: 'check_connection' };
     if (job.progress.error_code === 'planning_invalid_response'
       && job.progress.retry_action === 'retry_planning' && job.progress.retryable !== false) {

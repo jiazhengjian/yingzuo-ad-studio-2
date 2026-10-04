@@ -86,10 +86,12 @@ def load_saved_job(db_path, job_id):
         messages = [{"role": row["role"], "content": row["content"]} for row in connection.execute(
             "SELECT role, content FROM messages WHERE project_id=? ORDER BY created_at, id", (job["project_id"],))]
         duration = project["duration_seconds"] if "duration_seconds" in project.keys() else None
+        cta_target = project["cta_target"] if "cta_target" in project.keys() else None
         return {
             "job_id": job["id"],
             "project_id": project["id"],
             "brief": project["brief"],
+            "cta_target": cta_target,
             "duration_seconds": duration if isinstance(duration, int) and duration > 0 else 20,
             "plan": plan,
             "assets": assets,
@@ -97,6 +99,21 @@ def load_saved_job(db_path, job_id):
         }
     finally:
         connection.close()
+
+
+def planner_product_images(assets, limit=3):
+    """Original product photos only. Generated scenes and character sheets stay out."""
+    chosen = []
+    for asset in assets or []:
+        if asset.get("kind") != "product":
+            continue
+        metadata = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
+        if metadata.get("generated"):
+            continue
+        chosen.append(asset)
+        if len(chosen) >= limit:
+            break
+    return chosen
 
 
 def _order_assets(assets, production):
@@ -208,12 +225,22 @@ async def replan_offline(*, job_id, db_path, stage_call, gateway=None, skip_revi
             if not item.get("mime"):
                 item["mime"] = _mime_for(item.get("path") or item.get("name") or "")
             prepared.append(item)
-        return await stage_call(system, data, prepared, max_tokens=max_tokens)
+        return await stage_call(system, data, planner_product_images(prepared), max_tokens=max_tokens)
+
+    def record_failure(candidate):
+        if gateway is None:
+            return
+        from app.providers.gateway import save_failed_planner_output
+        save_failed_planner_output(gateway.settings, {
+            "stage": "replan_offline",
+            "model": gateway.settings.planner_model,
+            "raw_output": candidate if candidate is not None else {"unparsed_content": ""},
+        })
 
     result = await progressive_plan(
         stage_call=production_stage,
         on_progress=None,
-        record_failure=lambda candidate: None,
+        record_failure=record_failure,
         strategy=strategy,
         draft=plan.get("ad_script"),
         draft_issues=[],
@@ -224,6 +251,8 @@ async def replan_offline(*, job_id, db_path, stage_call, gateway=None, skip_revi
         merchant_request=saved["brief"],
         current_plan=None,
         skip_review=skip_review,
+        cta_target=saved.get("cta_target") if saved.get("cta_target") else (
+            "none" if "cta_target" in saved else None),
     )
     prompt, notes = _compiled_prompt(result, saved["assets"])
     review = result.get("plan_review") or {}
@@ -272,7 +301,7 @@ def _print_report(report):
 def _live_stage_call():
     from app.config import Settings
     from app.providers.gateway import Gateway
-    settings = Settings.load()
+    settings = Settings.from_env()
     settings.data_root = Path(tempfile.mkdtemp(prefix="replan-offline-"))
     gateway = stub_media(Gateway(settings))
 

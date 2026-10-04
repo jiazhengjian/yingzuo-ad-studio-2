@@ -138,7 +138,7 @@ def test_product_freeze_reserves_two_silent_seconds():
     from types import SimpleNamespace
     from app.planning import _cap_ending_speech
 
-    beat = SimpleNamespace(id="b0", narration="看" * 28 + "。", visual_role="商品", timing=None)
+    beat = SimpleNamespace(id="b0", narration="看" * 20 + "。", visual_role="商品", timing=None)
     script = SimpleNamespace(beats=[beat])
     schedule = expression_schedule(script, [10], beat_groups=[[0]], ad_form="scene_story")
     spoken = [group for group in schedule[-1]["groups"] if group.get("text")]
@@ -195,6 +195,13 @@ def test_cast_line_is_not_repeated_and_mouth_starts_open():
         "end_state": "已经开口", "camera_move": "近景，机位固定",
         "entry_transition": "opening", "entry_reason": "开口",
     }
+    segment["shots"][1]["character_ids"] = ["char_host"]
+    segment["shots"][1]["description"] = "她看着镜头，继续拿着吹风机。"
+    segment["shots"][1]["continuity"] = {
+        "start_state": "嘴未张开，手持商品", "allowed_changes": "继续说",
+        "end_state": "已经开口", "camera_move": "近景，机位固定",
+        "entry_transition": "continuous", "entry_reason": "接着说",
+    }
     prompt = compile_grouped_video(segment)
     assert prompt.count("日常大陆长相") == 1
     assert "。。" not in prompt
@@ -232,6 +239,10 @@ def test_brief_keywords_choose_an_ad_type(tmp_path):
     assert needs_ad_form_choice(project) is False
     assert infer_ad_form("讲一个故事") == "scene_story"
     assert infer_ad_form("做成品牌片") == "brand_tvc"
+    assert infer_ad_form("拍一条剧情短视频") == "scene_story"
+    assert infer_ad_form("做一个小剧情") == "scene_story"
+    assert infer_ad_form("做成产品展示") == "brand_tvc"
+    assert infer_ad_form("不出镜来拍") == "brand_tvc"
     assert infer_ad_form("口播还是剧情") is None
     assert infer_ad_form("不要口播") is None
     assert infer_ad_form("改一下口播广告里的台词") is None
@@ -359,6 +370,89 @@ def test_line_focus_stays_a_suggestion(source):
     assert any(item.kind == "line_focus" and item.note.startswith("台词是否对焦商品、前后连贯。")
                for item in attached.suggestions)
     assert attached.reviewed_plan_sha256 == review.reviewed_plan_sha256
+
+
+def test_closing_line_keeps_its_budget_before_the_hold():
+    from types import SimpleNamespace
+    from app.planning import _cap_ending_speech
+    from app.schemas import shot_character_limit
+
+    presenter = "价格399。想要的话，点下面链接看看。"
+    story = "三百九十九，点下面看看。"
+    for text, form in ((presenter, "presenter_pitch"), (story, "scene_story")):
+        beats = [
+            SimpleNamespace(id="b0", narration="先看这个。", visual_role="商品", timing=None),
+            SimpleNamespace(id="b1", narration=text, visual_role="商品", timing=None),
+        ]
+        script = SimpleNamespace(beats=beats)
+        schedule = expression_schedule(script, [20], beat_groups=[[0, 1]], ad_form=form)
+        last = [group for group in schedule[-1]["groups"] if group.get("text")][-1]
+        assert last["speech_end"] <= 18 + 1e-6
+        assert len(last["text"]) <= shot_character_limit(last["speech_start"], last["speech_end"], 29)
+
+
+def test_speech_window_overflow_is_a_capacity_error():
+    from types import SimpleNamespace
+    from pydantic import ValidationError
+    from app.progressive_planning import _is_capacity_error
+    from app.schemas import SpeechSpan
+
+    script = SimpleNamespace(beats=[SimpleNamespace(
+        id="b0", narration="看" * 28 + "。", visual_role="商品", timing=None)])
+    with pytest.raises(ValueError, match="最后一句需在"):
+        expression_schedule(script, [10], beat_groups=[[0]], ad_form="brand_tvc")
+    try:
+        expression_schedule(script, [10], beat_groups=[[0]], ad_form="brand_tvc")
+    except ValueError as error:
+        assert _is_capacity_error(error)
+    try:
+        SpeechSpan.model_validate({
+            "id": "speech_1", "beat_id": "b0", "text": "价格399。想要的话，点下面链接看看。",
+            "start": 17, "end": 20, "shot_ids": ["s0"],
+            "anchors": [{"text": "价格399。想要的话，点下面链接看看。", "start": 17, "end": 20,
+                         "shot_ids": ["s0"], "visual_evidence": "商品停住"}],
+        })
+    except ValidationError as error:
+        assert _is_capacity_error(error)
+        assert "旁白台词超过对应朗读时段的长度" in str(error)
+
+
+def test_long_closing_lines_still_produce_a_plan(source):
+    cases = (
+        ("presenter_pitch", "价格399。想要的话，点下面链接看看。"),
+        ("scene_story", "三百九十九，点下面看看。"),
+    )
+    for form, line in cases:
+        record = _form_strategy(source, form)
+
+        async def stage_call(system, data, assets, max_tokens=7000, line=line, record=record):
+            if data.get("stage") == "plan_review":
+                return accepted_review(data["final_plan"])
+            if data.get("stage") == "plan_refinement":
+                value = data["draft_storyboard"]
+                value["ad_script"]["beats"][-1]["narration"] = "先看到这里。"
+                return value
+            if data.get("task_kind") in ("line_jargon_rewrite", "shot_craft_rewrite"):
+                return {}
+            value = director_output(record)
+            value["ad_script"]["beats"][-1]["narration"] = line
+            value["video_flow"] = "先看见商品，再停住。"
+            for shot in value["shots"]:
+                shot["product_visible"] = True
+                shot["continuity"]["camera_move"] = "中景，机位固定"
+            return value
+
+        plan = asyncio.run(progressive_plan(
+            stage_call=stage_call, on_progress=lambda _phase: None, record_failure=lambda _item: None,
+            strategy=record, draft=None, draft_issues=[], duration=20, generation_strategy="continuity_v1",
+            assets=[source], conversation=[], merchant_request="看清商品", current_plan=None,
+            cta_target="none"))
+        assert plan["segments"]
+        spoken = plan["segments"][-1]["speech_spans"]
+        assert spoken
+        assert spoken[-1]["end"] <= plan["segments"][-1]["duration_seconds"] - 2 + 1e-6
+        assert "399" not in spoken[-1]["text"] and "三百九十九" not in spoken[-1]["text"]
+        assert "点下面" not in spoken[-1]["text"] and "链接" not in spoken[-1]["text"]
 
 
 def test_fallback_director_compiles(source):

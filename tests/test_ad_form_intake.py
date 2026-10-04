@@ -390,7 +390,7 @@ def test_gateway_intake_requests_only_reply_or_clarify_until_form_is_chosen(env,
             {"id": "facts", "prompt": "有哪些已知特点？", "options": [], "allow_skip": True}]}
     monkeypatch.setattr(Gateway, "_planner_json", fake)
     result = asyncio.run(Gateway(app.state.settings).decide(p, [app.state.store.get_asset(original["id"])], [], [], None))
-    assert result["kind"] == "clarify" and [q["id"] for q in result["questions"]] == ["ad_form", "facts"]
+    assert result["kind"] == "clarify" and [q["id"] for q in result["questions"]] == ["ad_form", "cta_target", "facts"]
     assert len(contexts) == 1
     assert contexts[0]["allowed_decisions"] == ["reply", "clarify"]
     assert contexts[0]["ad_form_question"] == ad_form_question()

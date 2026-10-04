@@ -76,6 +76,16 @@ test('only exhausted planning request failures expose a last-resort resume', () 
   }
 });
 
+test('a capacity planning failure can be resumed with 继续处理', () => {
+  const job = fixture({
+    kind: 'plan',
+    error: '本次方案未能满足已确认要求，暂未采用。已有方案和素材已保留',
+    progress: { error_code: 'planning_content_failed', retryable: false, retry_action: 'edit_plan' },
+  });
+  assert.deepEqual(recoveryForJob(job), { kind: 'retry_planning', label: '继续处理' });
+  assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
+});
+
 test('a structure failure can be resumed with 继续处理', () => {
   const job = fixture({
     kind: 'plan',

@@ -280,6 +280,30 @@ def test_presenter_selling_lines_need_a_subject_and_a_connective():
     assert _focus(_lines("看轮廓。", "看桌角。", "留一处。"), "presenter_pitch") == []
 
 
+def test_brand_visual_narration_and_a_bare_name_are_flagged():
+    strategy = typed("brand_tvc")
+    raw = strategy.model_dump()
+    raw["brief"]["product_name"] = "徕芬高速吹风机"
+    named_strategy = StrategyRecord.model_validate(raw)
+    found = []
+    for item in script_line_offenses(_lines(
+        "银色吹风机，放在台面上。",
+        "风很大，头发干得快。",
+        "徕芬高速吹风机。",
+    ), named_strategy):
+        found.extend(item["offenses"])
+    assert found.count("只描述画面") == 3
+
+
+def test_ungrounded_prices_are_removed_and_confirmed_prices_stay():
+    from app.cta import scrub_ungrounded_prices
+    assert "399" not in scrub_ungrounded_prices("价格399。想要的话，看看这个。", "吹风机")
+    assert "三百九十九" not in scrub_ungrounded_prices("三百九十九，点下面看看。", "吹风机")
+    assert "优惠" not in scrub_ungrounded_prices("现在有优惠。", "吹风机")
+    kept = scrub_ungrounded_prices("价格399。", "售价399元")
+    assert "399" in kept
+
+
 def test_brand_lines_can_state_the_benefit_without_a_subject():
     visual = _focus(_lines(
         "吹风机，先亮起一道银线。",

@@ -360,6 +360,7 @@ def script_context(
     script: AdScript | dict | None = None,
     generation_strategy: str = "legacy_10s",
     skill_stage: str | None = None,
+    cta_target: str | None = None,
 ) -> dict:
     """One prompt input builder shared by production and opt-in text evals."""
     strategy = StrategyRecord.model_validate(strategy)
@@ -385,7 +386,7 @@ def script_context(
         "ending_policy": ending_policy(resolve_playbook_form(
             strategy.brief.ad_form,
             selected.film_concept.structure if selected.film_concept is not None else None,
-        )),
+        ), cta_target),
         "schedule_rules": {
             "minimum_beat_seconds": 1,
             "time_quantum_seconds": 0.1,
