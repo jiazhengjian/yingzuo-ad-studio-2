@@ -184,6 +184,18 @@ test('planning content failure shows saved localized issues and never adds a sec
 });
 
 
+test('an interrupted planner reply can be retried and is not treated as a schema failure', () => {
+  const job = fixture({ kind: 'plan', error: '策划回复中途断开；已有成果仍保留，尚未开始图片或视频生成',
+    progress: { error_code: 'planning_response_interrupted', retryable: true, retry_action: 'retry_planning' } });
+  assert.equal(recoveryForJob(job).kind, 'retry_planning');
+  assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
+  const html = renderCard(job);
+  assert.match(html, /回复中途断开/);
+  assert.match(html, /重新尝试/);
+  assert.doesNotMatch(html, /结构校验|输入修改要求|继续对话/);
+});
+
+
 test('incomplete checks, malformed replies and request limits do not ask the merchant to revise requirements', () => {
   for (const code of ['planning_review_incomplete', 'planning_invalid_response', 'planning_request_limit']) {
     const job = fixture({ kind: 'plan', progress: { error_code: code, retryable: false,

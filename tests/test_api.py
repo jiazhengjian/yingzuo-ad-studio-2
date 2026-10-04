@@ -93,6 +93,27 @@ def test_cross_site_and_rebinding_rejected(tmp_path):
     assert c.get("/api/health", headers={"Host": "attacker.example"}).status_code == 400
 
 
+def test_same_origin_allows_this_servers_loopback_port_only(tmp_path):
+    c, _ = client(tmp_path)
+    own = {"Origin": "http://127.0.0.1:9321", "Host": "127.0.0.1:9321"}
+    assert c.post("/api/projects", json={"brief": "第二实例", "route": "product"}, headers=own).status_code == 201
+    assert c.post("/api/projects", json={"brief": "本机另一写法", "route": "product"}, headers={
+        "Origin": "http://localhost:9321", "Host": "localhost:9321"}).status_code == 201
+    mismatch = c.post("/api/projects", json={"brief": "端口不同"}, headers={
+        "Origin": "http://127.0.0.1:9321", "Host": "127.0.0.1:8787"})
+    assert mismatch.status_code == 403 and mismatch.json()["detail"] == "仅允许本机工作台提交请求"
+    mixed_host = c.post("/api/projects", json={"brief": "主机名不同"}, headers={
+        "Origin": "http://localhost:9321", "Host": "127.0.0.1:9321"})
+    assert mixed_host.status_code == 403 and mixed_host.json()["detail"] == "仅允许本机工作台提交请求"
+    foreign = c.post("/api/projects", json={"brief": "外站"}, headers={
+        "Origin": "http://evil.example", "Host": "127.0.0.1:9321"})
+    assert foreign.status_code == 403 and foreign.json()["detail"] == "仅允许本机工作台提交请求"
+    cross = c.post("/api/projects", json={"brief": "跨站"}, headers={**own, "Sec-Fetch-Site": "cross-site"})
+    assert cross.status_code == 403 and cross.json()["detail"] == "拒绝跨站请求"
+    assert c.post("/api/projects", json={"brief": "开发端口", "route": "product"}, headers={
+        "Origin": "http://127.0.0.1:5173"}).status_code == 201
+
+
 def test_credentials_local_save_no_echo(tmp_path, monkeypatch):
     # All secret writes stay in the isolated test directory.
     monkeypatch.setattr(main, "ROOT", tmp_path)

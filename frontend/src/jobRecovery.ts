@@ -24,7 +24,8 @@ export function recoveryForJob(job?: Job): JobRecovery | null {
     if (['planning_invalid_response', 'planning_review_incomplete', 'planning_request_limit'].includes(job.progress.error_code as string)) {
       return { kind: 'continue_conversation' };
     }
-    if (job.progress.error_code === 'planning_request_failed'
+    if ((job.progress.error_code === 'planning_request_failed'
+      || job.progress.error_code === 'planning_response_interrupted')
       && job.progress.retry_action === 'retry_planning' && job.progress.retryable !== false) {
       return { kind: 'retry_planning', label: '重新尝试' };
     }

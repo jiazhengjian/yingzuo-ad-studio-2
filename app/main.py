@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+from urllib.parse import urlparse
 import uuid
 
 from dotenv import set_key
@@ -29,6 +30,36 @@ from app.schemas import ContinuityInput, CredentialsInput, CreativeConfirmInput,
 
 
 PRIVATE_FIELDS = {"path", "source_path", "payload", "snapshot", "raw", "provider_url", "download_url", "lease_until"}
+_WORKBENCH_ORIGINS = {
+    "http://127.0.0.1:8787", "http://localhost:8787",
+    "http://127.0.0.1:5173", "http://localhost:5173",
+}
+
+
+def _same_workbench_origin(origin: str, host: str | None) -> bool:
+    """Allow the fixed dev ports, or this request's own loopback host:port.
+
+    A second local instance is not cross-site. The origin host and port must
+    equal the Host header, and the host must still be 127.0.0.1 or localhost.
+    """
+    if origin in _WORKBENCH_ORIGINS:
+        return True
+    if not host or any(char in host for char in " \t\r\n/\\"):
+        return False
+    parsed = urlparse(origin)
+    if (parsed.scheme != "http" or parsed.username or parsed.password
+            or parsed.query or parsed.fragment or parsed.path not in ("", "/")):
+        return False
+    hostname = parsed.hostname
+    if hostname not in ("127.0.0.1", "localhost"):
+        return False
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    if port is None:
+        return False
+    return host.lower() == f"{hostname}:{port}"
 
 
 def attachment_name(asset, path: Path):
@@ -97,7 +128,7 @@ def create_app(settings=None, gateway=None, run_worker=True):
     async def same_origin(request, call_next):
         if request.method not in ("GET", "HEAD", "OPTIONS"):
             origin = request.headers.get("origin")
-            if origin and origin not in ("http://127.0.0.1:8787", "http://localhost:8787", "http://127.0.0.1:5173", "http://localhost:5173"):
+            if origin and not _same_workbench_origin(origin, request.headers.get("host")):
                 return JSONResponse({"detail": "仅允许本机工作台提交请求"}, status_code=403)
             if request.headers.get("sec-fetch-site") == "cross-site":
                 return JSONResponse({"detail": "拒绝跨站请求"}, status_code=403)

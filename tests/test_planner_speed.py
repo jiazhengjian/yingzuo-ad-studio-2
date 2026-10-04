@@ -15,13 +15,33 @@ from app.config import Settings
 from app.db import Store
 from app.pipeline import Pipeline
 from app.planner_transport import parse_fallback_on, parse_stage_routes, planner_request_timing, stage_route
-from app.providers.gateway import Gateway, PlannerRequestError
+from app.providers import gateway as gateway_module
+from app.providers.gateway import Gateway, PlannerInterruptedResponse, PlannerRequestError
 from app.speculative_plan import direction_selection_text, schedule_speculation
 from test_conversation_api import env
 from test_direction_selection import offer, select
 from test_planner_transport import completion, isolated_environment, settings, transport
 from test_progressive_planning import progressive_gateway
 from test_providers import install_transport, source
+
+
+@pytest.fixture(autouse=True)
+def reset_unreliable_streams():
+    gateway_module._UNRELIABLE_STREAM_PROVIDERS.clear()
+    yield
+    gateway_module._UNRELIABLE_STREAM_PROVIDERS.clear()
+
+
+def event_stream(chunks, *, done=True):
+    body = "".join("data: " + json.dumps(chunk, ensure_ascii=False) + "\n\n" for chunk in chunks)
+    if done:
+        body += "data: [DONE]\n\n"
+    return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=body)
+
+
+def last_planner_metric(caplog):
+    return json.loads(next(record.getMessage().split(": ", 1)[1] for record in reversed(caplog.records)
+                           if record.getMessage().startswith("Planner request metrics:")))
 
 
 def test_stage_route_parser_rejects_incomplete_or_unknown_entries():
@@ -158,6 +178,166 @@ def test_stream_rejection_retries_once_without_streaming(settings, transport, ca
     metric = json.loads(next(record.getMessage().split(": ", 1)[1] for record in reversed(caplog.records)
                              if record.getMessage().startswith("Planner request metrics:")))
     assert metric["stream"] is False and metric["stream_fallback"] is True
+
+
+def test_truncated_sse_retries_non_streaming_and_is_not_a_schema_error(settings, transport, caplog):
+    partial = '{"concept_pool":[{"id":"c1"}],"directions":[{"label":"PRIVATE_PARTIAL_DIRECTION"'
+    seen = []
+
+    def respond(request):
+        payload = json.loads(request.content)
+        seen.append(payload["stream"])
+        if payload["stream"] is True:
+            return event_stream([
+                {"choices": [{"delta": {"content": partial}, "finish_reason": None}]},
+            ], done=False)
+        return completion({"ok": True})
+
+    transport(respond)
+    with caplog.at_level(logging.INFO, logger="uvicorn.error.planner"):
+        result = asyncio.run(Gateway(replace(settings, planner_stream="auto"))._planner_json(
+            "JSON", {"stage": "strategy"}, []))
+    assert result == {"ok": True} and seen == [True, False]
+    assert "结构校验" not in caplog.text and "PRIVATE_PARTIAL_DIRECTION" not in caplog.text
+    assert not (settings.data_root / "diagnostics").exists()
+    metric = last_planner_metric(caplog)
+    assert metric["stream"] is False and metric["stream_fallback"] is True
+    assert "Planner stream interrupted" in caplog.text
+
+
+def test_stream_without_done_is_interrupted_even_when_the_json_would_parse(settings, transport):
+    seen = []
+
+    def respond(request):
+        payload = json.loads(request.content)
+        seen.append(payload["stream"])
+        if payload["stream"] is True:
+            return event_stream([
+                {"choices": [{"delta": {"content": "{\"ok\": "}, "finish_reason": None}]},
+                {"choices": [{"delta": {"content": "true}"}, "finish_reason": "stop"}]},
+            ], done=False)
+        return completion({"delivered": "json"})
+
+    transport(respond)
+    result = asyncio.run(Gateway(replace(settings, planner_stream="on"))._planner_json(
+        "JSON", {"stage": "strategy"}, []))
+    assert result == {"delivered": "json"} and seen == [True, False]
+
+
+def test_stream_length_retries_non_streaming_instead_of_failing_closed(settings, transport):
+    seen = []
+
+    def respond(request):
+        payload = json.loads(request.content)
+        seen.append(payload["stream"])
+        if payload["stream"] is True:
+            return event_stream([
+                {"choices": [{"delta": {"content": "{\"partial\":"}, "finish_reason": None}]},
+                {"choices": [{"delta": {}, "finish_reason": "length"}],
+                 "usage": {"completion_tokens": 12}},
+            ])
+        return completion({"delivered": "json"})
+
+    transport(respond)
+    result = asyncio.run(Gateway(replace(settings, planner_stream="auto"))._planner_json(
+        "JSON", {"stage": "strategy"}, []))
+    assert result == {"delivered": "json"} and seen == [True, False]
+
+
+def test_stream_connection_close_retries_non_streaming_once(settings, transport):
+    seen = []
+
+    def respond(request):
+        payload = json.loads(request.content)
+        seen.append(payload["stream"])
+        if payload["stream"] is True:
+            raise httpx.RemoteProtocolError("offline close")
+        return completion({"ok": True})
+
+    transport(respond)
+    assert asyncio.run(Gateway(replace(settings, planner_stream="auto"))._planner_json(
+        "JSON", {"stage": "strategy"}, [])) == {"ok": True}
+    assert seen == [True, False]
+
+
+def test_interrupted_stream_uses_fallback_when_the_same_model_has_no_time_left(settings, transport, monkeypatch):
+    monkeypatch.setattr(gateway_module, "_NONSTREAM_RETRY_FLOOR_SECONDS", 10**9)
+    seen = []
+
+    def respond(request):
+        payload = json.loads(request.content)
+        seen.append((str(request.url), payload["stream"]))
+        if "ai-tudou.net" in str(request.url):
+            return event_stream([
+                {"choices": [{"delta": {"content": '{"cut":'}, "finish_reason": None}]},
+            ], done=False)
+        return completion({"ok": True})
+
+    routed = replace(settings, planner_stream="auto", planner_fallback_provider="deepseek",
+                     planner_fallback_model="deepseek-flash", planner_fallback_on=("timeout",))
+    transport(respond)
+    assert asyncio.run(Gateway(routed)._planner_json("JSON", {"stage": "strategy"}, [])) == {"ok": True}
+    assert seen == [
+        ("https://api.ai-tudou.net/v1/chat/completions", True),
+        ("https://api.deepseek.com/chat/completions", True),
+    ]
+
+
+def test_interrupted_stream_is_retryable_and_keeps_the_full_partial_body(settings, transport, monkeypatch, caplog):
+    monkeypatch.setattr(gateway_module, "_NONSTREAM_RETRY_FLOOR_SECONDS", 10**9)
+    partial = '{"direction":"PRIVATE_PARTIAL_DIRECTION' + ("x" * 5100)
+    seen = []
+
+    def respond(request):
+        payload = json.loads(request.content)
+        seen.append(payload["stream"])
+        return event_stream([
+            {"choices": [{"delta": {"content": partial}, "finish_reason": None}]},
+        ], done=False)
+
+    transport(respond)
+    with caplog.at_level(logging.WARNING, logger="app.providers.gateway"):
+        with pytest.raises(PlannerInterruptedResponse) as error:
+            asyncio.run(Gateway(replace(settings, planner_stream="auto"))._planner_json(
+                "JSON", {"stage": "strategy"}, []))
+    assert seen == [True]
+    assert error.value.retryable is True and error.value.retry_action == "retry_planning"
+    assert error.value.error_code == "planning_response_interrupted"
+    assert "回复中途断开" in str(error.value) and "结构校验" not in str(error.value)
+    assert "PRIVATE_PARTIAL_DIRECTION" not in caplog.text and "PRIVATE_PARTIAL_DIRECTION" not in str(error.value)
+    saved = json.loads(next((settings.data_root / "diagnostics").glob("*.json")).read_text())
+    assert saved["raw_output"]["unparsed_content"] == partial
+    assert len(partial) > 5000
+
+
+def test_unreliable_stream_is_remembered_for_that_provider_only(settings, transport, caplog):
+    seen = []
+
+    def respond(request):
+        payload = json.loads(request.content)
+        seen.append((str(request.url), payload["stream"]))
+        if payload["stream"] is True and "ai-tudou.net" in str(request.url):
+            return event_stream([
+                {"choices": [{"delta": {"content": '{"cut":'}, "finish_reason": None}]},
+            ], done=False)
+        if payload["stream"] is True:
+            return event_stream([
+                {"choices": [{"delta": {"content": "{\"ok\": "}, "finish_reason": None}]},
+                {"choices": [{"delta": {"content": "true}"}, "finish_reason": "stop"}]},
+            ])
+        return completion({"ok": True})
+
+    transport(respond)
+    streaming = replace(settings, planner_stream="auto")
+    with caplog.at_level(logging.INFO, logger="uvicorn.error.planner"):
+        assert asyncio.run(Gateway(streaming)._planner_json("JSON", {"stage": "strategy"}, [])) == {"ok": True}
+        assert asyncio.run(Gateway(streaming)._planner_json("JSON", {"stage": "storyboard"}, [])) == {"ok": True}
+    deepseek = replace(settings, planner_provider="deepseek", planner_model="deepseek-flash", planner_stream="auto")
+    assert asyncio.run(Gateway(deepseek)._planner_json("JSON", {"stage": "strategy"}, [])) == {"ok": True}
+    assert [stream for _, stream in seen] == [True, False, False, True]
+    assert seen[2][0] == "https://api.ai-tudou.net/v1/chat/completions"
+    assert "api.deepseek.com" in seen[3][0]
+    assert last_planner_metric(caplog)["stream_fallback"] is True
 
 
 def test_timeout_falls_back_once_to_the_fast_model(settings, transport):

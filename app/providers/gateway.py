@@ -63,6 +63,42 @@ from app.ad_script import (AdBeat, AdScript, ScriptReview, AD_SCRIPT_SYSTEM, SCR
 logger = logging.getLogger(__name__)
 performance_logger = logging.getLogger("uvicorn.error.planner")
 
+# A provider whose SSE stream ends early stays on non-streaming calls for this process.
+_UNRELIABLE_STREAM_PROVIDERS: set[str] = set()
+# Same-model non-streaming retry needs enough of the original wait left to be useful.
+_NONSTREAM_RETRY_FLOOR_SECONDS = 30
+
+
+def _classify_sse(finish, saw_done):
+    """A stream is complete only with a normal stop and the [DONE] sentinel.
+
+    A proxy that closes after partial JSON often ends the iterator with neither
+    marker. Treating that as finish_reason=stop made the fragment fail schema
+    checks. ``length`` is the same class: the body is unfinished, not malformed.
+    """
+    if finish == "length":
+        return "length"
+    if finish in ("content_filter", "tool_calls"):
+        return "other"
+    if saw_done and finish in (None, "stop"):
+        return "complete"
+    return "closed"
+
+
+def _bounded_planner_timeout(timeout, seconds):
+    seconds = max(1.0, float(seconds))
+    current = timeout.as_dict()
+    return httpx.Timeout(
+        min(current["read"], seconds),
+        connect=min(current["connect"], seconds),
+        write=min(current["write"], seconds),
+        pool=min(current["pool"], seconds))
+
+
+def _mark_stream_unreliable(provider):
+    if provider in ("deepseek", "tudou"):
+        _UNRELIABLE_STREAM_PROVIDERS.add(provider)
+
 
 def _decode_planner_json(output_content):
     """Accept one complete object with a single redundant closing brace.
@@ -281,6 +317,23 @@ class PlannerInvalidResponse(ProviderError):
     error_code = "planning_invalid_response"
     retryable = False
     retry_action = "edit_plan"
+
+
+class PlannerInterruptedResponse(ProviderError):
+    """Text arrived, then the stream ended before a complete reply.
+
+    This is not a schema failure. The in-request non-streaming retry and the
+    configured text fallback already ran when they were allowed; the merchant
+    can still retry the same step. The planning session does not spend another
+    automatic model call on top of those.
+    """
+
+    error_code = "planning_response_interrupted"
+    retryable = True
+    retry_action = "retry_planning"
+
+    def __init__(self):
+        super().__init__("策划回复中途断开；已有成果仍保留，尚未开始图片或视频生成")
 
 
 class PlannerConfigurationError(ProviderError):
@@ -702,18 +755,59 @@ class Gateway:
         stream_mode = getattr(self.settings, "planner_stream", "off")
         if stream_mode not in ("off", "on", "auto"):
             stream_mode = "off"
-        # ``on`` and ``auto`` both try SSE, then one non-streaming request if the
-        # provider rejects the stream before any text. Tudou stream support is unverified.
-        attempts = ["stream", "json"] if stream_mode in ("on", "auto") else ["json"]
+        # ``on`` and ``auto`` try SSE once. A rejection, a missing terminal
+        # marker, a dropped connection, or length becomes one non-streaming
+        # call on the same model when the original wait still has time left.
+        # That provider then stays non-streaming for the rest of the process.
+        if stream_mode in ("on", "auto") and route.provider in _UNRELIABLE_STREAM_PROVIDERS:
+            attempts, stream_fallback = ["json"], True
+        elif stream_mode in ("on", "auto"):
+            attempts, stream_fallback = ["stream", "json"], False
+        else:
+            attempts, stream_fallback = ["json"], False
         started = time.monotonic()
+        _, call_deadline = planner_request_timing(self.settings, route)
+        next_wait = None
         first_token_at = None
         used_stream = False
-        stream_fallback = False
         response = None
+
+        def allow_nonstream_retry(index, mode):
+            nonlocal next_wait
+            if mode != "stream" or index != 0 or len(attempts) < 2:
+                return False
+            if call_deadline is None:
+                next_wait = None
+                return True
+            remaining = call_deadline - (time.monotonic() - started)
+            if remaining < _NONSTREAM_RETRY_FLOOR_SECONDS:
+                return False
+            next_wait = remaining
+            return True
+
+        def note_stream_cut(reason, characters):
+            detail = {
+                "stage": context.get("stage") if context.get("stage") in PLANNER_STAGES else "unknown",
+                "reason": reason if reason in ("closed", "length", "connection") else "closed"}
+            if type(characters) is int and characters >= 0:
+                detail["content_characters"] = characters
+            logger.warning("Planner stream interrupted: %s", json.dumps(detail))
+
+        def abandon_stream():
+            nonlocal used_stream, first_token_at, stream_fallback
+            _mark_stream_unreliable(route.provider)
+            stream_fallback = True
+            used_stream = False
+            first_token_at = None
+
         for index, mode in enumerate(attempts):
             payload, evidence_aliases = self._planner_payload(
                 system, context, sources, max_tokens, route, stream=mode == "stream")
             request_timeout, request_deadline = planner_request_timing(self.settings, route)
+            if next_wait is not None:
+                request_timeout = _bounded_planner_timeout(request_timeout, next_wait)
+                request_deadline = next_wait
+                next_wait = None
             mode_started = time.monotonic()
 
             async def request_response(payload=payload, request_timeout=request_timeout, mode=mode):
@@ -721,20 +815,20 @@ class Gateway:
                 async with httpx.AsyncClient(timeout=request_timeout, trust_env=False) as client:
                     if payload.get("stream") is not True:
                         return await client.post(route_endpoint(route.provider),
-                            headers={"Authorization": f"Bearer {route_api_key(self.settings, route)}"}, json=payload)
+                            headers={"Authorization": f"Bearer {route_api_key(self.settings, route)}"}, json=payload), None
                     async with client.stream("POST", route_endpoint(route.provider),
                             headers={"Authorization": f"Bearer {route_api_key(self.settings, route)}"},
                             json=payload) as streamed:
                         if streamed.status_code >= 300:
                             await streamed.aread()
                             return httpx.Response(streamed.status_code, content=streamed.content,
-                                headers=streamed.headers)
+                                headers=streamed.headers), None
                         content_type = streamed.headers.get("content-type", "")
                         if "text/event-stream" not in content_type:
                             await streamed.aread()
                             return httpx.Response(streamed.status_code, content=streamed.content,
-                                headers=streamed.headers)
-                        parts, finish, usage = [], None, None
+                                headers=streamed.headers), None
+                        parts, finish, usage, saw_done = [], None, None, False
                         async for line in streamed.aiter_lines():
                             if not line or line.startswith(":"):
                                 continue
@@ -742,11 +836,14 @@ class Gateway:
                                 continue
                             data = line[5:].strip()
                             if data == "[DONE]":
+                                saw_done = True
                                 break
                             try:
                                 chunk = json.loads(data)
                             except ValueError:
-                                raise PlannerInvalidResponse("策划回复未通过结构校验；已有成果仍保留，尚未开始图片或视频生成") from None
+                                # A broken event is an interrupted stream, not a schema result.
+                                content = "".join(parts)
+                                return None, {"reason": "closed", "characters": len(content), "content": content}
                             if isinstance(chunk, dict) and isinstance(chunk.get("usage"), dict):
                                 usage = chunk["usage"]
                             choices = chunk.get("choices") if isinstance(chunk, dict) else None
@@ -763,30 +860,65 @@ class Gateway:
                                     if on_first_token:
                                         on_first_token()
                                 parts.append(text)
+                        content = "".join(parts)
+                        outcome = _classify_sse(finish, saw_done)
+                        if outcome in ("closed", "length"):
+                            return None, {"reason": outcome, "characters": len(content), "content": content}
                         used_stream = True
-                        body = {"choices": [{"finish_reason": finish or "stop",
-                            "message": {"content": "".join(parts)}}]}
+                        body = {"choices": [{"finish_reason": "stop" if outcome == "complete" else finish,
+                            "message": {"content": content}}]}
                         if usage is not None:
                             body["usage"] = usage
-                        return httpx.Response(200, json=body)
+                        return httpx.Response(200, json=body), None
 
             try:
                 # wait_for retains the documented Python 3.10 compatibility.
-                response = await asyncio.wait_for(request_response(), timeout=request_deadline)
+                response, cut = await asyncio.wait_for(request_response(), timeout=request_deadline)
             except (httpx.HTTPError, asyncio.TimeoutError) as exc:
                 logger.warning("Planner transport failure: %s", json.dumps(safe_planner_transport_failure(
                     context.get("stage"), time.monotonic() - started, error_type=type(exc).__name__)))
+                if allow_nonstream_retry(index, mode):
+                    abandon_stream()
+                    note_stream_cut("connection", None)
+                    continue
                 performance_logger.info("Planner request metrics: %s", json.dumps(safe_planner_metrics(
                     context.get("stage"), time.monotonic() - started, first_token_seconds=(
                         None if first_token_at is None else first_token_at - mode_started),
-                    stream=mode == "stream", transport="fallback" if not route.primary else "primary")))
+                    stream=mode == "stream", transport="fallback" if not route.primary else "primary",
+                    stream_fallback=stream_fallback or mode == "stream")))
+                if mode == "stream":
+                    abandon_stream()
                 alternate = self._text_fallback(route, status_code=None, timed_out=True) if allow_fallback else None
                 if alternate is not None:
                     return await self._planner_json(system, context, sources, max_tokens, route=alternate,
                         on_first_token=on_first_token, allow_fallback=False)
+                if mode == "stream":
+                    raise PlannerInterruptedResponse() from None
                 raise PlannerRequestError("策划服务连接暂时中断；已有成果仍保留。") from None
+            if cut is not None:
+                note_stream_cut(cut.get("reason"), cut.get("characters"))
+                if allow_nonstream_retry(index, mode):
+                    abandon_stream()
+                    continue
+                _mark_stream_unreliable(route.provider)
+                stream_fallback = True
+                performance_logger.info("Planner request metrics: %s", json.dumps(safe_planner_metrics(
+                    context.get("stage"), time.monotonic() - started, first_token_seconds=(
+                        None if first_token_at is None else first_token_at - mode_started),
+                    stream=True, transport="fallback" if not route.primary else "primary",
+                    stream_fallback=True)))
+                alternate = self._text_fallback(route, status_code=None, timed_out=True) if allow_fallback else None
+                if alternate is not None:
+                    return await self._planner_json(system, context, sources, max_tokens, route=alternate,
+                        on_first_token=on_first_token, allow_fallback=False)
+                partial = cut.get("content")
+                if isinstance(partial, str) and partial:
+                    save_failed_planner_output(self.settings, {"stage": context.get("stage", "unknown"),
+                        "raw_output": {"unparsed_content": partial}})
+                raise PlannerInterruptedResponse()
             if mode == "stream" and not used_stream and response.status_code == 400 and index == 0 and len(attempts) > 1:
                 stream_fallback = True
+                _mark_stream_unreliable(route.provider)
                 continue
             if mode == "stream" and not used_stream and response.status_code < 300:
                 stream_fallback = True
