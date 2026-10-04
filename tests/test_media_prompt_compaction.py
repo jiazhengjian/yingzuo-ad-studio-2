@@ -48,6 +48,10 @@ def test_each_approved_character_gets_one_four_view_sheet(directed_plan_data):
     assert request["character_id"] == character["id"]
     assert character["description"] in request["prompt"]
     assert all(view in request["prompt"] for view in ("脸部特写", "正面全身", "侧面全身", "背面全身"))
+    assert "16:9" in request["prompt"] and "左侧约40%" in request["prompt"]
+    assert "2×2" not in request["prompt"]
+    assert "默认出镜为中国人，East Asian Chinese appearance，日常大陆长相。" in request["prompt"]
+    assert request["aspect_ratio"] == "16:9" and request["sheet_layout"] == "horizontal_16x9"
     assert request["skill_trace"][0]["compiled_resource"] == "references/character-template.txt"
     assert plan["segments"][0]["speech_spans"][0]["text"] not in request["prompt"]
     assert plan == before
@@ -124,6 +128,36 @@ def test_none_mode_cannot_silently_discard_approved_speech(directed_plan_data):
     segment = with_production(directed_plan_data, "none")
     with pytest.raises(ValueError, match="不能包含台词"):
         compile_grouped_video(segment)
+
+
+def test_default_cast_is_chinese_and_an_explicit_look_replaces_it(directed_plan_data):
+    from app.production import DEFAULT_CAST_LINE
+    plan = deepcopy(directed_plan_data)
+    plan["production"] = production()
+    plain = character_design_request({}, plan, plan["production"]["characters"][0])
+    assert DEFAULT_CAST_LINE in plain["prompt"]
+    requested = deepcopy(plan["production"]["characters"][0])
+    requested["description"] = "成年欧美女性，金色长发，白衬衫"
+    plan["production"]["characters"][0] = requested
+    overridden = character_design_request({}, plan, requested)
+    assert DEFAULT_CAST_LINE not in overridden["prompt"]
+    assert "欧美女性" in overridden["prompt"]
+    assert "左侧约40%" in overridden["prompt"]
+    segment = with_production(directed_plan_data)
+    segment["reference_roles"][-1]["sheet_layout"] = "horizontal_16x9"
+    prompt = compile_grouped_video(segment)
+    assert "左侧是脸部和上胸特写，右侧同一排依次是正面、侧面、背面全身" in prompt
+    assert DEFAULT_CAST_LINE in prompt
+    segment["production"]["characters"][0]["description"] = "成年欧美女性，金色长发，白衬衫"
+    overridden_video = compile_grouped_video(segment)
+    assert DEFAULT_CAST_LINE not in overridden_video
+    assert "欧美女性" in overridden_video
+    assert "角色“同事”的四视图，左侧是脸部和上胸特写" in overridden_video
+    assert "四格版式不进入视频" not in overridden_video
+    legacy = with_production(directed_plan_data)
+    legacy_prompt = compile_grouped_video(legacy)
+    assert "角色“同事”的四视图，统一其外貌与服装；四格版式不进入视频。" in legacy_prompt
+    assert "角色“同事”的四视图，左侧是脸部和上胸特写" not in legacy_prompt
 
 
 def test_explicit_null_new_fields_keep_historical_reference_behavior(directed_plan_data):

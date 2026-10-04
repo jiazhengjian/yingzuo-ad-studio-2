@@ -137,8 +137,9 @@ def speech_profile_for_strategy(strategy) -> SpeechProfile:
     return LEGACY_SPEECH_PROFILE
 
 
-# Nested speech spans validate before a plan can attach its own rate. The plan
-# validator sets this for the duration of that validation only.
+# Speech spans validate before their parent can finish. Plan validation binds
+# the strategy rate. A segment that already carries speech_characters_per_tenth
+# binds that same rate when it is checked on its own.
 _plan_speech_tenth: ContextVar[int | None] = ContextVar("plan_speech_tenth", default=None)
 
 
@@ -154,10 +155,31 @@ def reset_plan_speech_tenth(token: Token) -> None:
     _plan_speech_tenth.reset(token)
 
 
+def speech_rate_is_bound() -> bool:
+    return _plan_speech_tenth.get() is not None
+
+
 def active_speech_tenth() -> int:
-    """Rate for the plan currently being validated; lone segments stay at 2.9."""
+    """Rate bound for this validation. Unstamped checks stay at the historical 2.9."""
     value = _plan_speech_tenth.get()
     return LEGACY_TENTH if value is None else value
+
+
+def stamp_plan_speech_rate(plan) -> None:
+    """Copy the plan's own rate onto every segment so later checks cannot fall back to 2.9."""
+    if not isinstance(plan, dict):
+        return
+    tenth = speech_profile_for_strategy(plan.get("strategy")).characters_per_tenth
+    segments = plan.get("segments")
+    if not isinstance(segments, list):
+        return
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        if tenth == LEGACY_TENTH:
+            segment.pop("speech_characters_per_tenth", None)
+        else:
+            segment["speech_characters_per_tenth"] = tenth
 
 
 def accepted_submission_tenth(value) -> int:

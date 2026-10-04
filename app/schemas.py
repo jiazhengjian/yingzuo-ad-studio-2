@@ -153,6 +153,35 @@ class Segment(BaseModel):
     shots: list[Shot] = Field(min_length=1, max_length=18, description="使用当前生成段的局部0至duration_seconds秒时间轴，最大30秒；从0连续覆盖本段完整时长，不使用整条广告的累计时间；镜头切换不等于独立生成")
     speech_spans: list[SpeechSpan] | None = Field(default=None, max_length=12, description="独立于镜头切换的完整旁白时段；None保留历史镜头台词，空列表表示静音段")
     reference_asset_ids: list[str] = Field(min_length=1, max_length=10)
+    speech_characters_per_tenth: int | None = Field(default=None, exclude_if=lambda value: value is None,
+        description="服务端按方案广告类型写入的朗读容量。缺省时按历史2.9字/秒。不由分镜模型填写")
+
+    @field_validator("speech_characters_per_tenth", mode="before")
+    @classmethod
+    def server_speech_rate(cls, value):
+        if value is None:
+            return None
+        from .ad_form_playbook import LEGACY_TENTH, accepted_submission_tenth
+        tenth = accepted_submission_tenth(value)
+        return None if tenth == LEGACY_TENTH else tenth
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def bind_segment_speech_budget(cls, data, handler):
+        """Use the rate stored on this segment when no plan validator has bound one."""
+        from .ad_form_playbook import (
+            accepted_submission_tenth, bind_speech_tenth, reset_plan_speech_tenth, speech_rate_is_bound,
+        )
+        token = None
+        if not speech_rate_is_bound():
+            raw = data.get("speech_characters_per_tenth") if isinstance(data, dict) else getattr(data, "speech_characters_per_tenth", None)
+            if raw is not None:
+                token = bind_speech_tenth(accepted_submission_tenth(raw))
+        try:
+            return handler(data)
+        finally:
+            if token is not None:
+                reset_plan_speech_tenth(token)
 
     @model_validator(mode="after")
     def shot_order(self):
@@ -305,8 +334,10 @@ class Plan(BaseModel):
                 raise ValueError("方案商品事实必须与本轮策划依据一致")
         if len({s.id for s in self.segments}) != len(self.segments):
             raise ValueError("片段ID重复")
-        from .ad_form_playbook import speech_profile_for_strategy
+        from .ad_form_playbook import LEGACY_TENTH, speech_profile_for_strategy
         tenth = speech_profile_for_strategy(self.strategy).characters_per_tenth
+        for segment in self.segments:
+            segment.speech_characters_per_tenth = None if tenth == LEGACY_TENTH else tenth
         durations = [s.duration_seconds for s in self.segments]
         validate_generation_durations(durations, self.generation_strategy)
         if self.generation_strategy == "legacy_10s":

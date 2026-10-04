@@ -3,6 +3,7 @@
 Times are desired directing windows, never a claim of measured alignment.
 """
 import json
+from .production import cast_appearance_clause
 from .runtime_skills import compiler_template
 
 
@@ -68,7 +69,13 @@ def _reference_lines(segment):
                 raise ValueError("角色参考须对应已确认的唯一角色")
             referenced_characters.add(cid)
             character = characters[cid]
-            duty = f"角色“{character['name']}”的四视图，统一其外貌与服装；四格版式不进入视频。{character['description']}"
+            if role.get("sheet_layout") == "horizontal_16x9":
+                sheet = "左侧是脸部和上胸特写，右侧同一排依次是正面、侧面、背面全身；版式不进入视频。"
+            else:
+                # Saved 2×2 sheets predate the horizontal contact sheet.
+                sheet = "统一其外貌与服装；四格版式不进入视频。"
+            duty = (f"角色“{character['name']}”的四视图，{sheet}"
+                    f"{cast_appearance_clause(character.get('description', ''))}{character['description']}")
         else:
             raise ValueError("不支持的视频参考图片职责")
         lines.append(f"参考图{index}：{duty}。")
@@ -154,7 +161,7 @@ def _compile_grouped_video(segment, template):
                    if person.get("appearance") == "partial_only" and person["id"] in shot.get("character_ids", [])]
         if partial:
             lines.append("  仅局部出镜、不增加露脸：" + "、".join(characters[cid] for cid in partial)
-                         + "；依实际镜头拍摄其手、头发或其他已确认局部，不把参考四视图当成本镜构图。")
+                         + "；依实际镜头拍摄其手、头发或其他已确认局部，不把身份参考的组合版式当成本镜构图。")
         lines.extend(_continuity_lines(shot.get("continuity"), shot["description"]))
     lines.append("台词时间（每句仅说一次，同一表达可以连续跨越关联镜头）：")
     for span in segment["speech_spans"]:

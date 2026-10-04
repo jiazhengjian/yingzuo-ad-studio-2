@@ -52,11 +52,17 @@ def video_submission_spec(plan, segment, assets=None):
         spec["production"] = copy.deepcopy(plan["production"])
     if assets is not None:
         spec["reference_asset_ids"] = [asset["id"] for asset in assets]
-        spec["reference_roles"] = [
-            {"index": index, "role": asset["kind"],
-             **({"character_id": asset["metadata"]["character_id"],
-                 "name": asset["metadata"].get("character_name", asset["name"])} if asset["kind"] == "character" else {})}
-            for index, asset in enumerate(assets, 1) if asset["kind"] in ("product", "scene", "character")]
+        visible = [asset for asset in assets if asset["kind"] in ("product", "scene", "character")]
+        spec["reference_roles"] = []
+        for index, asset in enumerate(visible, 1):
+            role = {"index": index, "role": asset["kind"]}
+            if asset["kind"] == "character":
+                role["character_id"] = asset["metadata"]["character_id"]
+                role["name"] = asset["metadata"].get("character_name", asset["name"])
+                layout = asset["metadata"].get("sheet_layout")
+                if layout in ("horizontal_16x9", "grid_2x2"):
+                    role["sheet_layout"] = layout
+            spec["reference_roles"].append(role)
     return spec
 
 
@@ -374,7 +380,18 @@ def validate_plan(plan, duration_seconds=None, *, settings=None):
                                  _validation_details(error))
     result = copy.deepcopy(plan)
     result.pop("cta", None)
+    from .ad_form_playbook import stamp_plan_speech_rate
+    stamp_plan_speech_rate(result)
     return result
+
+
+def merchant_facing_error(exc):
+    """Merchants see a short Chinese sentence. Pydantic's English wrapper stays in diagnostics."""
+    if isinstance(exc, ValidationError):
+        return "台词和时长没有对上，已保留图片。请点继续制作。"
+    if isinstance(exc, (ValueError, media.MediaError)) or getattr(exc, "safe_to_display", False):
+        return str(exc)
+    return "制作步骤失败，可恢复已知任务；不会自动重新提交视频。"
 
 
 class Pipeline:
@@ -445,8 +462,13 @@ class Pipeline:
             self.store.update_job(job_id, status="submitted_unknown" if unresolved else "queued", lease_until=0)
             raise
         except Exception as exc:
-            # Keep public errors actionable but never include a raw provider response/configuration.
-            message = str(exc) if isinstance(exc, (ValueError, media.MediaError)) or getattr(exc, "safe_to_display", False) else "制作步骤失败，可恢复已知任务；不会自动重新提交视频。"
+            # Keep public errors actionable but never include a raw provider response or pydantic text.
+            if isinstance(exc, ValidationError):
+                from .providers.gateway import save_failed_planner_output
+                save_failed_planner_output(self.settings, {
+                    "stage": "generate_validation" if job["kind"] == "generate" else "validation",
+                    "raw_output": {"check": "model"}, "validation_errors": _validation_details(exc)})
+            message = merchant_facing_error(exc)
             changes = {"status": "failed", "error": message[:500], "lease_until": 0}
             if job["kind"] == "plan":
                 progress = dict(self.store.get_job(job_id).get("progress") or {})
@@ -643,6 +665,8 @@ class Pipeline:
         return asset
 
     def _creative_options(self, job, plan):
+        from .ad_form_playbook import stamp_plan_speech_rate
+        stamp_plan_speech_rate(plan)
         first = plan["segments"][0]
         return [{"id": "current", "label": "图片没问题，生成视频", "description": "使用已确认的商品原图与参考图片制作当前方案", "segment": copy.deepcopy(first)}]
 

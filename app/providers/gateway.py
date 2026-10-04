@@ -1995,7 +1995,7 @@ class Gateway:
                         "items": {"type": "string", "enum": [beat.id for beat in ad_script.beats]}}
                 # Server-owned production choices and actual image order must not
                 # be replaced by a director's guess about provider bindings.
-                for field in ("production", "reference_roles"):
+                for field in ("production", "reference_roles", "speech_characters_per_tenth"):
                     schema["$defs"]["Segment"]["properties"].pop(field, None)
                 schema["$defs"]["SpeechSpan"]["properties"].pop("speaker_id", None)
                 schema["$defs"]["Shot"]["properties"]["narration"] = {"type": "string", "const": ""}
@@ -2013,7 +2013,7 @@ class Gateway:
                     "creative_strategy": {"brief": strategy.brief.model_dump(), "selected_direction": selected.model_dump()},
                     "selected_direction": selected.model_dump(),
                     "production": selected.production.model_dump() if selected.production else None,
-                    "production_rules": "只用已确认的角色与商品形态。character_ids逐镜标出实际在画面的角色。人物对白的说话窗口须让该角色在画面内；画外音不要求演员对口型。visual_direction.sound只写环境声、音乐和混音，人声服从production.voice_description。一个镜头可承载多个相邻beat_ids，beat_id为首项；按动作完成和信息任务安排时长，不按内容组数或固定秒数切镜。",
+                    "production_rules": "只用已确认的角色与商品形态。character_ids逐镜标出实际在画面的角色。镜头里的人物外貌服从production.characters.description；资料没有写其他外貌时按中国人、东亚面孔、日常大陆长相，不要改成另一族裔。人物对白的说话窗口须让该角色在画面内；画外音不要求演员对口型。visual_direction.sound只写环境声、音乐和混音，人声服从production.voice_description。一个镜头可承载多个相邻beat_ids，beat_id为首项；按动作完成和信息任务安排时长，不按内容组数或固定秒数切镜。",
                     "strategy_rules": [r for r in context["strategy_rules"] if r["id"] == selected.rule_id],
                     "speech_timing_basis": "各group已保留独立说话窗口；切镜与旁白连续性分别安排，不能改写定稿",
                     "schema": compact_schema(schema),
@@ -2289,8 +2289,11 @@ class Gateway:
             if not receipt:
                 design_request = (scene_design_request(project, plan) if kind == "scene"
                                   else character_design_request(project, plan, instruction["character"]))
+                aspect = design_request.get("aspect_ratio") if isinstance(design_request, dict) else None
+                if aspect not in ("16:9", "9:16"):
+                    aspect = "9:16" if kind == "scene" else "16:9"
                 payload = {"model": self.settings.image_model, "prompt": design_request["prompt"],
-                           "size": "9:16" if kind == "scene" else "16:9", "resolution": "1k", "quality": "medium"}
+                           "size": aspect, "resolution": "1k", "quality": "medium"}
                 if kind == "scene":
                     payload["images"] = [data_url(a) for a in sources]
                 check_cancelled()
@@ -2358,12 +2361,21 @@ class Gateway:
                     raise ProviderError("角色图片回执与本方案角色不一致；没有重新提交生成")
                 design_metadata.update(character_id=instruction["character_id"],
                     character_name=instruction["character"]["name"], view_layout="four_view")
+                # Only a request that asked for the horizontal sheet is labeled as one.
+                # Older 2×2 receipts keep working without a new layout tag.
+                request = receipt.get("design_request") if isinstance(receipt.get("design_request"), dict) else {}
+                layout = request.get("sheet_layout")
+                if layout in ("horizontal_16x9", "grid_2x2"):
+                    design_metadata["sheet_layout"] = layout
+            review = "请核对场景是否适合商品" if kind == "scene" else (
+                "请核对左侧特写和三张全身是否为同一角色，服装是否一致"
+                if design_metadata.get("sheet_layout") == "horizontal_16x9"
+                else "请核对四格是否为同一角色，外貌与服装是否一致")
             result = {"source_path": path, "path": path, "name": name, "kind": kind, "mime": "image/png", "metadata": {
                 "generated": True, "provider": "tudou", "model": receipt.get("model", self.settings.image_model), "provider_url": receipt["url"],
                 "task_id": receipt["task_id"], "expires_at": receipt.get("expires_at"),
                 "source_asset_ids": [a["id"] for a in sources] if kind == "scene" else [],
-                **design_metadata,
-                "review_required": "请核对场景是否适合商品" if kind == "scene" else "请核对四格是否为同一角色，外貌与服装是否一致"}}
+                **design_metadata, "review_required": review}}
             results.append(result)
             if on_asset is not None:
                 on_asset(result)

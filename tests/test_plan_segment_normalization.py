@@ -1,10 +1,11 @@
 """Final plan validation must keep a presenter film that already passed review.
 
-The attached job payload was not on disk. This fixture follows the same failure:
-a presenter_pitch plan compiled at 4.8 characters/second, then rejected when each
-segment was checked again at the historical 2.9 rate. The public error hid the
-pydantic message. Global shot clocks and beat membership are normalized here.
+The attached job payloads were not on disk. These fixtures follow the same
+failures: a presenter_pitch plan compiled at 4.8 characters/second, then rejected
+when a segment or creative option was checked again at the historical 2.9 rate.
+Global shot clocks and beat membership are normalized here.
 """
+import asyncio
 import json
 from copy import deepcopy
 
@@ -13,9 +14,10 @@ from pydantic import ValidationError
 
 from app.config import Settings
 from app.db import Store
-from app.pipeline import PlanStructureError, validate_plan
+from app.pipeline import Pipeline, PlanStructureError, merchant_facing_error, validate_plan
 from app.planning_session import fingerprint
-from app.schemas import Plan, Segment
+from app.schemas import CreativeOption, Plan, Segment
+from test_pipeline import PNG
 from test_speech_spans import speech_plan_data
 
 
@@ -36,9 +38,16 @@ def _presenter_plan():
 def test_presenter_line_is_not_rejected_as_a_broken_timeline():
     plan = _presenter_plan()
     segment = plan["segments"][0]
+    assert segment["speech_characters_per_tenth"] == 48
+    bare = deepcopy(segment)
+    bare.pop("speech_characters_per_tenth")
     with pytest.raises(ValidationError, match="超过对应朗读时段"):
-        Segment.model_validate(segment)
-    accepted = validate_plan(plan, 10)
+        Segment.model_validate(bare)
+    assert Segment.model_validate(segment).speech_spans[0].text == "字" * 20 + "。"
+    stored = deepcopy(plan)
+    stored["segments"][0].pop("speech_characters_per_tenth")
+    accepted = validate_plan(stored, 10)
+    assert accepted["segments"][0]["speech_characters_per_tenth"] == 48
     assert accepted["segments"][0]["speech_spans"][0]["text"] == "字" * 20 + "。"
     assert accepted["segments"][0]["shots"][0]["start"] == 0
     assert accepted["segments"][0]["shots"][-1]["end"] == 10
@@ -126,3 +135,95 @@ def test_resume_replays_the_saved_storyboard_instead_of_starting_over(tmp_path):
     assert retried["payload"]["plan_structure_replayed"] is True
     assert any(event["label"] == "策划已重新排队，将继续未完成的步骤"
                for event in store.project_detail(project["id"])["events"])
+
+
+def _creative_option(segment):
+    return {"id": "current", "label": "图片没问题，生成视频",
+            "description": "使用已确认的商品原图与参考图片制作当前方案", "segment": segment}
+
+
+def test_creative_option_uses_the_segment_rate_and_hides_pydantic_text(tmp_path):
+    plan = _presenter_plan()
+    segment = deepcopy(plan["segments"][0])
+    segment.pop("speech_characters_per_tenth")
+    with pytest.raises(ValidationError, match="超过对应朗读时段") as error:
+        CreativeOption.model_validate(_creative_option(segment))
+    shown = str(error.value)
+    assert "validation error" in shown.lower() and "CreativeOption" in shown
+    assert "validation error" not in merchant_facing_error(error.value).lower()
+    assert "CreativeOption" not in merchant_facing_error(error.value)
+    assert merchant_facing_error(error.value) == "台词和时长没有对上，已保留图片。请点继续制作。"
+    stamped = deepcopy(plan["segments"][0])
+    assert CreativeOption.model_validate(_creative_option(stamped)).segment.speech_characters_per_tenth == 48
+    settings = Settings(data_root=tmp_path, deepseek_api_key="TEST_ONLY", tudou_api_key="TEST_ONLY")
+    from app.providers.gateway import save_failed_planner_output
+    from app.pipeline import _validation_details
+    save_failed_planner_output(settings, {"stage": "generate_validation", "raw_output": {"check": "model"},
+        "validation_errors": _validation_details(error.value)})
+    saved = next((tmp_path / "diagnostics").glob("*.json")).read_text()
+    assert "generate_validation" in saved and "speech_spans" in saved
+    assert "字" * 20 not in saved and "validation errors for" not in saved
+
+
+class _NoRedraw:
+    def __init__(self):
+        self.design_calls = 0
+
+    async def create_designs(self, *args, **kwargs):
+        self.design_calls += 1
+        raise AssertionError("saved design images must not be regenerated")
+
+
+def test_continue_production_reuses_saved_sheets_at_the_plan_rate(tmp_path):
+    """uploads/job_36fe_generate_fail.json was not in the workspace.
+
+    The fixture is the described failure: presenter speech that fits 4.8
+    characters/second and fails CreativeOption at 2.9 after the sheets exist.
+    """
+    store = Store(tmp_path / "studio.sqlite3", tmp_path / "media")
+    project = store.create_project("转得这么快", "product", duration_seconds=10, ad_form="presenter_pitch")
+    product_path = store.media_root / "product.png"
+    product_path.write_bytes(PNG)
+    product = store.add_asset(project["id"], "product", "原图", product_path, "image/png")
+    plan = _presenter_plan()
+    plan["segments"][0].pop("speech_characters_per_tenth")
+    plan["segments"][0]["reference_asset_ids"] = [product["id"]]
+    plan["production"] = {"version": "1.0.0",
+        "product_constraints": [{"text": "多层切面", "evidence_ids": ["layers"]}],
+        "characters": [{"id": "char_host", "name": "讲解人",
+                        "description": "创作设定：成年女性，齐肩深色直发，浅灰色家居长袖上衣"}],
+        "speech_mode": "voiceover", "speaker_id": "", "voice_description": "自然普通话"}
+    project = store.update_plan(project["id"], plan)
+    job = store.create_job(project["id"], "generate", project["revision"], {"pause_for_creative": True})
+    scene_path = store.media_root / "scene.png"
+    sheet_path = store.media_root / "host.png"
+    scene_path.write_bytes(PNG)
+    sheet_path.write_bytes(PNG + b"sheet")
+    scene = store.add_asset(project["id"], "scene", "场景参考图", scene_path, "image/png",
+                            metadata={"generated": True})
+    sheet = store.add_asset(project["id"], "character", "讲解人 · 四视图", sheet_path, "image/png",
+                            metadata={"generated": True, "character_id": "char_host",
+                                      "character_name": "讲解人", "view_layout": "four_view"})
+    before = {item["id"]: item["path"] for item in (scene, sheet)}
+    payload = job["payload"]
+    payload["design_asset_ids"] = [scene["id"], sheet["id"]]
+    payload["plan"] = plan
+    store.update_job(job["id"], status="failed", phase="creating_designs",
+                     error="4 validation errors for CreativeOption\nsegment.speech_spans.0\n  Value error, 旁白台词超过对应朗读时段的长度",
+                     payload=payload)
+    retried = store.update_job(job["id"], status="queued", error=None, phase="queued")
+    settings = Settings(data_root=tmp_path, deepseek_api_key="TEST_ONLY", tudou_api_key="TEST_ONLY",
+                        ffmpeg_path="TEST_ONLY", max_video_submissions=1, max_active_runs=1,
+                        poll_seconds=0.01, provider_timeout_seconds=1, tts_voice="TEST_ONLY",
+                        video_model="TEST_ONLY")
+    gateway = _NoRedraw()
+    result = asyncio.run(Pipeline(store, gateway, settings).execute(retried["id"]))
+    assert gateway.design_calls == 0
+    assert result["status"] == "awaiting_input", result.get("error")
+    assert result["phase"] == "awaiting_creative"
+    assert result.get("error") in (None, "")
+    assert "validation error" not in (result.get("error") or "").lower()
+    assert result["payload"]["design_asset_ids"] == [scene["id"], sheet["id"]]
+    assert store.pending_gate(project["id"], "creative")["options"][0]["segment"]["speech_characters_per_tenth"] == 48
+    for asset_id, path in before.items():
+        assert store.get_asset(asset_id)["path"] == path
