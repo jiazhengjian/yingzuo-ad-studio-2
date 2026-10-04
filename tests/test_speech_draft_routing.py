@@ -235,12 +235,10 @@ def test_checkpoint_cannot_replay_other_speech_version_or_mode(speech_gateway, s
         monkeypatch.setattr("app.providers.gateway.SPEECH_DRAFT_VERSION", "new-version")
     else:
         settings.speech_draft_enabled = False
-    with pytest.raises(ProviderError) as caught:
-        run(checkpoint)
-    assert caught.value.error_code == "planning_invalid_response"
-    assert caught.value.retryable is False
-    assert len(state.calls) == 3
-    assert checkpoint == frozen
+    result = run(checkpoint)
+    assert result["plan"]["plan_review"]["ready"]
+    assert len(state.calls) > 3
+    assert checkpoint != frozen
 
 
 @pytest.mark.parametrize("raw,enabled", [(None, False), (" true ", True), ("FALSE", False)])

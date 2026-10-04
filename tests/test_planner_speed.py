@@ -28,8 +28,10 @@ from test_providers import install_transport, source
 @pytest.fixture(autouse=True)
 def reset_unreliable_streams():
     gateway_module._UNRELIABLE_STREAM_PROVIDERS.clear()
+    gateway_module._NONSTREAM_IDLE_CUT.clear()
     yield
     gateway_module._UNRELIABLE_STREAM_PROVIDERS.clear()
+    gateway_module._NONSTREAM_IDLE_CUT.clear()
 
 
 def event_stream(chunks, *, done=True):
@@ -425,14 +427,16 @@ def test_stage_route_and_fallback_policy_do_not_replay_the_primary_checkpoint(se
     checkpoint = deepcopy(checkpoints[-1])
     routed = replace(settings, planner_stage_routes={
         "strategy": {"provider": "deepseek", "model": "deepseek-flash", "effort": "low"}})
-    with pytest.raises(Exception, match="变化"):
-        asyncio.run(Gateway(routed).decide(project, [], messages, [], None, planning_checkpoint=checkpoint))
+    routed_result = asyncio.run(Gateway(routed).decide(project, [], messages, [], None, planning_checkpoint=checkpoint))
     fallback = replace(settings, planner_fallback_provider="deepseek", planner_fallback_model="deepseek-flash",
                        planner_fallback_on=("504",))
-    with pytest.raises(Exception, match="变化"):
-        asyncio.run(Gateway(fallback).decide(project, [], messages, [], None, planning_checkpoint=checkpoint))
-    assert result["kind"] == "reply"
-    assert calls == ["https://api.ai-tudou.net/v1/chat/completions"]
+    fallback_result = asyncio.run(Gateway(fallback).decide(project, [], messages, [], None, planning_checkpoint=checkpoint))
+    assert result["kind"] == routed_result["kind"] == fallback_result["kind"] == "reply"
+    assert calls == [
+        "https://api.ai-tudou.net/v1/chat/completions",
+        "https://api.deepseek.com/chat/completions",
+        "https://api.ai-tudou.net/v1/chat/completions",
+    ]
 
 
 def test_stage_result_cache_replays_text_stages_without_another_http_call(progressive_gateway, settings, source):

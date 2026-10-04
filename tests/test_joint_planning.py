@@ -204,8 +204,7 @@ def test_refinement_policy_change_cannot_replay_previous_planning_verdicts(
     expected_calls = list(state.calls)
     monkeypatch.setattr(gateway_module, "PROGRESSIVE_REFINEMENT_POLICY_VERSION",
                         gateway_module.PROGRESSIVE_REFINEMENT_POLICY_VERSION + 1)
-    with pytest.raises(ProviderError) as error:
-        run(saved)
-    assert error.value.error_code == "planning_invalid_response"
-    assert state.calls == expected_calls
-    assert checkpoint == saved
+    result = run(saved)
+    assert result["plan"]["plan_review"]["ready"] is True
+    assert len(state.calls) > len(expected_calls)
+    assert checkpoint != saved

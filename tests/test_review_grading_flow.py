@@ -100,10 +100,11 @@ async def test_review_policy_change_does_not_replay_an_old_pass():
     await old.call('plan_review', {'stage': 'plan_review', 'final_plan': 'unchanged'}, old_result)
     restored = PlanningSession(old.state, None, {'same_project': True})
     called = False
-    async def forbidden():
+    async def recompute():
         nonlocal called
         called = True
-    with pytest.raises(PlanningSessionError, match='规则已变化'):
-        await restored.call('plan_review', {'stage': 'plan_review', 'final_plan': 'unchanged',
-            'review_policy_version': REVIEW_POLICY_VERSION}, forbidden)
-    assert not called
+        return {'ready': True, 'recomputed': True}
+    result = await restored.call('plan_review', {'stage': 'plan_review', 'final_plan': 'unchanged',
+        'review_policy_version': REVIEW_POLICY_VERSION}, recompute)
+    assert called and result == {'ready': True, 'recomputed': True}
+    assert restored.state['entries'][0]['result']['recomputed'] is True

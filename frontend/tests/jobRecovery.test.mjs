@@ -208,7 +208,9 @@ test('incomplete checks and request limits do not ask the merchant to revise req
     assert.equal(recoveryForJob(job).kind, 'continue_conversation');
     assert.equal(retryRequest(job), null);
     const html = renderCard(job, { hasExistingResult: true });
-    assert.match(html, /继续对话/);
+    assert.match(html, /按已保存的需求继续/);
+    assert.match(html, /已保存的需求/);
+    assert.doesNotMatch(html, /继续对话/);
     assert.match(html, /已有成片仍可播放、下载/);
     assert.doesNotMatch(html, /输入修改要求|想调整的要求|OLD_CONTENT_ISSUE|恢复任务|重新尝试/);
     assert.equal((html.match(/<button/g) || []).length, 1);
@@ -235,4 +237,60 @@ test('a structurally invalid planning reply resumes only after automatic recover
   assert.match(html, /继续处理/);
   assert.equal((html.match(/<button/g) || []).length, 1);
   assert.doesNotMatch(html, /重新尝试|请重试|输入修改要求|继续对话/);
+});
+
+function buttons(node, found = []) {
+  if (!node || typeof node !== 'object') return found;
+  if (node.type === 'button') found.push(node);
+  const children = node.props ? node.props.children : undefined;
+  for (const child of [].concat(children ?? [])) buttons(child, found);
+  return found;
+}
+
+test('a rejected recovery request shows the server reason on the card', () => {
+  const job = fixture({ kind: 'plan', progress: { error_code: 'planning_invalid_response', retryable: true,
+    retry_action: 'retry_planning' } });
+  const html = renderCard(job, { error: '当前策划进度不能重新尝试，请通过输入框说明修改要求；已有成果仍保留' });
+  assert.match(html, /role="alert"/);
+  assert.match(html, /当前策划进度不能重新尝试/);
+  assert.match(html, /继续处理/);
+});
+
+test('every planning recovery button calls an action that state can accept', () => {
+  const cases = [
+    [{ error_code: 'planning_invalid_response', retryable: true, retry_action: 'retry_planning' }, 'retry', '继续处理'],
+    [{ error_code: 'planning_request_failed', retryable: true, retry_action: 'retry_planning' }, 'retry', '继续处理'],
+    [{ error_code: 'planning_response_interrupted', retryable: true, retry_action: 'retry_planning' }, 'retry', '继续处理'],
+    [{ error_code: 'planning_invalid_response', retryable: false, retry_action: 'edit_plan' }, 'resume', '按已保存的需求继续'],
+    [{ error_code: 'planning_review_incomplete', retryable: false, retry_action: 'continue_conversation' }, 'resume', '按已保存的需求继续'],
+    [{ error_code: 'planning_request_limit', retryable: false, retry_action: 'continue_conversation' }, 'resume', '按已保存的需求继续'],
+    [{ error_code: 'planning_configuration_failed', retryable: false, retry_action: 'check_connection' }, 'settings', '检查连接设置'],
+  ];
+  for (const [progress, expected, label] of cases) {
+    const calls = [];
+    const job = fixture({ kind: 'plan', progress });
+    const element = RecoveryCard({ job, busy: '', canEditVoice: true, canShorten: true,
+      onRetry() { calls.push('retry'); }, onEditVoice() { calls.push('voice'); }, onShorten() { calls.push('shorten'); },
+      onChangePlan() { calls.push('focus'); }, onRestart() { calls.push('resume'); }, onSettings() { calls.push('settings'); } });
+    const found = buttons(element);
+    assert.equal(found.length, 1, progress.error_code);
+    assert.match(JSON.stringify(found[0].props.children), new RegExp(label));
+    found[0].props.onClick(job);
+    assert.deepEqual(calls, [expected], progress.error_code);
+    if (expected === 'retry') assert.ok(retryRequest(job));
+    else assert.equal(retryRequest(job), null);
+  }
+});
+
+test('the last-resort card button requests a restart from the saved brief', () => {
+  const calls = [];
+  const job = fixture({ kind: 'plan', progress: { error_code: 'planning_invalid_response', retryable: false,
+    retry_action: 'edit_plan' } });
+  const element = RecoveryCard({ job, busy: '', canEditVoice: true, canShorten: true, hasExistingResult: false,
+    onRetry() { calls.push('retry'); }, onEditVoice() {}, onShorten() {},
+    onChangePlan() { calls.push('focus'); }, onRestart() { calls.push('resume'); }, onSettings() {} });
+  const button = buttons(element).find(node => [].concat(node.props.children).some(child => child === '按已保存的需求继续'));
+  assert.ok(button);
+  button.props.onClick();
+  assert.deepEqual(calls, ['resume']);
 });

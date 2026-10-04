@@ -123,8 +123,14 @@ def fallback_route(settings):
     return PlannerRoute(provider, model, None, False), triggers
 
 
-def fallback_eligible(triggers, *, status_code=None, timed_out=False):
-    if timed_out and "timeout" in triggers:
+# A proxy or CDN often answers a long silent POST with 502/520–524 or by
+# dropping the socket. Those are the same class as a timeout for text fallback.
+INTERRUPTED_STATUSES = frozenset({502, 520, 521, 522, 523, 524})
+
+
+def fallback_eligible(triggers, *, status_code=None, timed_out=False, interrupted=False):
+    timeout_class = timed_out or interrupted or status_code in INTERRUPTED_STATUSES
+    if timeout_class and "timeout" in triggers:
         return True
     return status_code == 504 and "504" in triggers
 

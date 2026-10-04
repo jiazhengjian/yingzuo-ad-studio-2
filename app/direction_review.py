@@ -2,15 +2,43 @@
 
 The model judges story semantics. Code checks identity, source references,
 capacity and verdict consistency; it does not claim to prove physical truth.
+A review that already says ready may omit fields the strategy step owns.
+Those fields are copied back. A passed review does not fail the job.
 """
 from __future__ import annotations
 
-from pydantic import Field
+from copy import deepcopy
+import json
+import logging
+import re
+
+from pydantic import Field, ValidationError
 
 from .strategy import (CreativeDirection, DirectionCandidates, DirectionReviewSummary,
                        DirectionReviewCheck, ProductBrief, build_direction_candidates,
                        require_direction_stories, require_direction_value, require_direction_concepts,
                        require_consumer_language, consumer_jargon)
+
+
+performance_logger = logging.getLogger("uvicorn.error.planner")
+_IDEA_FIELDS = ("hook_type", "brand_world", "consumer_insight", "big_idea", "label")
+_SAFE_TEXT_FIELDS = ("angle", "story_summary", "product_expression", "hook", "development", "payoff")
+_REASON_NEEDLES = (
+    ("不能新增、删除、重排", "direction_identity"),
+    ("结论须恰好覆盖", "check_coverage"),
+    ("不能改写创意机制", "idea_field"),
+    ("创意张力和开场钩子", "tension_hook"),
+    ("观众听得懂", "jargon"),
+    ("故事概要", "story"),
+    ("受众为何在意", "value"),
+    ("影片结构", "structure"),
+    ("商品约束", "production"),
+    ("参考图合计", "capacity"),
+    ("人物讲解", "speech_mode"),
+    ("图片观察", "image_fact"),
+    ("未通过审核", "not_ready"),
+    ("ready 必须", "verdict"),
+)
 
 
 class AuthoredDirectionReviewCheck(DirectionReviewCheck):
@@ -123,6 +151,148 @@ def validate_direction_review(raw, original: DirectionCandidates, rules: list[di
     build_direction_candidates(brief, review.directions,
         original.recommended_direction_id, rules)
     return review
+
+
+def review_failure_reasons(exc) -> list[str]:
+    """Ids and enums only. Never the model's prose or the merchant's words."""
+    reasons = []
+    if isinstance(exc, ValidationError):
+        for item in exc.errors(include_url=False, include_context=False, include_input=False)[:8]:
+            loc = [part for part in item.get("loc", ())
+                   if isinstance(part, str) and re.fullmatch(r"[A-Za-z_]{1,40}", part)]
+            kind = item.get("type")
+            if not isinstance(kind, str) or not re.fullmatch(r"[a-z0-9_]{1,40}", kind):
+                kind = "schema"
+            token = "_".join([*loc[:2], kind]) if loc else kind
+            if token not in reasons:
+                reasons.append(token[:40])
+        return reasons[:8] or ["schema"]
+    text = str(exc)
+    for needle, code in _REASON_NEEDLES:
+        if needle in text and code not in reasons:
+            reasons.append(code)
+    return reasons[:8] or ["contract"]
+
+
+def _record_direction_review_salvage(reasons):
+    from .planner_runtime import safe_planner_metrics
+    performance_logger.info("Planner request metrics: %s", json.dumps(
+        safe_planner_metrics("direction_review", None, recovery="direction_review_salvage", reasons=reasons),
+        ensure_ascii=True))
+
+
+def _with_canonical_fields(raw, original: DirectionCandidates):
+    """Put strategy-owned identity back onto a revised offer that omitted it."""
+    patched = deepcopy(raw)
+    directions = patched.get("directions") if isinstance(patched, dict) else None
+    if not isinstance(directions, list):
+        return patched
+    if [item.get("id") if isinstance(item, dict) else None for item in directions] != [d.id for d in original.directions]:
+        return patched
+    by_id = {item["id"]: item for item in directions}
+    for previous in original.directions:
+        incoming = by_id[previous.id]
+        incoming["rule_id"] = previous.rule_id
+        for field in _IDEA_FIELDS:
+            value = getattr(previous, field)
+            if value is None or value == "":
+                incoming.pop(field, None)
+            else:
+                incoming[field] = value
+    return patched
+
+
+def _constraint_text(direction, incoming):
+    production = direction.get("production")
+    revised = incoming.get("production") if isinstance(incoming, dict) else None
+    if not isinstance(production, dict) or not isinstance(revised, dict):
+        return
+    current = production.get("product_constraints")
+    proposed = revised.get("product_constraints")
+    if not isinstance(current, list) or not isinstance(proposed, list) or len(current) != len(proposed):
+        return
+    for left, right in zip(current, proposed):
+        if not isinstance(left, dict) or not isinstance(right, dict):
+            return
+        if left.get("evidence_ids") != right.get("evidence_ids"):
+            return
+        text = right.get("text")
+        if isinstance(text, str) and text.strip():
+            left["text"] = text
+
+
+def _review_shell(original: DirectionCandidates, raw, *, overlay_text, overlay_evidence=True):
+    summary = raw.get("summary") if isinstance(raw, dict) and isinstance(raw.get("summary"), str) else ""
+    shell = {
+        "ready": True,
+        "distinct_directions_passed": True if not isinstance(raw, dict) else bool(raw.get("distinct_directions_passed", True)),
+        "summary": summary.strip() or "审核已通过，沿用已校验的方向。",
+        "checks": deepcopy(raw.get("checks")) if isinstance(raw, dict) else None,
+        "image_observation_corrections": deepcopy(raw.get("image_observation_corrections") or []) if isinstance(raw, dict) else [],
+        "directions": [direction.model_dump() for direction in original.directions],
+    }
+    if not overlay_text or not isinstance(raw, dict):
+        return shell
+    revised = {item.get("id"): item for item in raw.get("directions") or [] if isinstance(item, dict)}
+    for direction in shell["directions"]:
+        incoming = revised.get(direction["id"])
+        if not isinstance(incoming, dict):
+            continue
+        for field in _SAFE_TEXT_FIELDS:
+            value = incoming.get(field)
+            if isinstance(value, str) and value.strip():
+                direction[field] = value
+        if not overlay_evidence:
+            continue
+        evidence = incoming.get("evidence_ids")
+        if (isinstance(evidence, list) and evidence
+                and all(isinstance(item, str) and item.strip() for item in evidence)):
+            direction["evidence_ids"] = list(evidence)
+        _constraint_text(direction, incoming)
+    return shell
+
+
+def salvage_direction_review(raw, original: DirectionCandidates, rules: list[dict], *, product_reference_count: int):
+    """Keep a ready review. Copy owned fields, then the pre-review directions.
+
+    The strategy step already accepted the three directions. A later review
+    that says ready must not discard that offer because it omitted hook,
+    brand world, insight or the one-line idea. Text the review is allowed to
+    change is kept when it still validates. Otherwise the pre-review
+    directions stand. A stub that only says ready, without the three checks,
+    is still rejected.
+    """
+    rejected = None
+    try:
+        return validate_direction_review(raw, original, rules, product_reference_count=product_reference_count), []
+    except (ValidationError, ValueError) as first:
+        rejected = first
+        reasons = review_failure_reasons(first)
+        if not (isinstance(raw, dict) and raw.get("ready") is True):
+            raise
+    patched = _with_canonical_fields(raw, original)
+    try:
+        review = validate_direction_review(patched, original, rules, product_reference_count=product_reference_count)
+    except (ValidationError, ValueError) as exc:
+        for code in review_failure_reasons(exc):
+            if code not in reasons:
+                reasons.append(code)
+        review = None
+    if review is None:
+        for overlay, evidence in ((True, True), (True, False), (False, False)):
+            candidate = _review_shell(original, raw, overlay_text=overlay, overlay_evidence=evidence)
+            try:
+                review = validate_direction_review(candidate, original, rules, product_reference_count=product_reference_count)
+                break
+            except (ValidationError, ValueError) as exc:
+                for code in review_failure_reasons(exc):
+                    if code not in reasons:
+                        reasons.append(code)
+                review = None
+    if review is None:
+        raise rejected
+    _record_direction_review_salvage(reasons[:8])
+    return review, reasons[:8]
 
 
 def reviewed_candidates(review: DirectionReview, original: DirectionCandidates, rules: list[dict]) -> DirectionCandidates:

@@ -52,9 +52,11 @@ def test_provenance_change_cannot_replay_an_equal_compacted_payload():
 
     asyncio.run(session.call("ad_script", signature(context), perform))
     resumed = PlanningSession(session.state, None, {"request": "unchanged"})
-    with pytest.raises(PlanningSessionError, match="规则已变化"):
-        asyncio.run(resumed.call("ad_script", signature(changed), perform))
-    assert len(calls) == 1
+    # A changed wire signature is recomputed. The saved draft is not replayed.
+    result = asyncio.run(resumed.call("ad_script", signature(changed), perform))
+    assert result == {"draft": "existing result"} and len(calls) == 2
+    assert len(resumed.state["entries"]) == 1
+    assert resumed.state["entries"][0]["input_hash"] == fingerprint(signature(changed))
 
 
 @pytest.mark.parametrize("stage", ["ad_script", "storyboard", "plan_refinement"])

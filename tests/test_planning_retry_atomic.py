@@ -117,7 +117,7 @@ def test_delayed_duplicate_cannot_overwrite_workers_new_checkpoint(failed_plan, 
     assert final["payload"]["planning_checkpoint"]["request_count"] == 5
 
 
-@pytest.mark.parametrize("change", ["context", "revision", "canceled", "busy", "content_failure", "no_checkpoint"])
+@pytest.mark.parametrize("change", ["context", "revision", "canceled", "busy", "content_failure"])
 def test_retry_rechecks_current_state_without_mutating_on_rejection(failed_plan, change):
     store, pid, job = failed_plan
     if change == "context":
@@ -131,13 +131,45 @@ def test_retry_rechecks_current_state_without_mutating_on_rejection(failed_plan,
         store.create_job(pid, "plan", job["revision"])
     elif change == "content_failure":
         store.update_job(job["id"], progress={"retryable": False, "retry_action": "edit_plan"})
-    elif change == "no_checkpoint":
-        store.update_job(job["id"], payload={key: value for key, value in job["payload"].items()
-                                            if key != "planning_checkpoint"})
     before = store.project_detail(pid)
     with pytest.raises(StaleRevision):
         store.retry_planning_job(pid, job["id"])
     assert store.project_detail(pid) == before
+
+
+def test_ready_direction_review_entry_still_requeues(failed_plan):
+    """A stage stored as ready can still have failed the later guard.
+
+    The recovery card shows 继续处理 from the job progress. That click must
+    queue the job and write an event, not stop before the database changes.
+    """
+    store, pid, job = failed_plan
+    checkpoint = deepcopy(job["payload"]["planning_checkpoint"])
+    checkpoint["entries"][1] = {"stage": "direction_review", "input_hash": "review",
+        "state": "ready", "attempts": 1, "result": {"ready": True, "directions": []}}
+    store.update_job(job["id"], payload={**job["payload"], "planning_checkpoint": checkpoint},
+        progress={"error_code": "planning_invalid_response", "retryable": True,
+                  "retry_action": "retry_planning"})
+    before_events = len(store.project_detail(pid)["events"])
+    retried = store.retry_planning_job(pid, job["id"])
+    assert retried["status"] == "queued"
+    assert retried["payload"]["planning_checkpoint"]["entries"][0]["stage"] == "strategy"
+    assert len(retried["payload"]["planning_checkpoint"]["entries"]) == 1
+    assert retried["payload"]["planning_checkpoint"]["manual_retries"] == 1
+    events = store.project_detail(pid)["events"]
+    assert len(events) == before_events + 1
+    assert events[-1]["label"] == "策划已重新排队，将继续未完成的步骤"
+
+
+def test_missing_checkpoint_still_requeues_the_same_job(failed_plan):
+    store, pid, job = failed_plan
+    store.update_job(job["id"], payload={key: value for key, value in job["payload"].items()
+                                        if key != "planning_checkpoint"})
+    retried = store.retry_planning_job(pid, job["id"])
+    assert retried["status"] == "queued"
+    assert "planning_checkpoint" not in retried["payload"]
+    assert any(event["label"] == "策划已重新排队，将继续未完成的步骤"
+               for event in store.project_detail(pid)["events"])
 
 
 def test_retry_cannot_target_another_project(failed_plan):

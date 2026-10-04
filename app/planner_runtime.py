@@ -13,6 +13,7 @@ https://api-docs.deepseek.com/api/create-chat-completion/
 from __future__ import annotations
 
 import math
+import re
 from copy import deepcopy
 
 from app.ad_script import script_request_options
@@ -282,13 +283,17 @@ def _finite_milliseconds(seconds):
     return None
 
 
-_RECOVERY_KINDS = frozenset({"nonstream", "fallback", "strategy_retry", "strategy_salvage"})
+_RECOVERY_KINDS = frozenset({
+    "nonstream", "fallback", "strategy_retry", "strategy_salvage",
+    "direction_review_salvage", "interrupted", "checkpoint_recompute",
+})
 
 
 def safe_planner_metrics(stage: object, elapsed_seconds: object, usage: object = None, *,
                          first_token_seconds: object = None, stream: object = None,
                          transport: object = None, stream_fallback: object = None,
-                         recovery: object = None) -> dict:
+                         recovery: object = None, dropped_entries: object = None,
+                         reasons: object = None) -> dict:
     """Allowlist numeric usage, wall time and time-to-first-token.
 
     Callers can log this once per completed transport request, including empty
@@ -322,6 +327,18 @@ def safe_planner_metrics(stage: object, elapsed_seconds: object, usage: object =
         result["stream_fallback"] = True
     if recovery in _RECOVERY_KINDS:
         result["recovery"] = recovery
+    if type(dropped_entries) is int and 0 <= dropped_entries <= 64:
+        result["dropped_entries"] = dropped_entries
+    if isinstance(reasons, list):
+        safe_reasons = []
+        for item in reasons:
+            if (isinstance(item, str) and re.fullmatch(r"[a-z0-9_]{1,40}", item)
+                    and item not in safe_reasons):
+                safe_reasons.append(item)
+            if len(safe_reasons) == 8:
+                break
+        if safe_reasons:
+            result["reasons"] = safe_reasons
     return result
 
 

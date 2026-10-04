@@ -369,6 +369,13 @@ def create_app(settings=None, gateway=None, run_worker=True):
         idle(project_id)
         return {"job": public(store.update_job(job["id"], status="queued", error=None))}
 
+    @app.post("/api/projects/{project_id}/resume-planning")
+    def resume_planning(project_id: str):
+        require_planner()
+        store.get_project(project_id)
+        idle(project_id)
+        return {"job": public(store.resume_saved_planning(project_id))}
+
     @app.post("/api/projects/{project_id}/cancel")
     def cancel(project_id: str):
         store.get_project(project_id)

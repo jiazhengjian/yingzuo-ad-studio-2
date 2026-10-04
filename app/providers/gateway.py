@@ -27,14 +27,14 @@ from app.db import StaleRevision
 from app.ad_form import ad_form_confirmation, ad_form_question, intake_strategy_response, needs_ad_form_choice
 from app.planning import StrategyDecision, STRATEGY_SYSTEM, STRATEGY_SELECTION_SYSTEM, STORYBOARD_SYSTEM, STORYBOARD_STAGE_SYSTEM, COPY_REVIEW_SYSTEM, advertising_copy_brief, compact_schema, evidence_sources, expression_schedule, validate_expression_schedule, requests_new_directions, strategy_decision_schema, concept_revision_permissions, validate_concept_revision
 from app.strategy import BriefEvidenceError, CreativeDirection, StrategyRecord, build_direction_candidates, build_strategy, select_rules, validate_brief, require_direction_stories, require_direction_value, require_direction_concepts
-from app.direction_review import (DirectionReview, DIRECTION_REVIEW_SYSTEM, direction_review_schema,
-                                  validate_direction_review, reviewed_candidates)
+from app.direction_review import (DIRECTION_REVIEW_SYSTEM, direction_review_schema,
+                                  salvage_direction_review, review_failure_reasons, reviewed_candidates)
 from app.design import scene_design_request, character_design_request
 from app.production import (required_designs, validate_design_assets, production_authoring_schema,
                             derive_authored_production_metadata)
 from app.planner_runtime import PLANNER_STAGES, PLANNER_MODEL_CONTEXT_VERSION, planner_model_context, planner_wire_context, stage_request_options, safe_planner_metrics, safe_planner_transport_failure
-from app.planner_transport import (apply_route_effort, fallback_eligible, fallback_route,
-                                   planner_api_key, planner_endpoint, planner_provider,
+from app.planner_transport import (INTERRUPTED_STATUSES, apply_route_effort, fallback_eligible,
+                                   fallback_route, planner_api_key, planner_endpoint, planner_provider,
                                    planner_request_timing, route_api_key, route_endpoint,
                                    route_settings, stage_route, transport_options)
 from app.evidence_references import EVIDENCE_REFERENCE_VERSION, strategy_evidence_request, restore_merchant_references
@@ -65,9 +65,57 @@ performance_logger = logging.getLogger("uvicorn.error.planner")
 
 # A provider whose SSE stream ends early stays on non-streaming calls for this process.
 _UNRELIABLE_STREAM_PROVIDERS: set[str] = set()
+# A provider/model whose long non-streaming POST dies near a proxy idle cut.
+# Later text stages in this process skip that silent POST.
+_NONSTREAM_IDLE_CUT: set[tuple[str, str]] = set()
 # Same-model non-streaming retry needs enough of the original wait left to be useful.
 _NONSTREAM_RETRY_FLOOR_SECONDS = 30
+# Once a stage has already spent time, a short remainder uses the fallback model.
+# This is not the retry floor: tests raise that floor, and the opening request
+# must still use the configured model and its full read timeout.
+_STAGE_TAIL_SECONDS = 30
+# Observed tudou/gpt-6-sol non-stream cuts cluster around 100–105s.
+_IDLE_CUT_LOW_SECONDS = 85.0
+_IDLE_CUT_HIGH_SECONDS = 130.0
+_IDLE_CUT_SIMILAR_SECONDS = 15.0
+_INTERRUPTED_ERROR_TYPES = frozenset({
+    "ReadError", "RemoteProtocolError", "WriteError", "CloseError",
+    "LocalProtocolError", "ConnectError", "ProxyError",
+})
 _FALLBACK_UNSET = object()
+
+
+def _idle_cut_elapsed(elapsed):
+    return type(elapsed) in (int, float) and _IDLE_CUT_LOW_SECONDS <= float(elapsed) <= _IDLE_CUT_HIGH_SECONDS
+
+
+def _similar_idle_cut(previous, elapsed):
+    if not _idle_cut_elapsed(previous) or not _idle_cut_elapsed(elapsed):
+        return False
+    return abs(float(previous) - float(elapsed)) <= _IDLE_CUT_SIMILAR_SECONDS
+
+
+def _interrupted_error_class(exc=None, status_code=None):
+    if type(status_code) is int and status_code in INTERRUPTED_STATUSES:
+        return f"HTTP{status_code}"
+    name = type(exc).__name__ if exc is not None else None
+    if name in _INTERRUPTED_ERROR_TYPES:
+        return name
+    return None
+
+
+def _remember_nonstream_idle_cut(provider, model):
+    if provider in ("deepseek", "tudou") and isinstance(model, str) and model and " " not in model:
+        _NONSTREAM_IDLE_CUT.add((provider, model))
+
+
+def _finite_elapsed_ms(elapsed):
+    if type(elapsed) not in (int, float) or elapsed < 0 or elapsed != elapsed or elapsed == float("inf"):
+        return None
+    value = round(float(elapsed) * 1000)
+    if type(value) is int and 0 <= value <= 24 * 60 * 60 * 1000:
+        return value
+    return None
 
 
 def _classify_sse(finish, saw_done):
@@ -277,8 +325,22 @@ def save_failed_planner_output(settings, stage_result):
                     value = value.replace(credential, "[redacted]")
                 return re.sub(r"data:[^;\s]+;base64,[A-Za-z0-9+/=\s]+", "[redacted-media]", value)
             return value
-        record = {"stage": stage_result["stage"], "model": settings.planner_model,
+        model = stage_result.get("model")
+        if not (isinstance(model, str) and model and len(model) <= 80 and " " not in model):
+            model = settings.planner_model
+        record = {"stage": stage_result["stage"], "model": model,
             "raw_output": safe(stage_result["raw_output"])}
+        reasons = stage_result.get("validation_reasons")
+        if isinstance(reasons, list):
+            safe_reasons = []
+            for item in reasons:
+                if (isinstance(item, str) and re.fullmatch(r"[a-z0-9_]{1,40}", item)
+                        and item not in safe_reasons):
+                    safe_reasons.append(item)
+                if len(safe_reasons) == 8:
+                    break
+            if safe_reasons:
+                record["validation_reasons"] = safe_reasons
         if "validation_candidate" in stage_result:
             # A storyboard is checked together with already approved server
             # data. Retain that bounded JSON only on failure so the exact
@@ -297,6 +359,47 @@ def save_failed_planner_output(settings, stage_result):
     except Exception:
         # Diagnostics cannot replace the original provider error or leave a
         # partial output masquerading as a valid replay fixture.
+        if created is not None:
+            try:
+                created.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def save_planner_event_diagnostic(settings, record):
+    """One interrupted attempt or checkpoint recompute. No prompt, body, or key."""
+    if not isinstance(record, dict):
+        return
+    stage = record.get("stage")
+    safe_record = {"stage": stage if isinstance(stage, str) and stage in PLANNER_STAGES else "unknown"}
+    model = record.get("model")
+    if isinstance(model, str) and model and len(model) <= 80 and " " not in model:
+        safe_record["model"] = model
+    elapsed = record.get("elapsed_ms")
+    if type(elapsed) is int and 0 <= elapsed <= 24 * 60 * 60 * 1000:
+        safe_record["elapsed_ms"] = elapsed
+    error_class = record.get("error_class")
+    allowed_errors = set(_INTERRUPTED_ERROR_TYPES) | {f"HTTP{code}" for code in INTERRUPTED_STATUSES}
+    allowed_errors.update({"TimeoutError", "ReadTimeout", "ConnectTimeout", "RemoteProtocolError"})
+    if isinstance(error_class, str) and error_class in allowed_errors:
+        safe_record["error_class"] = error_class
+    recovery = record.get("recovery")
+    if recovery in ("interrupted", "checkpoint_recompute"):
+        safe_record["recovery"] = recovery
+    dropped = record.get("dropped_entries")
+    if type(dropped) is int and 0 <= dropped <= 64:
+        safe_record["dropped_entries"] = dropped
+    created = None
+    try:
+        content = json.dumps(safe_record, ensure_ascii=False).encode("utf-8")
+        directory = settings.data_root / "diagnostics"
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path = directory / f"{uuid.uuid4().hex}.json"
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        created = path
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+    except Exception:
         if created is not None:
             try:
                 created.unlink(missing_ok=True)
@@ -728,7 +831,64 @@ class Gateway:
     supports_direction_selection = True
     supports_planning_checkpoints = True
 
-    def _text_fallback(self, route, *, status_code, timed_out):
+    def _planner_stage_remaining(self):
+        started = getattr(self, "_planner_stage_started", None)
+        budget = getattr(self, "_planner_stage_budget", None)
+        if type(started) not in (int, float) or type(budget) not in (int, float) or budget <= 0:
+            return None
+        return float(budget) - (time.monotonic() - float(started))
+
+    def _planner_stage_spent(self):
+        started = getattr(self, "_planner_stage_started", None)
+        if type(started) not in (int, float):
+            return None
+        return time.monotonic() - float(started)
+
+    def _emit_planner_phase(self, phase):
+        notice = getattr(self, "_planner_notice", None)
+        if notice:
+            notice(phase)
+
+    def _record_interrupted_attempt(self, route, context, elapsed, error_class):
+        stage = context.get("stage") if isinstance(context, dict) else None
+        elapsed_ms = _finite_elapsed_ms(elapsed)
+        if _idle_cut_elapsed(elapsed):
+            _remember_nonstream_idle_cut(route.provider, route.model)
+        save_planner_event_diagnostic(self.settings, {
+            "stage": stage, "model": route.model, "elapsed_ms": elapsed_ms,
+            "error_class": error_class, "recovery": "interrupted"})
+        performance_logger.info("Planner request metrics: %s", json.dumps(safe_planner_metrics(
+            stage, elapsed, recovery="interrupted")))
+
+    def _retry_interrupted_primary(self, elapsed, mode, *, time_left):
+        """At most one same-model retry. A repeated ~100s drop goes to fallback."""
+        if mode == "stream" or getattr(self, "_planner_interrupt_retry_used", False):
+            return False
+        if not _idle_cut_elapsed(elapsed) or _similar_idle_cut(
+                getattr(self, "_planner_last_interrupt_elapsed", None), elapsed):
+            return False
+        if time_left is not None and time_left < _NONSTREAM_RETRY_FLOOR_SECONDS:
+            return False
+        self._planner_interrupt_retry_used = True
+        self._planner_last_interrupt_elapsed = elapsed
+        return True
+
+    async def _fallback_after_interrupt(self, system, context, sources, max_tokens, route, on_first_token, *,
+                                         status_code, allow_fallback):
+        if not allow_fallback:
+            return None
+        alternate = self._text_fallback(route, status_code=status_code, timed_out=False, interrupted=True)
+        if alternate is None:
+            return None
+        self._emit_planner_phase("using_backup_planner")
+        self._planner_in_recovery = True
+        try:
+            return await self._planner_json(system, context, sources, max_tokens, route=alternate,
+                on_first_token=on_first_token, allow_fallback=False, recovery="fallback")
+        finally:
+            self._planner_in_recovery = False
+
+    def _text_fallback(self, route, *, status_code, timed_out, interrupted=False):
         """One explicit fast-model attempt. Never used for image or video submission."""
         try:
             policy = fallback_route(self.settings)
@@ -737,7 +897,7 @@ class Gateway:
         if policy is None:
             return None
         alternate, triggers = policy
-        if not fallback_eligible(triggers, status_code=status_code, timed_out=timed_out):
+        if not fallback_eligible(triggers, status_code=status_code, timed_out=timed_out, interrupted=interrupted):
             return None
         if alternate.provider == route.provider and alternate.model == route.model:
             return None
@@ -787,11 +947,38 @@ class Gateway:
             attempts, stream_fallback = ["stream", "json"], False
         else:
             attempts, stream_fallback = ["json"], False
+        if not getattr(self, "_planner_in_recovery", False) and getattr(self, "_planner_stage_started", None) is None:
+            self._planner_interrupt_retry_used = False
+            self._planner_last_interrupt_elapsed = None
+        # A model that already drops long silent POSTs should not be rediscovered.
+        # Streaming still goes first when it is enabled and this provider's stream works.
+        stream_unusable = stream_mode == "off" or route.provider in _UNRELIABLE_STREAM_PROVIDERS
+        if stream_unusable and allow_fallback and (route.provider, route.model) in _NONSTREAM_IDLE_CUT:
+            recovered = await self._fallback_after_interrupt(
+                system, context, sources, max_tokens, route, on_first_token,
+                status_code=None, allow_fallback=True)
+            if recovered is not None:
+                return recovered
         started = time.monotonic()
         _, call_deadline = planner_request_timing(self.settings, route)
         cap = getattr(self, "_planner_wall_cap", None)
         if type(cap) in (int, float) and cap > 0:
             call_deadline = float(cap) if call_deadline is None else min(float(call_deadline), float(cap))
+        stage_left = self._planner_stage_remaining()
+        spent = self._planner_stage_spent()
+        # A few milliseconds of skill loading must not shrink the first read
+        # timeout or send the opening request to the fallback model.
+        if (stage_left is not None and spent is not None and spent >= 1
+                and stage_left < _STAGE_TAIL_SECONDS):
+            recovered = await self._fallback_after_interrupt(
+                system, context, sources, max_tokens, route, on_first_token,
+                status_code=None, allow_fallback=allow_fallback)
+            if recovered is not None:
+                return recovered
+            if stage_left < 1:
+                raise PlannerInterruptedResponse()
+        if stage_left is not None and stage_left > 0 and spent is not None and spent >= 1:
+            call_deadline = stage_left if call_deadline is None else min(float(call_deadline), stage_left)
         metric_recovery = recovery if recovery is not None else getattr(self, "_planner_recovery", None)
         if metric_recovery is None and stream_mode in ("on", "auto") and attempts == ["json"]:
             metric_recovery = "nonstream"
@@ -835,9 +1022,17 @@ class Gateway:
                 system, context, sources, max_tokens, route, stream=mode == "stream")
             request_timeout, request_deadline = planner_request_timing(self.settings, route)
             if call_deadline is not None:
-                request_timeout = _bounded_planner_timeout(request_timeout, call_deadline)
-                request_deadline = call_deadline if request_deadline is None else min(
-                    float(request_deadline), float(call_deadline))
+                spent = time.monotonic() - started
+                limit = float(call_deadline) if spent < 1 else max(0.0, float(call_deadline) - spent)
+                if limit < 1 and spent >= 1:
+                    recovered = await self._fallback_after_interrupt(
+                        system, context, sources, max_tokens, route, on_first_token,
+                        status_code=None, allow_fallback=allow_fallback)
+                    if recovered is not None:
+                        return recovered
+                    raise PlannerInterruptedResponse()
+                request_timeout = _bounded_planner_timeout(request_timeout, limit)
+                request_deadline = limit
             if next_wait is not None:
                 request_timeout = _bounded_planner_timeout(request_timeout, next_wait)
                 request_deadline = next_wait
@@ -915,6 +1110,25 @@ class Gateway:
                     abandon_stream()
                     note_stream_cut("connection", None)
                     continue
+                error_class = _interrupted_error_class(exc)
+                if error_class and mode != "stream":
+                    elapsed = time.monotonic() - mode_started
+                    self._record_interrupted_attempt(route, context, elapsed, error_class)
+                    time_left = None if call_deadline is None else call_deadline - (time.monotonic() - started)
+                    stage_left = self._planner_stage_remaining()
+                    if stage_left is not None:
+                        time_left = stage_left if time_left is None else min(time_left, stage_left)
+                    if self._retry_interrupted_primary(elapsed, mode, time_left=time_left):
+                        self._emit_planner_phase("retrying_planner_request")
+                        attempts.append("json")
+                        continue
+                    recovered = await self._fallback_after_interrupt(
+                        system, context, sources, max_tokens, route, on_first_token,
+                        status_code=None, allow_fallback=allow_fallback)
+                    if recovered is not None:
+                        return recovered
+                    if _idle_cut_elapsed(elapsed):
+                        raise PlannerInterruptedResponse() from None
                 performance_logger.info("Planner request metrics: %s", json.dumps(safe_planner_metrics(
                     context.get("stage"), time.monotonic() - started, first_token_seconds=(
                         None if first_token_at is None else first_token_at - mode_started),
@@ -950,6 +1164,18 @@ class Gateway:
                     save_failed_planner_output(self.settings, {"stage": context.get("stage", "unknown"),
                         "raw_output": {"unparsed_content": partial}})
                 raise PlannerInterruptedResponse()
+            if response is not None and response.status_code in INTERRUPTED_STATUSES:
+                elapsed = time.monotonic() - mode_started
+                time_left = None if call_deadline is None else call_deadline - (time.monotonic() - started)
+                stage_left = self._planner_stage_remaining()
+                if stage_left is not None:
+                    time_left = stage_left if time_left is None else min(time_left, stage_left)
+                if self._retry_interrupted_primary(elapsed, mode, time_left=time_left):
+                    self._record_interrupted_attempt(
+                        route, context, elapsed, _interrupted_error_class(status_code=response.status_code))
+                    self._emit_planner_phase("retrying_planner_request")
+                    attempts.append("json")
+                    continue
             if mode == "stream" and not used_stream and response.status_code == 400 and index == 0 and len(attempts) > 1:
                 stream_fallback = True
                 _mark_stream_unreliable(route.provider)
@@ -972,6 +1198,18 @@ class Gateway:
         if response.status_code >= 300:
             logger.warning("Planner transport failure: %s", json.dumps(safe_planner_transport_failure(
                 context.get("stage"), time.monotonic() - started, status_code=response.status_code)))
+            if response.status_code in INTERRUPTED_STATUSES:
+                elapsed = time.monotonic() - mode_started
+                self._record_interrupted_attempt(
+                    route, context, elapsed, _interrupted_error_class(status_code=response.status_code))
+                recovered = await self._fallback_after_interrupt(
+                    system, context, sources, max_tokens, route, on_first_token,
+                    status_code=response.status_code, allow_fallback=allow_fallback)
+                if recovered is not None:
+                    return recovered
+                if _idle_cut_elapsed(elapsed):
+                    raise PlannerInterruptedResponse()
+                raise PlannerRequestError("策划服务暂时繁忙；已有成果仍保留。")
             if response.status_code in (408, 429) or response.status_code >= 500:
                 alternate = self._text_fallback(route, status_code=response.status_code, timed_out=False) if allow_fallback else None
                 if alternate is not None:
@@ -1060,6 +1298,11 @@ class Gateway:
         initial_brief = project.get("brief", "")
         skill_trace = copy.deepcopy(list(inherited_skill_trace)) if choice_enabled else []
         last_stage_result = None
+
+        def note_diverge(stage, dropped):
+            save_planner_event_diagnostic(self.settings, {
+                "stage": stage, "recovery": "checkpoint_recompute", "dropped_entries": dropped})
+
         session = PlanningSession(planning_checkpoint, on_checkpoint,
             {"project": project, "assets": [{"id": a["id"], "sha256": a.get("metadata", {}).get("sha256")} for a in assets],
              "messages": messages, "gates": gates, "current_plan": current_plan,
@@ -1068,7 +1311,8 @@ class Gateway:
                 and getattr(self.settings, "progressive_planning_enabled", False)
                 and getattr(self.settings, "joint_planning_enabled", False) else {}),
              **({"content_draft_enabled": True} if lean_enabled else {})},
-            retry_delay=getattr(self.settings, "planner_retry_delay_seconds", 0.75))
+            retry_delay=getattr(self.settings, "planner_retry_delay_seconds", 0.75),
+            on_diverge=note_diverge)
         report_phase = on_progress
         phase_stages = {"deciding": "strategy", "reviewing_directions": "direction_review",
             "writing_script": "ad_script", "reviewing_script": "script_review",
@@ -1229,11 +1473,24 @@ class Gateway:
                     self._planner_recovery = None
                     self._planner_allow_fallback = None
 
-            result = await session.call(data["stage"], signature, perform,
-                on_start=starting, on_retry=retrying)
+            self._planner_stage_started = time.monotonic()
+            self._planner_stage_budget = _planner_budget_seconds(
+                self.settings, stage_route(self.settings, data["stage"]))
+            self._planner_interrupt_retry_used = False
+            self._planner_last_interrupt_elapsed = None
+            self._planner_notice = on_progress
+            try:
+                result = await session.call(data["stage"], signature, perform,
+                    on_start=starting, on_retry=retrying)
+            finally:
+                self._planner_stage_started = None
+                self._planner_stage_budget = None
+                self._planner_interrupt_retry_used = False
+                self._planner_last_interrupt_elapsed = None
+                self._planner_notice = None
             if stage_cache_sink is not None and cached is None:
                 stage_cache_sink(fingerprint(signature), data["stage"], result)
-            last_stage_result = {"stage": data["stage"], "raw_output": result}
+            last_stage_result = {"stage": data["stage"], "model": route.model, "raw_output": result}
             return result
         sources = [a for a in assets if a["kind"] == "product" and not a.get("metadata", {}).get("generated")][:3]
         duration = project.get("duration_seconds", 20)
@@ -1461,9 +1718,19 @@ class Gateway:
                                 "scene_reference_count": 1, "max_characters": max_characters,
                                 "character_reference_images_each": 1}}
                         raw_review = await stage_call(DIRECTION_REVIEW_SYSTEM, review_input, sources)
-                        review = validate_direction_review(derive_authored_production_metadata(raw_review), candidates, context["strategy_rules"],
-                            product_reference_count=len(sources))
+                        try:
+                            review, reasons = salvage_direction_review(
+                                derive_authored_production_metadata(raw_review), candidates,
+                                context["strategy_rules"], product_reference_count=len(sources))
+                        except (ValidationError, ValueError) as exc:
+                            if last_stage_result is not None:
+                                last_stage_result["validation_reasons"] = review_failure_reasons(exc)
+                            raise
+                        if reasons and last_stage_result is not None:
+                            last_stage_result["validation_reasons"] = reasons
                         if not review.ready:
+                            if last_stage_result is not None:
+                                last_stage_result["validation_reasons"] = ["not_ready"]
                             save_failed_planner_output(self.settings, last_stage_result)
                             raise ProviderError("创意方向尚未通过内容检查，已有方案和素材已保留；本次未开始图片或视频生成")
                         candidates = reviewed_candidates(review, candidates, context["strategy_rules"])

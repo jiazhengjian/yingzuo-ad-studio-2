@@ -182,9 +182,8 @@ def test_changed_rules_cannot_reuse_old_stage_results(run_case, monkeypatch):
         return data
     monkeypatch.setattr(runtime_skills, "stage_skill_context", changed)
     result = execute()
-    assert result["status"] == "failed"
-    assert result["progress"]["error_code"] == "planning_invalid_response"
-    assert len(calls) == 3
+    assert result["status"] in ("ready", "awaiting_input")
+    assert len(calls) > 3
 
 
 @pytest.mark.parametrize("failure,status", [("cancel", "canceled"), ("change_context", "needs_review")])
@@ -215,5 +214,9 @@ def test_replaced_original_bytes_cannot_reuse_cached_director(run_case):
     original = next(asset for asset in store.project_detail(pid)["assets"] if asset["kind"] == "product")
     Path(original["path"]).write_bytes(b"EXPLICIT_TEST_REPLACED_BYTES")
     result = execute()
-    assert result["status"] == "failed" and result["progress"]["error_code"] == "planning_invalid_response"
-    assert len(calls) == 3
+    # The script does not hash the image, so it replays. Storyboard and review
+    # do, so they run again. Saving the plan then sees the file no longer
+    # matches its recorded digest.
+    assert calls == ["ad_script", "storyboard", "plan_review", "storyboard", "plan_review"]
+    assert result["status"] == "failed"
+    assert result["error"] == "参考文件已变化，请重新上传并确认方案"

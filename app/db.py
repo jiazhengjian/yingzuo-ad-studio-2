@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 ACTIVE = ("queued", "running", "cancel_requested")
-PHASE_LABELS = {"resuming_plan": "正在接续已保存的策划进度", "reviewing_plan": "正在综合检查商品表达、动作与声画计划", "refining_script": "正在精简动作并重排脚本时间", "refining_storyboard": "正在依据检查结果调整画面与动作", "retrying_planner": "策划服务未返回内容，正在重试当前步骤", "retrying_planner_request": "策划服务暂时中断，正在继续当前步骤", "reviewing_directions": "正在检查创意故事与商品关系", "writing_script": "正在策划广告内容", "reviewing_script": "正在检查商品表达与台词", "storyboarding": "正在安排画面和台词", "repairing_storyboard": "正在校正画面与旁白的时间对应", "checking_plan": "正在核对脚本与分镜时间", "checking_alignment": "正在检查画面与旁白是否对应", "queued": "任务已排队", "understanding": "正在读取需求与商品素材", "deciding": "正在判断是否需要补充信息", "planning": "正在准备广告方案", "plan_ready": "广告方案已准备好", "synthesizing_voice": "正在准备中文配音", "creating_designs": "正在生成参考图", "submitting_video": "正在提交视频任务", "waiting_provider": "正在等待供应商生成视频", "downloading_video": "正在取回视频", "segments_ready": "视频片段已取回", "composing": "正在合成广告视频", "complete": "成片已保存", "needs_reconcile": "提交结果需要核对"}
+PHASE_LABELS = {"resuming_plan": "正在接续已保存的策划进度", "reviewing_plan": "正在综合检查商品表达、动作与声画计划", "refining_script": "正在精简动作并重排脚本时间", "refining_storyboard": "正在依据检查结果调整画面与动作", "retrying_planner": "策划服务未返回内容，正在重试当前步骤", "retrying_planner_request": "策划服务暂时中断，正在继续当前步骤", "using_backup_planner": "改用备用策划服务，继续这一步", "recovering_strategy": "系统仍在处理这一步，需求已保留", "reviewing_directions": "正在检查创意故事与商品关系", "writing_script": "正在策划广告内容", "reviewing_script": "正在检查商品表达与台词", "storyboarding": "正在安排画面和台词", "repairing_storyboard": "正在校正画面与旁白的时间对应", "checking_plan": "正在核对脚本与分镜时间", "checking_alignment": "正在检查画面与旁白是否对应", "queued": "任务已排队", "understanding": "正在读取需求与商品素材", "deciding": "正在判断是否需要补充信息", "planning": "正在准备广告方案", "plan_ready": "广告方案已准备好", "synthesizing_voice": "正在准备中文配音", "creating_designs": "正在生成参考图", "submitting_video": "正在提交视频任务", "waiting_provider": "正在等待供应商生成视频", "downloading_video": "正在取回视频", "segments_ready": "视频片段已取回", "composing": "正在合成广告视频", "complete": "成片已保存", "needs_reconcile": "提交结果需要核对"}
 
 
 class StaleRevision(ValueError):
@@ -394,7 +394,7 @@ class Store:
         a duplicate click must never replay an earlier checkpoint over a worker's
         already-running request or a completed result.
         """
-        from .planning_session import allow_manual_planning_retry
+        from .planning_session import allow_manual_planning_retry, reopen_rejected_stage
 
         with self._connection(True) as c:
             job = self._dict(c.execute("SELECT * FROM jobs WHERE id=? AND project_id=?",
@@ -412,12 +412,17 @@ class Store:
                 raise StaleRevision("本次方案需要调整，请通过输入框说明修改要求；已有成果仍保留")
             checkpoint = (job.get("payload") or {}).get("planning_checkpoint")
             if not isinstance(checkpoint, dict) or checkpoint.get("version") != 1:
-                raise StaleRevision("缺少可接续的策划进度，请重新发送修改需求；已有成果仍保留")
-            try:
-                checkpoint = allow_manual_planning_retry(checkpoint)
-            except (KeyError, TypeError, ValueError):
-                raise StaleRevision("当前策划进度不能重新尝试，请通过输入框说明修改要求；已有成果仍保留") from None
-            payload = {**job["payload"], "planning_checkpoint": checkpoint}
+                # The card already offered another attempt. Start this job again
+                # from the saved brief instead of refusing before any event.
+                payload = {key: value for key, value in job["payload"].items() if key != "planning_checkpoint"}
+            else:
+                try:
+                    checkpoint = allow_manual_planning_retry(checkpoint)
+                except (KeyError, TypeError, ValueError):
+                    checkpoint = reopen_rejected_stage(checkpoint)
+                    if checkpoint is None:
+                        raise StaleRevision("当前策划进度不能重新尝试，请通过输入框说明修改要求；已有成果仍保留") from None
+                payload = {**job["payload"], "planning_checkpoint": checkpoint}
             progress = {key: value for key, value in progress.items()
                         if key not in ("error_code", "retryable", "retry_action", "issue_summary")}
             now = time.time()
@@ -426,6 +431,41 @@ class Store:
             c.execute("UPDATE projects SET status='queued',updated_at=? WHERE id=?", (now, project_id))
             self._event(c, project_id, job_id, "status", "策划已重新排队，将继续未完成的步骤", "waiting")
             return self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
+
+    def resume_saved_planning(self, project_id):
+        """Start one new text job from the saved brief and any chosen direction.
+
+        This is the last-resort control. It does not submit image or video work
+        and does not ask the merchant to type the same request again.
+        """
+        from .strategy import DirectionCandidates
+
+        with self._connection(True) as c:
+            self._require_idle(c, project_id)
+            p = self._project(c, project_id)
+            detail = self._detail(c, project_id)
+            extra = {"planning_requested": True}
+            for gate in reversed(detail["gates"]):
+                if gate.get("kind") != "direction" or gate.get("status") != "answered":
+                    continue
+                if not gate.get("selected_option_id"):
+                    continue
+                source = self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (gate["job_id"],)).fetchone())
+                raw = ((source or {}).get("payload") or {}).get("direction_candidates")
+                if not isinstance(raw, dict):
+                    break
+                try:
+                    strategy = DirectionCandidates.model_validate(raw).select(gate["selected_option_id"])
+                except (KeyError, TypeError, ValueError):
+                    break
+                extra["selected_strategy"] = strategy.model_dump()
+                trace = ((source.get("payload") or {}).get("decision") or {}).get("skill_trace")
+                if trace:
+                    extra["inherited_skill_trace"] = trace
+                break
+            jid = self._new_conversation_job(c, p, extra)
+            self._event(c, project_id, jid, "status", "按已保存的需求继续策划", "waiting")
+            return self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone())
 
     def create_failed_video_retry(self, project_id, source_job_id):
         """Allocate one explicit retry budget; never erase or recycle old receipts."""

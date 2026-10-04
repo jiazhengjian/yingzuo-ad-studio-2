@@ -27,7 +27,7 @@ import type { Answer, Asset, Detail, Gate, Health, Job, Message, Plan, Project, 
 
 const phaseNames: Record<string, string> = { planning: '正在整理商品与脚本', plan: '正在整理商品与脚本', voice: '正在准备中文配音', tts: '正在准备中文配音', synthesizing: '正在准备中文配音', submit: '正在提交视频任务', submitting: '正在提交视频任务', generate: '正在生成视频', generating: '正在生成视频', video: '正在生成视频', polling: '视频生成中', downloading: '正在取回视频', download: '正在取回视频', compose: '正在合成成片', composing: '正在合成成片', rendering: '正在合成成片', render: '正在合成成片', inspect: '正在检查文件', checking: '正在检查文件', completed: '文件已准备好', ready: '文件已准备好', canceled: '已停止', queued: '等待制作', retry: '正在继续处理' };
 const kindNames: Record<string, string> = { product: '商品', person: '人物', character: '角色参考', scene: '场景', start_frame: '条件性首帧' };
-Object.assign(phaseNames, { resuming_plan: '正在接续已保存的策划进度', reviewing_plan: '正在综合检查商品表达、动作与声画计划', writing_script: '正在策划广告内容', storyboarding: '正在安排画面和台词', refining_script: '正在精简动作并重排脚本时间', refining_storyboard: '正在根据审核意见调整分镜', retrying_planner: '策划服务未返回内容，系统仍在处理这一步', retrying_planner_request: '策划服务暂时不可用，系统仍在处理这一步', recovering_strategy: '系统仍在处理这一步，需求已保留', understanding: '正在读取需求与商品素材', deciding: '正在判断是否需要补充信息', awaiting_direction: '等待选择广告方向', plan_ready: '方案已准备好', synthesizing_voice: '正在准备中文配音', creating_designs: '正在生成参考图', submitting_video: '正在提交视频任务', waiting_provider: '正在等待视频生成', downloading_video: '正在取回视频', segments_ready: '视频片段已准备好', needs_reconcile: '提交结果需要核对', complete: '文件已准备好' });
+Object.assign(phaseNames, { resuming_plan: '正在接续已保存的策划进度', reviewing_plan: '正在综合检查商品表达、动作与声画计划', writing_script: '正在策划广告内容', storyboarding: '正在安排画面和台词', refining_script: '正在精简动作并重排脚本时间', refining_storyboard: '正在根据审核意见调整分镜', retrying_planner: '策划服务未返回内容，系统仍在处理这一步', retrying_planner_request: '策划服务暂时不可用，系统仍在处理这一步', using_backup_planner: '改用备用策划服务，继续这一步', recovering_strategy: '系统仍在处理这一步，需求已保留', understanding: '正在读取需求与商品素材', deciding: '正在判断是否需要补充信息', awaiting_direction: '等待选择广告方向', plan_ready: '方案已准备好', synthesizing_voice: '正在准备中文配音', creating_designs: '正在生成参考图', submitting_video: '正在提交视频任务', waiting_provider: '正在等待视频生成', downloading_video: '正在取回视频', segments_ready: '视频片段已准备好', needs_reconcile: '提交结果需要核对', complete: '文件已准备好' });
 const dateText = (value: number) => { const d = new Date(value * 1000); return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' }); };
 const errorText = (error: unknown) => error instanceof Error ? error.message : '暂时没有完成，请重试。';
 const byNewest = <T extends { created_at: number }>(items: T[]) => [...items].sort((a, b) => b.created_at - a.created_at);
@@ -363,9 +363,28 @@ export default function App() {
   }
   async function savePlan() { if (!projectId || !editPlan || editRevision === null || !validEditedPlan(editPlan)) return; await run('edit', async () => { await api(`/api/projects/${projectId}/plan`, json('PATCH', { plan: editPlan, accepted_revision: editRevision })); if (selectedProjectRef.current === projectId) { setEditPlan(null); setEditRevision(null); setNotice('台词已保存，生成前请再确认。'); } await refresh(projectId); }); }
   async function cancel() { if (!projectId) return; await run('cancel', async () => { await api(`/api/projects/${projectId}/cancel`, json('POST', {})); await refresh(projectId); if (selectedProjectRef.current === projectId) setNotice('已请求停止后续工作。供应商已受理的任务仍需核对结果，取消不等于退款。'); }); }
+  async function resumeSavedPlanning() {
+    if (!projectId || !canPlan || submissionLock.current || uploadLock.current || hasActive) {
+      if (projectId) setError('当前不能按已保存的需求继续，请等正在进行的步骤结束。');
+      return;
+    }
+    const id = projectId;
+    submissionLock.current = true;
+    try { await run('plan', async () => {
+      await api(`/api/projects/${id}/resume-planning`, json('POST', {}));
+      await refresh(id);
+    }); } finally { submissionLock.current = false; }
+  }
   async function retry(job: Job) {
     const request = retryRequest(job);
-    if (!projectId || !request || busy || submissionLock.current) return;
+    if (!projectId || !request) {
+      setError('这一步不能直接继续，请按已保存的需求重新开始。');
+      return;
+    }
+    if (busy || submissionLock.current) {
+      setError('上一次操作还没结束，请稍后再继续。');
+      return;
+    }
     const id = projectId;
     submissionLock.current = true;
     try { await run('retry', async () => {
@@ -465,9 +484,9 @@ export default function App() {
             {!!busy && ['message','answer','creative','direction','plan','shorten'].includes(busy) && !hasActive && <div className="conversation-loading" role="status"><Spinner/>正在提交本轮请求…</div>}
 
             <SavedResultCard detail={detail} onPlay={() => setVideoOpen(true)}/>
-            {latestJob && jobRecovery && <JobRecoveryCard job={latestJob} hasExistingResult={!!shownRender} busy={busy} canEditVoice={!!plan} canShorten={canPlan} onRetry={job => void retry(job)} onEditVoice={openEditPlan} onShorten={() => void shortenScript()} onChangePlan={requestPlanChanges} onSettings={() => setSettingsOpen(true)}/>}
+            {latestJob && jobRecovery && <JobRecoveryCard job={latestJob} hasExistingResult={!!shownRender} busy={busy} canEditVoice={!!plan} canShorten={canPlan} error={error} onDismissError={() => setError('')} onRetry={job => void retry(job)} onEditVoice={openEditPlan} onShorten={() => void shortenScript()} onChangePlan={requestPlanChanges} onRestart={() => void resumeSavedPlanning()} onSettings={() => setSettingsOpen(true)}/>}
             {!!project && !hasActive && !plan && !pendingGate && !jobs.length && <div className="next-step"><p>你的消息已保存，可以继续对话。</p><button className="button primary" disabled={!canPlan} onClick={startPlan}><MessageSquare size={15}/>继续对话</button>{!health?.configured.planner && <button className="text-action" onClick={() => setSettingsOpen(true)}>连接策划服务</button>}</div>}
-            {error && <div className="inline-alert" role="alert"><TriangleAlert size={15}/><span>{error}</span><button aria-label="关闭错误提示" onClick={() => setError('')}><X size={14}/></button></div>}{notice && <div className="inline-notice" role="status"><CheckCircle2 size={14}/>{notice}</div>}<div ref={endMessages}/>
+            {error && !(latestJob && jobRecovery) && <div className="inline-alert" role="alert"><TriangleAlert size={15}/><span>{error}</span><button aria-label="关闭错误提示" onClick={() => setError('')}><X size={14}/></button></div>}{notice && <div className="inline-notice" role="status"><CheckCircle2 size={14}/>{notice}</div>}<div ref={endMessages}/>
           </div>
           <div className={`composer-area ${pendingGate ? 'has-pending-gate' : ''}`}><AdFormSummary adForm={project?.ad_form} onChange={online && health?.configured.planner && !hasActive && !busy && !uploading && (!pendingGate || pendingGate.kind === 'direction') ? focusAdFormChange : undefined}/><div className={`composer-shell ${pendingGate ? 'has-pending-gate' : ''}`} role="group" aria-label={pendingGate?.kind === 'direction' ? '选择方向与输入' : pendingGate ? '确认问题与输入' : '发送消息'}>{pendingGate && <div className="composer-gate-scroll"><ConversationGate key={pendingGate.id} ref={pendingGateRef} composerText={draft} onComposerStateChange={handleGateComposer} onReviewImages={() => selectView('canvas')} gate={pendingGate} busy={!!busy || uploading || hasActive} error={error} onSubmit={answers => answerGate(pendingGate, answers)} onCreativeSubmit={(optionId,note) => confirmCreative(pendingGate,optionId,note)} onDirectionSelect={optionId => selectDirection(pendingGate,optionId)} onDirectionModify={text => modifyDirections(pendingGate,text)}/></div>}{selectedAsset && <div className="selected-reference"><FileImage size={13}/><span>引用 {selectedAsset.name}</span><button className="icon-button" aria-label="取消素材引用" onClick={() => setSelectedAsset(null)}><X size={13}/></button></div>}{pendingFiles.length > 0 && <ComposerImageDraft files={pendingFiles} disabled={!!busy || uploading || hasActive} onRemove={index => setPendingFiles(files => files.filter((_, item) => item !== index))}/>}<form className="chat-composer" onSubmit={send} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); if (!hasActive && !busy) stageIncoming(e.dataTransfer.files); }}><button type="button" className="attach-button" disabled={uploading || hasActive || !!busy} aria-label="添加商品图片" title="添加商品图片" onClick={() => fileInput.current?.click()}>{uploading ? <Spinner/> : <Plus size={20}/>}</button><textarea ref={composerInput} aria-label={pendingGate && gateComposer ? gateComposer.prompt : "补充需求或修改意见"} maxLength={pendingGate ? gateComposer?.maxLength ?? 500 : 6000} value={draft} onChange={e => { setDraft(e.target.value); if (pendingGate) pendingGateRef.current?.cacheText(e.target.value); }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} onPaste={e => { const files = [...e.clipboardData.files]; if (files.length && !hasActive && !busy) { e.preventDefault(); stageIncoming(files); } }} placeholder={hasActive ? '正在工作，你可以随时停止…' : pendingFiles.length ? '写上商品信息，再和图片一起发送…' : pendingGate ? gateComposer?.prompt || '在这里回答当前问题…' : '需要修改？在这里输入…'} rows={1} disabled={hasActive || !!busy || !!pendingGate && gateComposer?.canInput === false}/>{hasActive ? <button type="button" className="stop-button" aria-label="停止制作" title="停止后续制作" disabled={!!busy || activeJob.status === 'cancel_requested'} onClick={cancel}><Square size={13} fill="currentColor"/></button> : <button type="submit" className="send-button" aria-label={pendingGate?.kind === "clarification" ? "发送当前题答案" : "发送修改意见"} disabled={!draft.trim() || !!busy || uploading || !online || !!pendingGate && gateComposer?.canInput === false}>{busy === 'message' ? <Spinner/> : <ArrowRight size={19}/>}</button>}</form></div><p className="composer-note">请核对商品信息和生成内容。<span> Enter 发送 · Shift + Enter 换行</span></p><input ref={fileInput} type="file" accept="image/jpeg,image/png,image/webp" multiple hidden onChange={e => { if(e.target.files) stageIncoming(e.target.files); e.target.value = ''; }}/></div>
         </section>

@@ -354,7 +354,7 @@ def test_sparse_contract_version_invalidates_only_refinement_replay(progressive_
     assert run()["plan"]["plan_review"]["ready"]
     frozen, calls = deepcopy(checkpoint), list(state.calls)
     monkeypatch.setattr(progressive, "REFINEMENT_OUTPUT_VERSION", progressive.REFINEMENT_OUTPUT_VERSION + 1)
-    with pytest.raises(ProviderError) as error:
-        run(checkpoint)
-    assert error.value.error_code == "planning_invalid_response"
-    assert state.calls == calls and checkpoint == frozen
+    result = run(checkpoint)
+    assert result["plan"]["plan_review"]["ready"]
+    assert len(state.calls) > len(calls)
+    assert checkpoint != frozen

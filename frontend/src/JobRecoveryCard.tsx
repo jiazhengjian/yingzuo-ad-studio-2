@@ -1,4 +1,4 @@
-import { LoaderCircle, Pencil, RefreshCw, Sparkles, TriangleAlert } from 'lucide-react';
+import { LoaderCircle, Pencil, RefreshCw, Sparkles, TriangleAlert, X } from 'lucide-react';
 import type { Job } from './api';
 import { recoveryForJob } from './jobRecovery';
 
@@ -12,10 +12,13 @@ interface Props {
   onEditVoice: () => void;
   onShorten: () => void;
   onChangePlan: () => void;
+  onRestart: () => void;
   onSettings: () => void;
+  error?: string;
+  onDismissError?: () => void;
 }
 
-export default function JobRecoveryCard({ job, busy, canEditVoice, canShorten, hasExistingResult = false, onRetry, onEditVoice, onShorten, onChangePlan, onSettings }: Props) {
+export default function JobRecoveryCard({ job, busy, canEditVoice, canShorten, hasExistingResult = false, onRetry, onEditVoice, onShorten, onChangePlan, onRestart, onSettings, error, onDismissError }: Props) {
   const recovery = recoveryForJob(job);
   if (!recovery) return null;
   const retryingVideo = recovery.kind === 'retry_failed_segments';
@@ -44,13 +47,14 @@ export default function JobRecoveryCard({ job, busy, canEditVoice, canShorten, h
     {retryingVideo && <p>保留已有图片与成功片段。</p>}
     {recovery.kind === 'check_materials' && <p>请检查素材，或在下方对话调整并重新确认方案。</p>}
     {planning && recovery.kind === 'edit_plan' && <p>可以在下方输入想调整的要求，继续修改方案。</p>}
-    {recovery.kind === 'continue_conversation' && <p>可以在下方继续对话；原需求已保存。</p>}
+    {recovery.kind === 'continue_conversation' && <p>这一步不能沿用刚才的进度。点下面会按已保存的需求和已选方向重新开始。</p>}
     {hasExistingResult && <p>已有成片仍可播放、下载。</p>}
-    {recovery.kind === 'check_connection' ? <button className="button subtle small" disabled={!!busy} onClick={onSettings}>检查连接设置</button> : recovery.kind === 'continue_conversation' ? <button className="button subtle small" disabled={!!busy || !canShorten} onClick={onChangePlan}><Pencil size={13}/>继续对话</button> : recovery.kind === 'edit_plan' ? <button className="button subtle small" disabled={!!busy || !canShorten} onClick={onChangePlan}><Pencil size={13}/>{planning ? '输入修改要求' : '修改方案'}</button> : recovery.kind === 'edit_voice' ? <div className="alert-actions">
+    {recovery.kind === 'check_connection' ? <button className="button subtle small" disabled={!!busy} onClick={onSettings}>检查连接设置</button> : recovery.kind === 'continue_conversation' ? <button className="button subtle small" disabled={!!busy || !canShorten} onClick={onRestart}><RefreshCw size={13}/>按已保存的需求继续</button> : recovery.kind === 'edit_plan' ? <button className="button subtle small" disabled={!!busy || !canShorten} onClick={onChangePlan}><Pencil size={13}/>{planning ? '输入修改要求' : '修改方案'}</button> : recovery.kind === 'edit_voice' ? <div className="alert-actions">
       <button className="button subtle small" disabled={!!busy || !canEditVoice} onClick={onEditVoice}><Pencil size={13}/>修改台词</button>
       <button className="button subtle small" disabled={!!busy || !canShorten} onClick={onShorten}>{busy === 'shorten' ? <LoaderCircle size={13} className="spin"/> : <Sparkles size={13}/>}自动精简台词</button>
     </div> : (recovery.kind === 'retry_planning' || recovery.kind === 'retry_existing' || recovery.kind === 'retry_failed_segments') && <button className="button subtle small" disabled={!!busy} onClick={() => onRetry(job)}>
       {busy === 'retry' ? <LoaderCircle size={13} className="spin"/> : <RefreshCw size={13}/>} {recovery.label}
     </button>}
+    {!!error && <p role="alert">{error}{onDismissError && <button aria-label="关闭错误提示" onClick={onDismissError}><X size={14}/></button>}</p>}
   </div></div>;
 }
