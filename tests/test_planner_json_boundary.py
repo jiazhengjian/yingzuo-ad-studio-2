@@ -61,11 +61,19 @@ def test_only_single_redundant_brace_preserves_every_decoded_value(prefix, suffi
         "correction": "single_redundant_closing_brace", "content_characters": len(raw)}
 
 
+@pytest.mark.parametrize("raw,closed", [
+    ('{"a":1', {"a": 1}),
+    ('{"nested":{"a":1}', {"nested": {"a": 1}}),
+])
+def test_truncated_object_is_closed_without_inventing_fields(raw, closed):
+    assert _decode_planner_json(raw) == closed
+
+
 @pytest.mark.parametrize("raw", [
     '{} {}', '{} []', '{} null', '{} true', '{} 3', '{} "second"',
     '{} second text', '{} } text', '{} } {}', '{} }}', '{} } }',
     '[]}', '[{"a":1}]}', 'null}', 'true}', '3}', '"value"}',
-    '{"a":', '{"a":1', '{"nested":{"a":1}', '{"a":"unterminated}',
+    '{"a":', '{"a":"unterminated}',
     '{"a":1,}}', '{"a":]}', '```json\n{}\n```}',
     '\ufeff{}}', '\u00a0{}}', '{}\u00a0}', '{} }\u00a0', '{}\v}', '{} }\f',
 ])

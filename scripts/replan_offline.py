@@ -86,12 +86,13 @@ def load_saved_job(db_path, job_id):
         messages = [{"role": row["role"], "content": row["content"]} for row in connection.execute(
             "SELECT role, content FROM messages WHERE project_id=? ORDER BY created_at, id", (job["project_id"],))]
         duration = project["duration_seconds"] if "duration_seconds" in project.keys() else None
-        cta_target = project["cta_target"] if "cta_target" in project.keys() else None
+        has_cta_column = "cta_target" in project.keys()
         return {
             "job_id": job["id"],
             "project_id": project["id"],
             "brief": project["brief"],
-            "cta_target": cta_target,
+            "cta_column": has_cta_column,
+            "cta_target": project["cta_target"] if has_cta_column else None,
             "duration_seconds": duration if isinstance(duration, int) and duration > 0 else 20,
             "plan": plan,
             "assets": assets,
@@ -213,10 +214,17 @@ async def replan_offline(*, job_id, db_path, stage_call, gateway=None, skip_revi
     saved = load_saved_job(db_path, job_id)
     plan = saved["plan"]
     strategy = StrategyRecord.model_validate(plan["strategy"])
+    from app.cta import project_cta_mode
+    cta_project = {"brief": saved.get("brief")}
+    if saved.get("cta_column"):
+        cta_project["cta_target"] = saved.get("cta_target")
+    cta_mode = project_cta_mode(cta_project)
 
     async def production_stage(system, data, assets, max_tokens=7000):
         if isinstance(data, dict):
             data.setdefault("ad_form", strategy.brief.ad_form)
+            if cta_mode is not None:
+                data["cta_target"] = cta_mode
             from app.planner_stage import enrich_planner_stage
             enrich_planner_stage(data)
         prepared = []
@@ -231,11 +239,25 @@ async def replan_offline(*, job_id, db_path, stage_call, gateway=None, skip_revi
         if gateway is None:
             return
         from app.providers.gateway import save_failed_planner_output
-        save_failed_planner_output(gateway.settings, {
+        if isinstance(candidate, dict) and candidate.get("nonblocking"):
+            raw_output = {
+                "unparsed_content": candidate.get("message") or "",
+                "issue_summary": candidate.get("issues") or [],
+                "error_code": candidate.get("error_code"),
+            }
+        elif candidate is None:
+            raw_output = {"unparsed_content": "", "issue_summary": ["没有留下模型原文"], "error_code": "replan_offline"}
+        else:
+            raw_output = candidate
+        path = save_failed_planner_output(gateway.settings, {
             "stage": "replan_offline",
             "model": gateway.settings.planner_model,
-            "raw_output": candidate if candidate is not None else {"unparsed_content": ""},
+            "raw_output": raw_output,
         })
+        directory = gateway.settings.data_root / "diagnostics"
+        print(f"诊断目录：{directory}")
+        if path is not None:
+            print(f"诊断文件：{path}")
 
     result = await progressive_plan(
         stage_call=production_stage,
@@ -251,8 +273,7 @@ async def replan_offline(*, job_id, db_path, stage_call, gateway=None, skip_revi
         merchant_request=saved["brief"],
         current_plan=None,
         skip_review=skip_review,
-        cta_target=saved.get("cta_target") if saved.get("cta_target") else (
-            "none" if "cta_target" in saved else None),
+        cta_target=cta_mode,
     )
     prompt, notes = _compiled_prompt(result, saved["assets"])
     review = result.get("plan_review") or {}
@@ -319,9 +340,20 @@ def main(argv=None):
     parser.add_argument("--json", dest="json_path", default="")
     args = parser.parse_args(argv)
     gateway, stage_call = _live_stage_call()
-    report = asyncio.run(replan_offline(
-        job_id=args.job, db_path=args.db, stage_call=stage_call, gateway=gateway,
-        skip_review=args.skip_review))
+    print(f"诊断目录：{gateway.settings.data_root / 'diagnostics'}")
+    try:
+        report = asyncio.run(replan_offline(
+            job_id=args.job, db_path=args.db, stage_call=stage_call, gateway=gateway,
+            skip_review=args.skip_review))
+    except Exception as exc:
+        summary = getattr(exc, "issue_summary", None) or []
+        code = getattr(exc, "error_code", None)
+        print(f"离线重排没有完成。{exc}")
+        if code:
+            print(f"错误代码：{code}")
+        if summary:
+            print("问题：" + "；".join(str(item) for item in summary))
+        return 1
     _print_report(report)
     if args.json_path:
         Path(args.json_path).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

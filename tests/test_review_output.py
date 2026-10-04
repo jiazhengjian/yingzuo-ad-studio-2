@@ -203,7 +203,10 @@ def test_passing_temporal_evidence_is_required_even_without_positive_notes(cut_p
     elif defect == "wrong_quote":
         shot["temporal_omission_evidence"]["before_description_quote"] = "并不存在的原文"
     before = deepcopy(raw), deepcopy(cut_plan)
-    if defect:
+    if defect == "wrong_quote":
+        checked = validate_plan_review(raw, cut_plan)
+        assert checked.alignment.shots[1].temporal_omission == "no_omission"
+    elif defect:
         with pytest.raises(ValueError):
             validate_plan_review(raw, cut_plan)
     else:

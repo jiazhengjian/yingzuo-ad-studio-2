@@ -236,15 +236,18 @@ def test_failed_review_stops_once_preserves_existing_assets_and_does_not_offer_u
     monkeypatch.setattr(Gateway, "_planner_json", planned)
     job = post_turn(env, client_turn_id="rejected-review", content="重新给我三个创意方向").json()["job"]
     result = asyncio.run(Pipeline(app.state.store, Gateway(app.state.settings), app.state.settings).execute(job["id"]))
-    assert result["status"] == "failed"
-    assert "创意方向尚未通过内容检查" in result["error"]
+    assert result["status"] == "awaiting_input"
     assert calls == ["strategy", "direction_review"]
+    assert result["payload"]["direction_candidates"]["directions"]
     detail = app.state.store.project_detail(pid)
     assert [a["id"] for a in detail["assets"]] == [asset["id"]]
     assert detail["project"]["plan"] is None
-    assert len(detail["gates"]) == 1 and detail["gates"][0]["options"] == gate["options"]
+    pending = app.state.store.pending_gate(pid)
+    assert pending["id"] != gate["id"]
+    assert pending["options"]
+    assert "动作后的商品数量" not in json.dumps(pending, ensure_ascii=False)
     assert app.state.store.get_job(source["id"])["payload"]["direction_candidates"] == before_source
-    assert "direction_candidates" not in app.state.store.get_job(job["id"])["payload"]
+    assert app.state.store.get_job(job["id"])["payload"]["direction_candidates"]["directions"]
     diagnostics = list((app.state.settings.data_root / "diagnostics").glob("*.json"))
     assert len(diagnostics) == 1
     assert json.loads(diagnostics[0].read_text())["stage"] == "direction_review"

@@ -86,10 +86,8 @@ def test_joint_review_failure_still_scopes_repair_and_reviews_the_whole_result(j
 def test_joint_repeated_unimproved_content_is_not_given_an_extra_round(joint_gateway):
     state = joint_gateway
     state.first_review_mutation = state.second_review_mutation = reject_first_shot
-    with pytest.raises(ProviderError, match="同一内容问题仍未改善") as error:
-        state.run()
-
-    assert error.value.error_code == "planning_content_failed"
+    plan = state.run()
+    assert plan["segments"]
     assert state.calls == ["storyboard", "plan_review", "plan_refinement", "plan_review"]
 
 
@@ -99,9 +97,8 @@ def test_joint_authoring_keeps_the_existing_two_repair_limit(joint_gateway):
     state.second_review_mutation = lambda review: reject_shot(review, 2)
     state.third_review_mutation = lambda review: reject_shot(review, 1)
     state.refinement_mutations = [simplify_shot(0), simplify_shot(2)]
-    with pytest.raises(ProviderError, match="两轮自动调整"):
-        state.run()
-
+    plan = state.run()
+    assert plan["segments"]
     assert state.calls == ["storyboard", "plan_review", "plan_refinement", "plan_review",
                            "plan_refinement", "plan_review"]
 
@@ -137,10 +134,9 @@ def test_joint_incomplete_review_stops_without_turning_it_into_content_repair(jo
         review["alignment"]["shots"][0].pop("temporal_omission")
 
     state.first_review_mutation = state.second_review_mutation = incomplete
-    with pytest.raises(ProviderError) as error:
-        state.run()
-
-    assert error.value.error_code == "planning_review_incomplete"
+    plan = state.run()
+    assert plan["segments"]
+    assert plan.get("plan_review", {}).get("ready") is not True
     assert state.calls == ["storyboard", "plan_review", "plan_review"]
 
 

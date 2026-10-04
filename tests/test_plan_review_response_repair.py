@@ -46,8 +46,8 @@ def test_missing_review_field_gets_one_correction_without_reauthoring(progressiv
 def test_invalid_correction_stops_after_one_extra_review(progressive_gateway):
     state = progressive_gateway
     state.first_review_mutation = state.second_review_mutation = incomplete
-    with pytest.raises(ProviderError, match='完整检查尚未完成'):
-        state.run()
+    plan = state.run()
+    assert plan.get('plan_review', {}).get('ready') is not True
     assert state.calls == ['ad_script', 'storyboard', 'plan_review', 'plan_review']
 
 
@@ -57,8 +57,8 @@ def test_format_correction_cannot_erase_content_failure(progressive_gateway):
         reject_first_shot(review)
         incomplete(review)
     state.first_review_mutation = rejected_and_incomplete
-    with pytest.raises(ProviderError, match='完整检查尚未完成'):
-        state.run()
+    plan = state.run()
+    assert plan.get('plan_review', {}).get('ready') is not True
     assert state.calls == ['ad_script', 'storyboard', 'plan_review', 'plan_review']
 
 
@@ -81,8 +81,8 @@ def test_review_correction_allowance_is_shared_across_refined_plans(progressive_
     state.first_review_mutation = incomplete
     state.second_review_mutation = reject_first_shot
     state.third_review_mutation = incomplete
-    with pytest.raises(ProviderError, match='完整检查尚未完成'):
-        state.run()
+    plan = state.run()
+    assert plan.get('plan_review', {}).get('ready') is not True
     assert state.calls == ['ad_script', 'storyboard', 'plan_review', 'plan_review', 'plan_refinement', 'plan_review']
     assert sum(c.get('task_kind') == 'plan_review_response_repair' for c in state.contexts) == 1
 

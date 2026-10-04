@@ -186,6 +186,14 @@ def test_lean_draft_cannot_bypass_final_director_guards(content_gateway, source,
             for shot in data["shots"]:
                 shot["evidence_ids"] = []
         state.first_director_mutation = remove_evidence
+    if guard == "selected_evidence":
+        plan = state.run()
+        used = {fact_id for beat in plan["ad_script"]["beats"] for fact_id in beat["evidence_ids"]}
+        assert "appearance" in used
+        assert plan["segments"]
+        assert state.calls[0:2] == ["ad_script", "storyboard"]
+        assert len(state.calls) <= 6
+        return
     with pytest.raises(ProviderError):
         state.run()
     assert state.calls == ["ad_script", "storyboard"]

@@ -72,13 +72,62 @@ def is_open_cta(value):
 
 
 def project_cta_mode(project):
-    """None leaves existing lines alone. A stored column decides the ending."""
-    if not isinstance(project, dict) or "cta_target" not in project:
+    """A destination written in the brief counts even when the column is missing.
+
+    None means this project never stored a choice and the brief names none, so
+    existing lines stay as written. An empty stored column with a silent brief
+    is ``none`` and guidance lines are removed.
+    """
+    if not isinstance(project, dict):
         return None
+    stated = stated_cta(project.get("brief"))
+    if "cta_target" not in project:
+        return stated
     value = project.get("cta_target")
     if is_explicit_cta(value) or value == "ai_decide":
         return value
-    return stated_cta(project.get("brief")) or "none"
+    return stated or "none"
+
+
+def cta_fact_ids(strategy):
+    """Selected facts that only exist to name a destination."""
+    brief = getattr(strategy, "brief", None)
+    if brief is None and isinstance(strategy, dict):
+        brief = strategy.get("brief")
+    facts = getattr(brief, "facts", None)
+    if facts is None and isinstance(brief, dict):
+        facts = brief.get("facts") or []
+    directions = getattr(strategy, "directions", None)
+    selected_id = getattr(strategy, "selected_direction_id", None)
+    if directions is None and isinstance(strategy, dict):
+        directions = strategy.get("directions") or []
+        selected_id = strategy.get("selected_direction_id")
+    selected = None
+    for direction in directions or []:
+        identity = getattr(direction, "id", None)
+        if identity is None and isinstance(direction, dict):
+            identity = direction.get("id")
+        if identity == selected_id:
+            selected = direction
+            break
+    if selected is None:
+        return []
+    evidence = getattr(selected, "evidence_ids", None)
+    if evidence is None and isinstance(selected, dict):
+        evidence = selected.get("evidence_ids") or []
+    chosen = set(evidence or [])
+    found = []
+    for fact in facts or []:
+        fact_id = getattr(fact, "id", None)
+        text = getattr(fact, "text", None)
+        if fact_id is None and isinstance(fact, dict):
+            fact_id = fact.get("id")
+            text = fact.get("text")
+        if fact_id not in chosen:
+            continue
+        if "cta" in str(fact_id).lower() or _GUIDANCE.search(str(text or "")):
+            found.append(fact_id)
+    return found
 
 
 def cta_question():

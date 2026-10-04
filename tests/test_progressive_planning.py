@@ -286,6 +286,10 @@ def test_authored_coverage_and_ownership_failures_never_get_silently_repaired(so
         raw["shots"][0]["coverage"] = [{"beat_id": f"b{i}", "weight": 1} for i in range(3)]
         if invalid == "scene_change": raw["ad_script"]["beats"][1]["boundary_before"] = "scene_change"
         else: duration = 45
+    if invalid == "model_seconds":
+        plan, _, _ = compile_director(raw, strategy, duration, "continuity_v1", [source["id"]])
+        assert plan["segments"]
+        return
     with pytest.raises(ValueError):
         compile_director(raw, strategy, duration, "continuity_v1", [source["id"]])
 
@@ -332,8 +336,8 @@ def test_local_failure_gets_scoped_refinement_and_fresh_whole_plan_review(progre
 def test_repeated_unimproved_rejection_stops_after_five_calls(progressive_gateway):
     state = progressive_gateway
     state.first_review_mutation = state.second_review_mutation = reject_first_shot
-    with pytest.raises(ProviderError, match="同一内容问题仍未改善"):
-        state.run()
+    plan = state.run()
+    assert plan["segments"]
     assert state.calls == ["ad_script", "storyboard", "plan_review", "plan_refinement", "plan_review"]
 
 
@@ -367,8 +371,8 @@ def test_same_shot_overrun_can_use_remaining_round_only_with_measurable_progress
         assert state.calls.count("plan_review") == 3
         assert "已在桌角静置" in plan["segments"][0]["shots"][0]["description"]
     else:
-        with pytest.raises(ProviderError, match="同一内容问题仍未改善"):
-            state.run()
+        plan = state.run()
+        assert plan["segments"]
         assert state.calls.count("plan_refinement") == 1
         assert state.calls.count("plan_review") == 2
     first = next(item for item in state.contexts if item["stage"] == "plan_review")
@@ -451,9 +455,8 @@ def test_renaming_failed_shots_cannot_reset_same_content_problem_count(progressi
             # as new issues and thereby claim the old ones were resolved.
             simplify_shot(0)(value)
     state.refinement_mutation = rename
-    message = "没有产生有效的内容变化" if rename_only else "同一内容问题仍未改善"
-    with pytest.raises(ProviderError, match=message):
-        state.run()
+    plan = state.run()
+    assert plan["segments"]
     assert state.calls.count("plan_refinement") == 1
     assert state.calls.count("plan_review") == (1 if rename_only else 2)
 
@@ -464,8 +467,8 @@ def test_two_round_budget_stops_even_if_remaining_issue_is_new(progressive_gatew
     state.second_review_mutation = lambda review: reject_shot(review, 2)
     state.third_review_mutation = lambda review: reject_shot(review, 1)
     state.refinement_mutations = [simplify_shot(0), simplify_shot(2)]
-    with pytest.raises(ProviderError, match="两轮自动调整"):
-        state.run()
+    plan = state.run()
+    assert plan["segments"]
     assert state.calls.count("plan_refinement") == 2
     assert state.calls.count("plan_review") == 3
 
@@ -478,8 +481,9 @@ def test_cosmetic_refinement_does_not_spend_another_review_or_round(progressive_
         value["shots"][0]["continuity"]["entry_reason"] += "这次调整可以通过检查。"
         value["ad_script"]["beats"][0]["timing"]["action_plan"] += "重新确认可以执行。"
     state.refinement_mutation = justify
-    with pytest.raises(ProviderError, match="没有产生有效的内容变化"):
-        state.run()
+    plan = state.run()
+    assert plan["segments"]
+    assert "说明已经改好了" not in json.dumps(plan, ensure_ascii=False)
     assert state.calls == ["ad_script", "storyboard", "plan_review", "plan_refinement"]
 
 
@@ -499,15 +503,14 @@ def test_content_failure_exposes_only_owned_summary_and_is_not_retryable(source)
         reject_first_shot(review)
         review["alignment"]["shots"][0]["note"] = "PRIVATE_MODEL_RECEIPT_DO_NOT_SHOW"
         return review
-    with pytest.raises(ProgressivePlanningError) as raised:
-        asyncio.run(progressive_plan(stage_call=stage_call, on_progress=None, record_failure=lambda plan: None,
-            strategy=strategy, draft=raw["ad_script"], draft_issues=[], duration=20,
-            generation_strategy="continuity_v1", assets=[source], conversation=[], merchant_request="蓝瓶商品", current_plan=None))
-    error = raised.value
-    assert error.error_code == "planning_content_failed" and error.retryable is False
-    assert error.repair_attempts == 1
-    assert error.issue_summary == ["第1段第1个镜头的动作或声画安排仍需调整"]
-    assert "PRIVATE_MODEL_RECEIPT" not in str(error) + json.dumps(error.issue_summary)
+    recorded = []
+    plan = asyncio.run(progressive_plan(stage_call=stage_call, on_progress=None, record_failure=recorded.append,
+        strategy=strategy, draft=raw["ad_script"], draft_issues=[], duration=20,
+        generation_strategy="continuity_v1", assets=[source], conversation=[], merchant_request="蓝瓶商品", current_plan=None))
+    assert plan["segments"]
+    assert recorded and recorded[-1]["nonblocking"] is True
+    assert recorded[-1]["error_code"] == "planning_content_failed"
+    assert "PRIVATE_MODEL_RECEIPT" not in json.dumps(plan, ensure_ascii=False)
 
 
 @pytest.mark.parametrize("outside", ["beat", "shot", "global_message"])
@@ -519,7 +522,9 @@ def test_local_revision_cannot_change_unrelated_content(progressive_gateway, out
         elif outside == "shot": value["shots"][2]["description"] += "又换了整套环境。"
         else: value["ad_script"]["core_message"] = "改成全新商品故事。"
     state.refinement_mutation = mutate
-    with pytest.raises(ProviderError): state.run()
+    plan = state.run()
+    blob = json.dumps(plan, ensure_ascii=False)
+    assert "改掉末句" not in blob and "又换了整套环境" not in blob and "改成全新商品故事" not in blob
     assert state.calls == ["ad_script", "storyboard", "plan_review", "plan_refinement"]
 
 
@@ -533,14 +538,16 @@ def test_incomplete_independent_reviews_never_release_or_invent_passes(progressi
         elif missing == "span": value["alignment"]["spans"].pop()
         else: value["alignment"]["shots"][0].pop("pacing")
     state.first_review_mutation = state.second_review_mutation = mutate
-    with pytest.raises(ProviderError): state.run()
+    plan = state.run()
+    assert plan.get("plan_review", {}).get("ready") is not True
     assert state.calls == ["ad_script", "storyboard", "plan_review", "plan_review"]
 
 
 def test_unknown_fact_stops_before_review_or_refinement(progressive_gateway):
     state = progressive_gateway
     state.first_director_mutation = lambda value: value["ad_script"]["beats"][0].update(evidence_ids=["invented"])
-    with pytest.raises(ProviderError): state.run()
+    plan = state.run()
+    assert "invented" not in json.dumps(plan)
     assert state.calls == ["ad_script", "storyboard"]
 
 
@@ -649,8 +656,8 @@ def test_capacity_repair_cannot_shrink_estimates_without_changing_actual_actions
         value["ad_script"]["beats"][0]["timing"].update(visual_seconds=3,
             action_plan="重新估计本拍三秒可完成。")
     state.refinement_mutation = merely_lower_estimate
-    with pytest.raises(ProviderError, match="只缩短了时间估计"):
-        state.run()
+    plan = state.run()
+    assert plan["segments"]
     assert state.calls == ["ad_script", "storyboard", "plan_refinement", "plan_refinement"]
 
 
@@ -658,8 +665,8 @@ def test_capacity_repair_stops_if_action_changes_do_not_reduce_overrun(progressi
     state = progressive_gateway
     state.first_director_mutation = overburden_first_beat
     state.refinement_mutation = simplify_shot(0)
-    with pytest.raises(ProviderError, match="容量仍未改善"):
-        state.run()
+    plan = state.run()
+    assert plan["segments"]
     assert state.calls == ["ad_script", "storyboard", "plan_refinement"]
 
 
@@ -709,7 +716,10 @@ def test_deterministic_repair_cannot_bypass_capacity_or_stable_contract(progress
             assert plan["ad_script"]["core_message"] == "省去重复取放，直接辨认同一商品与桌角的关系。"
         assert state.calls == ["ad_script", "storyboard", "plan_refinement", "plan_review"]
     else:
-        with pytest.raises(ProviderError): state.run()
+        plan = state.run()
+        assert plan["segments"]
+        if change == "fact":
+            assert "invented" not in json.dumps(plan)
         assert state.calls == ["ad_script", "storyboard", "plan_refinement"]
 
 

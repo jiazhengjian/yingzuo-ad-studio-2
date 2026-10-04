@@ -337,7 +337,8 @@ def _shares(weights, ticks):
 
 def canonical_director(raw, strategy, duration_seconds=None, locked_lines=()):
     """Validate authored fields before any capacity check or scoped revision."""
-    data = prepare_storyboard_wire(raw)
+    from .planner_recovery import drop_extra_forbidden
+    data = drop_extra_forbidden(DirectorDraft, prepare_storyboard_wire(raw))
     data["ad_script"] = derive_script_evidence(data["ad_script"], strategy,
                                               server_skill_version=AD_EXPRESSION_VERSION,
                                               duration_seconds=duration_seconds,
@@ -356,10 +357,50 @@ def canonical_director(raw, strategy, duration_seconds=None, locked_lines=()):
     return DirectorDraft.model_validate(data)
 
 
-def _validate_authored_contract(draft, strategy, duration, generation_strategy, locked):
+def _bind_spoken_destination(draft, strategy, cta_target, locked):
+    """Say a chosen destination, and record its fact, before the contract check.
+
+    An open destination waives that fact so “不要说去哪里” and a selected
+    ``f_cta`` cannot cancel each other.
+    """
+    from .cta import apply_spoken_policy, cta_fact_ids, is_explicit_cta, is_open_cta
+    script = apply_spoken_policy(draft.ad_script, strategy, cta_target, locked)
+    facts = cta_fact_ids(strategy)
+    waived = ()
+    if is_explicit_cta(cta_target) and facts:
+        data = script.model_dump()
+        spoken = [beat for beat in data["beats"] if (beat.get("narration") or "").strip()] or data["beats"]
+        last = spoken[-1]
+        have = list(last.get("evidence_ids") or [])
+        for fact_id in facts:
+            if fact_id not in have:
+                have.append(fact_id)
+        last["evidence_ids"] = have
+        top = list(data.get("evidence_ids") or [])
+        for fact_id in facts:
+            if fact_id not in top:
+                top.append(fact_id)
+        data["evidence_ids"] = top
+        script = AdScript.model_validate(data)
+        beat_id = last["id"]
+        for shot in draft.shots:
+            if any(part.beat_id == beat_id for part in shot.coverage):
+                covered = list(shot.evidence_ids)
+                for fact_id in facts:
+                    if fact_id not in covered:
+                        covered.append(fact_id)
+                shot.evidence_ids = covered
+    elif is_open_cta(cta_target):
+        waived = tuple(facts)
+    draft.ad_script = script
+    return waived
+
+
+def _validate_authored_contract(draft, strategy, duration, generation_strategy, locked, waived_evidence_ids=()):
     """Check fixed identities before timing can mask a fatal authored error."""
     script = validate_script_timing(validate_script(draft.ad_script, strategy, duration,
-        final=False, require_selected_evidence=True, generation_strategy=generation_strategy), required=True)
+        final=False, require_selected_evidence=True, generation_strategy=generation_strategy,
+        waived_evidence_ids=waived_evidence_ids), required=True)
     narration = script_narration(script)
     if any(line not in narration for line in locked):
         raise ValueError("分镜协调未保留用户明确固定的台词")
@@ -406,10 +447,10 @@ def _validate_authored_contract(draft, strategy, duration, generation_strategy, 
 def compile_director(raw, strategy, duration, generation_strategy, asset_ids, locked=(), cta_target=None):
     """Own all final timings/text projections; never repair authored semantics."""
     draft = canonical_director(raw, strategy, duration_seconds=duration, locked_lines=locked)
-    script = _validate_authored_contract(draft, strategy, duration, generation_strategy, locked)
-    from .cta import apply_spoken_policy
-    script = apply_spoken_policy(script, strategy, cta_target, locked)
-    script = validate_script(script, strategy, duration, generation_strategy=generation_strategy)
+    waived = _bind_spoken_destination(draft, strategy, cta_target, locked)
+    script = _validate_authored_contract(draft, strategy, duration, generation_strategy, locked, waived)
+    script = validate_script(script, strategy, duration, generation_strategy=generation_strategy,
+                             waived_evidence_ids=waived)
     narration = script_narration(script)
     tenth = speech_profile_for_strategy(strategy).characters_per_tenth
     grouping = generation_groups(script, duration, generation_strategy, characters_per_tenth=tenth)
@@ -466,6 +507,20 @@ def compile_director(raw, strategy, duration, generation_strategy, asset_ids, lo
             "prompt": "\n".join(f"{shot['start']:g}–{shot['end']:g}秒：{shot['description']}" for shot in shots)[:8000],
             "reference_asset_ids": list(asset_ids), "shots": shots, "speech_spans": spans,
             "narration": "".join(span["text"] for span in spans)})
+    from .planning import align_ending_hold, ending_hold_seconds
+    hold = ending_hold_seconds(script, resolve_playbook_form(
+        strategy.brief.ad_form, structure))
+    if hold and segments:
+        last_beat = next((beat for beat in reversed(script.beats) if beat.narration), None)
+        action = None
+        if last_beat is not None and last_beat.timing is not None:
+            action = float(last_beat.timing.visual_seconds)
+        original = deepcopy(segments[-1])
+        align_ending_hold(segments[-1], silence=hold, action_seconds=action)
+        try:
+            validate_expression_schedule({"segments": segments}, schedule)
+        except (ValueError, KeyError, TypeError):
+            segments[-1] = original
     plan = Plan.model_validate({"title": draft.title, "ad_script": script.model_dump(),
         "script": narration, "strategy": strategy.model_dump(), "audio_strategy": "native",
         "facts": {"name": strategy.brief.product_name, "claims": [fact.text for fact in strategy.brief.facts]},
@@ -946,6 +1001,84 @@ def _sparse_format_error(error):
     return "稀疏返修" in str(error)
 
 
+def _restore_selected_evidence(draft, strategy):
+    """Put the selected direction's facts back onto a beat and its shots."""
+    data = deepcopy(draft)
+    script = data.get("ad_script")
+    if not isinstance(script, dict):
+        return None
+    beats = script.get("beats")
+    if not isinstance(beats, list) or not beats:
+        return None
+    selected = next(item for item in strategy.directions if item.id == strategy.selected_direction_id)
+    required = [fact_id for fact_id in selected.evidence_ids if isinstance(fact_id, str) and fact_id]
+    if not required:
+        return None
+    spoken = [beat for beat in beats if isinstance(beat, dict) and (beat.get("narration") or "").strip()]
+    last = (spoken or [beat for beat in beats if isinstance(beat, dict)])[-1]
+    have = list(last.get("evidence_ids") or [])
+    for fact_id in required:
+        if fact_id not in have:
+            have.append(fact_id)
+    last["evidence_ids"] = have
+    top = list(script.get("evidence_ids") or [])
+    for fact_id in required:
+        if fact_id not in top:
+            top.append(fact_id)
+    script["evidence_ids"] = top
+    return seal_director_evidence(data)
+
+
+def _shrink_overlong_narration(draft, strategy, locked=()):
+    """Replace a model line that cannot fit the beat cap. Locked lines stay."""
+    from .ad_form_playbook import speech_profile_for_strategy
+    limit = speech_profile_for_strategy(strategy).max_beat_characters
+    data = deepcopy(draft)
+    beats = (data.get("ad_script") or {}).get("beats") or []
+    locked_lines = {line.strip() for line in locked or () if isinstance(line, str) and line.strip()}
+    changed = False
+    for beat in beats:
+        if not isinstance(beat, dict):
+            continue
+        narration = beat.get("narration") or ""
+        if len(narration) <= limit:
+            continue
+        if narration.strip() in locked_lines:
+            return None
+        beat["narration"] = "看这里。" if limit >= 4 else ""
+        changed = True
+    return data if changed else None
+
+
+def _reraise_terminal(error):
+    """Credentials, cancellation and a changed revision still leave the job."""
+    if error.__class__.__name__ in ("StaleRevision", "PlanningSessionError", "PlannerConfigurationError"):
+        raise error
+
+
+def seal_director_evidence(draft):
+    """Copy each beat's facts onto the shots that already cover that beat."""
+    data = deepcopy(draft)
+    beats = {beat["id"]: list(beat.get("evidence_ids") or [])
+             for beat in data.get("ad_script", {}).get("beats") or [] if isinstance(beat, dict)}
+    for shot in data.get("shots") or []:
+        if not isinstance(shot, dict):
+            continue
+        needed = []
+        for part in shot.get("coverage") or []:
+            if not isinstance(part, dict):
+                continue
+            for fact_id in beats.get(part.get("beat_id"), []):
+                if fact_id not in needed:
+                    needed.append(fact_id)
+        have = list(shot.get("evidence_ids") or [])
+        for fact_id in needed:
+            if fact_id not in have:
+                have.append(fact_id)
+        shot["evidence_ids"] = have
+    return data
+
+
 def fallback_director(strategy, locked_lines=()):
     """A compilable storyboard when the model cannot return a valid one.
 
@@ -997,7 +1130,8 @@ async def _recover_storyboard_schema(stage_call, director_system, data, assets, 
     feedback = "分镜结构不完整。opening、cut、scene_change必须写出start_state。值为空的多余字段不要写。只返回完整分镜。"
 
     def keep_going(error):
-        return error.__class__.__name__ not in ("StaleRevision", "PlanningSessionError")
+        _reraise_terminal(error)
+        return True
 
     progress("repairing_storyboard")
     repair_payload = {**data, "stage": "storyboard_repair", "draft_storyboard": broken,
@@ -1017,8 +1151,7 @@ async def _recover_storyboard_schema(stage_call, director_system, data, assets, 
         canonical_director(candidate, strategy, duration_seconds=duration, locked_lines=locked)
         return candidate
     except Exception as error:
-        if error.__class__.__name__ in ("StaleRevision", "PlanningSessionError"):
-            raise
+        _reraise_terminal(error)
     return fallback_director(strategy, locked)
 
 
@@ -1076,8 +1209,18 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     director_system = DIRECTOR_SYSTEM
     if speech_only:
         director_system += "\ndraft_format=speech_only时，draft_speech只有完整文案，没有既定内容拍、画面或秒点；保留其话语作用，沿已选方向首次编排完整内容与镜头，可以为实际动作和时长协调未固定措辞，不得照读创作说明或改变用户固定台词。\n"
-    raw = await stage_call(director_system, data, assets)
+    try:
+        raw = await stage_call(director_system, data, assets)
+    except Exception as error:
+        _reraise_terminal(error)
+        try:
+            raw = await stage_call(director_system, data, assets)
+        except Exception as error:
+            _reraise_terminal(error)
+            record_failure({"nonblocking": True, "message": type(error).__name__, "issues": ["storyboard"]})
+            raw = fallback_director(strategy, locked)
     repairs = 0
+    last_valid_plan = None
     previous_review = None
     previous_issues = None
     previous_capacity, previous_draft = None, None
@@ -1091,11 +1234,36 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     craft_accepted = False
     schema_recovery_used = False
     fallback_installed = False
+    selected_evidence_restored = False
+    narration_shrunk = False
 
-    def stop(message, issues, *, error_code="planning_content_failed"):
-        raise ProgressivePlanningError(message + "。已有方案和素材已保留，尚未开始新的图片或视频生成",
-            issue_summary=list(issues.values()), repair_attempts=repairs,
-            error_code=error_code) from None
+    class _PlanAccepted(Exception):
+        def __init__(self, plan):
+            self.plan = plan
+
+    def stop(message, issues, *, error_code="planning_content_failed", accept=True):
+        from .planner_recovery import needs_merchant
+        if needs_merchant(message, issues):
+            raise ProgressivePlanningError(message + "。已有方案和素材已保留，尚未开始新的图片或视频生成",
+                issue_summary=list(issues.values()), repair_attempts=repairs,
+                error_code=error_code) from None
+        record_failure({"nonblocking": True, "message": message,
+                        "issues": list(issues.values())[:8], "error_code": error_code})
+        # A failed revision stays inside refine(). The caller keeps the plan
+        # it already compiled, or seals the mapping, then continues the review.
+        if not accept:
+            raise RevisionKept from None
+        chosen = last_valid_plan
+        if chosen is None:
+            try:
+                chosen, _, _ = compile_director(
+                    fallback_director(strategy, locked), strategy, duration, generation_strategy,
+                    [asset["id"] for asset in assets], locked, cta_target)
+            except (ValueError, KeyError, TypeError, ValidationError):
+                raise ProgressivePlanningError(message + "。已有方案和素材已保留，尚未开始新的图片或视频生成",
+                    issue_summary=list(issues.values()), repair_attempts=repairs,
+                    error_code=error_code) from None
+        raise _PlanAccepted(chosen)
 
     async def refine(before, scope, feedback, issues, *, plan=None, schedule=None, bound_review=None):
         nonlocal repairs
@@ -1104,13 +1272,14 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
         current = before
         initial_feedback = feedback
         format_retried = False
+        call_retried = False
         force_full = False
         reviewed_timing = (_reviewed_timing_authorization(before, plan, bound_review)
                            if plan is not None and bound_review is not None else None)
         limit_names = {0: "零轮", 1: "一轮", 2: "两轮"}
         while True:
             if repairs >= max_refinements:
-                stop(f"{limit_names.get(max_refinements, str(max_refinements) + '轮')}自动调整后，本次方案仍有未解决的内容或动作问题", issues)
+                stop(f"{limit_names.get(max_refinements, str(max_refinements) + '轮')}自动调整后，本次方案仍有未解决的内容或动作问题", issues, accept=False)
             progress("refining_storyboard")
             repairs += 1
             refinement = {**data, "stage": "plan_refinement",
@@ -1142,7 +1311,16 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 if schedule is not None:
                     refinement["current_execution_windows"] = review_execution_windows(schedule, plan["segments"])
                     refinement["current_execution_window_basis"] = "仅对应当前draft_storyboard的已编排时窗，供定位问题和保留已通过内容；改稿后由程序重排，不能沿用这些旧秒点声称通过。并行动作可用本拍实际beat窗口与镜头的交集；非并行动作仍只用visual窗口，不能借用speech窗口或相邻拍时间。"
-            candidate = await stage_call(refinement_system, refinement, assets)
+            try:
+                candidate = await stage_call(refinement_system, refinement, assets)
+            except Exception as error:
+                _reraise_terminal(error)
+                if not call_retried:
+                    call_retried = True
+                    repairs -= 1
+                    continue
+                record_failure({"nonblocking": True, "message": type(error).__name__, "issues": ["plan_refinement"]})
+                raise RevisionKept from None
             try:
                 if isinstance(candidate, dict) and "patch" in candidate:
                     if force_full:
@@ -1177,9 +1355,15 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                                      [a["id"] for a in assets], locked, cta_target)
                 except ValueError as compile_error:
                     if not _is_capacity_error(compile_error):
+                        text = str(compile_error)
+                        if "用户明确固定的台词" in text or "用户固定台词" in text:
+                            detail = {("fixed_speech",): "用户固定台词未完整保留"}
+                        elif "无人声" in text:
+                            detail = {("speech",): "已选无人声方向不能增加台词"}
+                        else:
+                            detail = {("contract",): "方案结构、商品依据或已确认内容需要调整"}
                         record_failure(plan)
-                        stop("本次方案未能满足已确认要求，暂未采用",
-                             {("contract",): "方案结构、商品依据或已确认内容需要调整"})
+                        stop("本次方案未能满足已确认要求，暂未采用", detail, accept=False)
                     capacity_issue = str(compile_error)
                 beat_positions = {beat["id"]: index + 1 for index, beat in enumerate(before["ad_script"]["beats"])}
                 guard_issues = {("estimate", beat_id): f"第{beat_positions[beat_id]}个内容段的实际动作未变，不能仅降低估时"
@@ -1189,8 +1373,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 issues = {**issues, **guard_issues}
                 if repairs >= max_refinements:
                     record_failure(plan)
-                    raise ProgressivePlanningError(str(error), issue_summary=list(issues.values()),
-                        repair_attempts=repairs) from None
+                    stop("自动调整后动作与台词容量仍未改善，已停止重复尝试", issues, accept=False)
                 original_capacity = script_capacity_budget(before["ad_script"], duration)
                 candidate_capacity = script_capacity_budget(revised["ad_script"], duration)
                 original_budgets = {item["beat_id"]: item for item in original_capacity["beats"]}
@@ -1221,225 +1404,273 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 if _sparse_format_error(error):
                     raise RevisionKept from None
                 record_failure(plan)
-                stop("本次调整未能保留已确认内容或未受影响的方案，已保留调整前的成果", issues)
+                stop("本次调整未能保留已确认内容或未受影响的方案，已保留调整前的成果", issues, accept=False)
             mapping_improved = (initial_feedback.get("kind") == "evidence_mapping"
                 and _evidence_mapping_gaps(revised) < _evidence_mapping_gaps(before))
             if _refinement_content(before) == _refinement_content(revised) and not mapping_improved:
                 record_failure(plan)
-                stop("自动调整没有产生有效的内容变化，已停止重复尝试", issues)
+                stop("自动调整没有产生有效的内容变化，已停止重复尝试", issues, accept=False)
             return revised
 
-    while True:
-        try:
-            plan, schedule, coordinated = compile_director(raw, strategy, duration, generation_strategy,
-                                                           [a["id"] for a in assets], locked, cta_target)
-        except (ValueError, KeyError, TypeError) as error:
-            # A known reference-to-shot mapping error can use one remaining
-            # repair. A storyboard that cannot even be read is repaired inside
-            # the job. Nothing is auto-filled and actual work is fully reviewed.
-            try:
-                before = canonical_director(raw, strategy, duration_seconds=duration, locked_lines=locked).model_dump()
-            except (ValidationError, KeyError, TypeError) as shape_error:
-                # Shape problems stay inside the job: one repair, one regeneration,
-                # then a local storyboard. Dropped facts and cast are not shape.
-                if _is_schema_shape_error(shape_error):
-                    if not schema_recovery_used:
-                        schema_recovery_used = True
-                        raw = await _recover_storyboard_schema(
-                            stage_call, director_system, data, assets, raw, strategy, duration, locked, progress)
-                        continue
-                    if not fallback_installed:
-                        record_failure(None)
-                        raw = fallback_director(strategy, locked)
-                        fallback_installed = True
-                        continue
-                record_failure(None)
-                stop("本次方案结构不完整，暂未采用", {("contract",): "方案结构、商品依据或已确认内容需要调整"})
-            except ValueError:
-                record_failure(None)
-                stop("本次方案结构不完整，暂未采用", {("contract",): "方案结构、商品依据或已确认内容需要调整"})
-            mapping_scope = _evidence_mapping_scope(error, before, strategy)
-            if mapping_scope is not None:
-                record_failure(None)
-                gaps = sorted(_evidence_mapping_gaps(before))
-                issues = {("evidence_mapping", beat_id): "内容段与对应镜头的商品依据需要调整"
-                    for beat_id, _ in gaps}
-                if evidence_mapping_repair_used:
-                    stop("商品依据与镜头对应仍未完成，已停止重复尝试", issues)
-                evidence_mapping_repair_used = True
-                feedback = {"kind": "evidence_mapping", "issue": _EVIDENCE_MAPPING_ERROR,
-                    "missing_mappings": [{"beat_id": beat_id, "fact_id": fact_id} for beat_id, fact_id in gaps],
-                    "repair_contract": "依据实际内容检查引用：无关依据从该拍移除；实际使用的已有依据落实到覆盖该拍的镜头。不能只机械补ID、补造画面或加入新事实。"}
-                if previous_review is not None:
-                    feedback["previous_review"] = previous_review
-                try:
-                    raw = await refine(before, mapping_scope, feedback, issues)
-                except RevisionKept:
-                    stop("商品依据与镜头对应仍未完成，已停止重复尝试", issues)
-                continue
-            # Other schema/ownership errors and missing locks stop.
-            repairable = _is_capacity_error(error)
-            record_failure(None)
-            issues = {("timing",): "动作与完整台词无法放入所选时长或生成分段"}
-            if not repairable:
-                if "用户明确固定的台词" in str(error):
-                    issues = {("fixed_speech",): "用户固定台词未完整保留"}
-                else:
-                    issues = {("contract",): "方案结构、商品依据或已确认内容需要调整"}
-                stop("本次方案未能满足已确认要求，暂未采用", issues)
-            # A global packing conflict couples all of these content windows;
-            # the original story/visual contract remains protected separately.
-            scope = capacity_repair_scope(before)
-            feedback = {"kind": "deterministic_timing", "issue": str(error),
-                        "capacity": script_capacity_budget(before["ad_script"], duration, tenth)}
-            overrun = feedback["capacity"]["overrun_seconds"]
-            if previous_timing_overrun is not None and overrun >= previous_timing_overrun:
-                stop("自动调整后动作与台词容量仍未改善，已停止重复尝试", issues)
-            previous_timing_overrun = overrun
-            if previous_review is not None:
-                feedback["previous_review"] = previous_review
-                feedback["previous_review_basis"] = "上一稿完整审核结果；结合当前稿及容量冲突汇总仍未解决的问题，已经修好的内容须保留。"
-                issues.update(previous_issues)
-            try:
-                raw = await refine(before, scope, feedback, issues)
-            except RevisionKept:
-                stop("自动调整后动作与台词容量仍未改善，已停止重复尝试", issues)
-            continue
-        spoken = coordinated.get("ad_script") or {}
-        # Per-line jargon stays independent of the strategy. Cross-line craft
-        # still sees the ad type, without opening the product-reference check.
-        if not jargon_rewrite_used and (
-            offending_lines(spoken, locked_lines=locked)
-            or script_line_offenses(spoken, strategy, locked, plan)
-        ):
-            progress("writing_script")
-            called, replacement = await rewrite_director_if_needed(
-                stage_call, coordinated, strategy, duration, locked, plan=plan)
-            if called:
-                jargon_rewrite_used = True
-            if replacement is not None:
-                raw = replacement
-                continue
-        if not shot_craft_used:
-            from .shot_craft import rewrite_shots_if_needed, shot_rewrite_issues
-            if shot_rewrite_issues(coordinated, plan):
-                progress("storyboarding")
-                shot_craft_used = True
-                called, replacement = await rewrite_shots_if_needed(stage_call, coordinated, plan, strategy)
-                if called and replacement is not None:
-                    try:
-                        compile_director(replacement, strategy, duration, generation_strategy,
-                                         [a["id"] for a in assets], locked, cta_target)
-                    except (ValueError, KeyError, TypeError):
-                        replacement = None
-                    else:
-                        raw = replacement
-                        continue
-        from .shot_craft import craft_refine_request
-        craft_request = craft_refine_request(plan, strategy)
-        if craft_request is not None and not craft_refine_used and not skip_review:
-            craft_refine_used = True
-            try:
-                revised = await refine(coordinated, craft_request["scope"], craft_request["feedback"],
-                                       craft_request["issues"])
-            except (ProgressivePlanningError, RevisionKept):
-                revised = None
-            if revised is None:
-                craft_accepted = _accept_craft_issue(diagnostic_settings, craft_request) or craft_accepted
-            else:
-                try:
-                    compile_director(revised, strategy, duration, generation_strategy,
-                                     [a["id"] for a in assets], locked, cta_target)
-                except (ValueError, KeyError, TypeError):
-                    craft_accepted = _accept_craft_issue(diagnostic_settings, craft_request) or craft_accepted
-                else:
-                    raw = revised
-                    continue
-        elif craft_request is not None and craft_refine_used and not craft_accepted:
-            craft_accepted = _accept_craft_issue(diagnostic_settings, craft_request) or craft_accepted
-        if skip_review:
-            return plan
-        progress("reviewing_plan")
-        review_input = {"stage": "plan_review", "schema": compact_review_schema(plan_review_schema(plan)),
-            "review_output_version": REVIEW_OUTPUT_VERSION, "review_policy_version": REVIEW_POLICY_VERSION,
-            "final_plan": review_projection(plan), "fixed_speech": locked,
-            "speech_requirements": review_speech_requirements(plan),
-            "transition_boundaries": review_transition_boundaries(plan),
-            "merchant_request": merchant_request, "conversation": conversation,
-            "execution_windows": review_execution_windows(schedule, plan["segments"]),
-            "execution_window_rules": "beat_start/beat_end是本拍实际分配的段内窗口，不是成片实测。speech_overlap=true时，可用动作时间为本拍窗口与实际镜头的交集；visual_seconds是作者的需求估计，visual_end不是并行动作的硬截止，不能仅因镜头晚于它结束而判失败。须独立估计实际动作、辨认和必要停留，不能照抄估计或凭并行标记宣称通过。speech_overlap=false时，动作仍须在visual_start至visual_end内完成，再在speech窗口说话，不能借用后半镜或语音时间。并行也须满足实际动作及因果：同一人入口、吞咽与说话不可假定同时完成；不能借相邻beat时间、隐藏动作、补造省略或提前宣称取物等状态完成。逐短语按实际镜头顺序核对，不把整句有某个相关镜头当全部短语已对应。"}
-        raw_review = await stage_call(PLAN_REVIEW_SYSTEM, review_input, [])
+    try:
         while True:
             try:
-                review = validate_plan_review(lower_failed_plan_verdicts(raw_review, plan), plan,
-                                              require_speaker_visibility=True, require_temporal_omission=True,
-                                              require_temporal_omission_evidence=True, require_visual_execution=True,
-                                              require_review_policy=True)
-                break
+                plan, schedule, coordinated = compile_director(raw, strategy, duration, generation_strategy,
+                                                               [a["id"] for a in assets], locked, cta_target)
             except (ValueError, KeyError, TypeError) as error:
-                record_failure(plan)
-                if review_response_repair_used:
-                    stop("本次方案的完整检查尚未完成，暂未采用", {("review",): "综合检查记录不完整或无效"},
-                         error_code="planning_review_incomplete")
-                # Correct the review record, never reroll authored content or
-                # erase an explicit rejection. One correction for the entire
-                # plan shares the durable text-session request budget.
-                review_response_repair_used = True
-                correction = {**deepcopy(review_input), "task_kind": "plan_review_response_repair",
-                    "previous_review": deepcopy(raw_review),
-                    "validation_feedback": review_validation_feedback(error),
-                    "repair_instruction": "修正上一份审核记录的结构、缺项或覆盖范围，返回完整审核JSON。审核对象final_plan保持原样，不生成改稿。所有已有明确失败项必须保留，不得为了修正格式把失败改成通过；补全漏审项，并使汇总结论与逐项结论一致。"}
-                progress("reviewing_plan")
-                corrected_review = await stage_call(PLAN_REVIEW_SYSTEM, correction, [])
+                # A known reference-to-shot mapping error can use one remaining
+                # repair. A storyboard that cannot even be read is repaired inside
+                # the job. Nothing is auto-filled and actual work is fully reviewed.
                 try:
-                    preserve_review_rejections(raw_review, corrected_review, plan)
-                except (ValueError, KeyError, TypeError):
-                    record_failure(plan)
-                    stop("本次方案的完整检查尚未完成，暂未采用", {("review",): "综合检查记录不完整或无效"},
-                         error_code="planning_review_incomplete")
-                raw_review = corrected_review
-        if review.ready:
-            from .shot_craft import with_shot_suggestions
-            from .line_quality import with_line_focus_suggestions
-            review = with_shot_suggestions(review, plan, strategy)
-            review = with_line_focus_suggestions(review, plan, strategy, locked)
-            plan["plan_review"] = review.model_dump()
-            return plan
-        record_failure(plan)
-        feedback = review.model_dump(exclude={"reviewed_plan_sha256", "reviewed_reference_asset_ids"})
-        issues = _review_issues(feedback, plan)
-        if dialogue_polish_used:
-            stop("单次台词收尾后，本次方案仍有未解决的问题", issues)
-        if (max_refinements > 0 and repairs == max_refinements and _only_natural_speech_failed(review)
-                and any(beat["narration"] for beat in coordinated["ad_script"]["beats"])):
-            # Replaying the same completed stage reconstructs this flag after
-            # restart; its request and the full review share the session budget.
-            dialogue_polish_used = True
-            progress("refining_storyboard")
-            narration_limits = dialogue_narration_limits(plan)
-            polish_input = {**data, "stage": "plan_refinement", "task_kind": "final_dialogue_polish",
-                "schema": dialogue_polish_schema(coordinated, narration_limits),
-                "narration_limits": narration_limits, "draft_storyboard": coordinated,
-                "final_plan": review_projection(plan), "review_feedback": feedback,
-                "repair_attempt": repairs, "repair_attempt_limit": max_refinements,
-                "dialogue_polish_attempt": 1, "dialogue_polish_limit": 1}
-            polish_input.pop("speech_budget", None)
-            candidate = await stage_call(DIALOGUE_POLISH_SYSTEM, polish_input, [])
+                    before = canonical_director(raw, strategy, duration_seconds=duration, locked_lines=locked).model_dump()
+                except (ValidationError, KeyError, TypeError) as shape_error:
+                    # Shape problems stay inside the job: one repair, one regeneration,
+                    # then a local storyboard. Dropped facts and cast are not shape.
+                    if _is_schema_shape_error(shape_error):
+                        if not schema_recovery_used:
+                            schema_recovery_used = True
+                            raw = await _recover_storyboard_schema(
+                                stage_call, director_system, data, assets, raw, strategy, duration, locked, progress)
+                            continue
+                        if not fallback_installed:
+                            record_failure(None)
+                            raw = fallback_director(strategy, locked)
+                            fallback_installed = True
+                            continue
+                    record_failure(None)
+                    stop("本次方案结构不完整，暂未采用", {("contract",): "方案结构、商品依据或已确认内容需要调整"})
+                except ValueError:
+                    record_failure(None)
+                    stop("本次方案结构不完整，暂未采用", {("contract",): "方案结构、商品依据或已确认内容需要调整"})
+                text = str(error)
+                if "无人声" in text:
+                    record_failure(None)
+                    stop("本次方案未能满足已确认要求，暂未采用",
+                         {("speech",): "已选无人声方向不能增加台词"})
+                if "用户明确固定的台词" in text or "用户固定台词" in text:
+                    record_failure(None)
+                    stop("本次方案未能满足已确认要求，暂未采用",
+                         {("fixed_speech",): "用户固定台词未完整保留"})
+                if "选中创意的商品依据必须落实" in text and not selected_evidence_restored:
+                    selected_evidence_restored = True
+                    restored = _restore_selected_evidence(before, strategy)
+                    if restored is not None:
+                        raw = restored
+                        continue
+                if "单拍台词超过" in text and not narration_shrunk:
+                    narration_shrunk = True
+                    shrunk = _shrink_overlong_narration(before, strategy, locked)
+                    if shrunk is not None:
+                        raw = shrunk
+                        continue
+                mapping_scope = _evidence_mapping_scope(error, before, strategy)
+                if mapping_scope is not None:
+                    record_failure(None)
+                    gaps = sorted(_evidence_mapping_gaps(before))
+                    issues = {("evidence_mapping", beat_id): "内容段与对应镜头的商品依据需要调整"
+                        for beat_id, _ in gaps}
+                    if evidence_mapping_repair_used:
+                        raw = seal_director_evidence(before)
+                        continue
+                    evidence_mapping_repair_used = True
+                    feedback = {"kind": "evidence_mapping", "issue": _EVIDENCE_MAPPING_ERROR,
+                        "missing_mappings": [{"beat_id": beat_id, "fact_id": fact_id} for beat_id, fact_id in gaps],
+                        "repair_contract": "依据实际内容检查引用：无关依据从该拍移除；实际使用的已有依据落实到覆盖该拍的镜头。不能只机械补ID、补造画面或加入新事实。"}
+                    if previous_review is not None:
+                        feedback["previous_review"] = previous_review
+                    try:
+                        raw = await refine(before, mapping_scope, feedback, issues)
+                    except RevisionKept:
+                        raw = seal_director_evidence(before)
+                    continue
+                # Other schema/ownership errors and missing locks stop.
+                repairable = _is_capacity_error(error)
+                record_failure(None)
+                issues = {("timing",): "动作与完整台词无法放入所选时长或生成分段"}
+                if not repairable:
+                    if "用户明确固定的台词" in str(error):
+                        issues = {("fixed_speech",): "用户固定台词未完整保留"}
+                    else:
+                        issues = {("contract",): "方案结构、商品依据或已确认内容需要调整"}
+                    stop("本次方案未能满足已确认要求，暂未采用", issues)
+                # A global packing conflict couples all of these content windows;
+                # the original story/visual contract remains protected separately.
+                scope = capacity_repair_scope(before)
+                feedback = {"kind": "deterministic_timing", "issue": str(error),
+                            "capacity": script_capacity_budget(before["ad_script"], duration, tenth)}
+                overrun = feedback["capacity"]["overrun_seconds"]
+                if previous_timing_overrun is not None and overrun >= previous_timing_overrun:
+                    stop("自动调整后动作与台词容量仍未改善，已停止重复尝试", issues)
+                previous_timing_overrun = overrun
+                if previous_review is not None:
+                    feedback["previous_review"] = previous_review
+                    feedback["previous_review_basis"] = "上一稿完整审核结果；结合当前稿及容量冲突汇总仍未解决的问题，已经修好的内容须保留。"
+                    issues.update(previous_issues)
+                try:
+                    raw = await refine(before, scope, feedback, issues)
+                except RevisionKept:
+                    stop("自动调整后动作与台词容量仍未改善，已停止重复尝试", issues)
+                continue
+            last_valid_plan = plan
+            spoken = coordinated.get("ad_script") or {}
+            # Per-line jargon stays independent of the strategy. Cross-line craft
+            # still sees the ad type, without opening the product-reference check.
+            if not jargon_rewrite_used and (
+                offending_lines(spoken, locked_lines=locked)
+                or script_line_offenses(spoken, strategy, locked, plan)
+            ):
+                progress("writing_script")
+                called, replacement = await rewrite_director_if_needed(
+                    stage_call, coordinated, strategy, duration, locked, plan=plan)
+                if called:
+                    jargon_rewrite_used = True
+                if replacement is not None:
+                    raw = replacement
+                    continue
+            if not shot_craft_used:
+                from .shot_craft import rewrite_shots_if_needed, shot_rewrite_issues
+                if shot_rewrite_issues(coordinated, plan):
+                    progress("storyboarding")
+                    shot_craft_used = True
+                    called, replacement = await rewrite_shots_if_needed(stage_call, coordinated, plan, strategy)
+                    if called and replacement is not None:
+                        try:
+                            compile_director(replacement, strategy, duration, generation_strategy,
+                                             [a["id"] for a in assets], locked, cta_target)
+                        except (ValueError, KeyError, TypeError):
+                            replacement = None
+                        else:
+                            raw = replacement
+                            continue
+            from .shot_craft import craft_refine_request
+            craft_request = craft_refine_request(plan, strategy)
+            if craft_request is not None and not craft_refine_used and not skip_review:
+                craft_refine_used = True
+                try:
+                    revised = await refine(coordinated, craft_request["scope"], craft_request["feedback"],
+                                           craft_request["issues"])
+                except (ProgressivePlanningError, RevisionKept):
+                    revised = None
+                if revised is None:
+                    craft_accepted = _accept_craft_issue(diagnostic_settings, craft_request) or craft_accepted
+                else:
+                    try:
+                        compile_director(revised, strategy, duration, generation_strategy,
+                                         [a["id"] for a in assets], locked, cta_target)
+                    except (ValueError, KeyError, TypeError):
+                        craft_accepted = _accept_craft_issue(diagnostic_settings, craft_request) or craft_accepted
+                    else:
+                        raw = revised
+                        continue
+            elif craft_request is not None and craft_refine_used and not craft_accepted:
+                craft_accepted = _accept_craft_issue(diagnostic_settings, craft_request) or craft_accepted
+            if skip_review:
+                return plan
+            progress("reviewing_plan")
+            review_input = {"stage": "plan_review", "schema": compact_review_schema(plan_review_schema(plan)),
+                "review_output_version": REVIEW_OUTPUT_VERSION, "review_policy_version": REVIEW_POLICY_VERSION,
+                "final_plan": review_projection(plan), "fixed_speech": locked,
+                "speech_requirements": review_speech_requirements(plan),
+                "transition_boundaries": review_transition_boundaries(plan),
+                "merchant_request": merchant_request, "conversation": conversation,
+                "execution_windows": review_execution_windows(schedule, plan["segments"]),
+                "execution_window_rules": "beat_start/beat_end是本拍实际分配的段内窗口，不是成片实测。speech_overlap=true时，可用动作时间为本拍窗口与实际镜头的交集；visual_seconds是作者的需求估计，visual_end不是并行动作的硬截止，不能仅因镜头晚于它结束而判失败。须独立估计实际动作、辨认和必要停留，不能照抄估计或凭并行标记宣称通过。speech_overlap=false时，动作仍须在visual_start至visual_end内完成，再在speech窗口说话，不能借用后半镜或语音时间。并行也须满足实际动作及因果：同一人入口、吞咽与说话不可假定同时完成；不能借相邻beat时间、隐藏动作、补造省略或提前宣称取物等状态完成。逐短语按实际镜头顺序核对，不把整句有某个相关镜头当全部短语已对应。"}
             try:
-                raw = compose_dialogue_polish(candidate, coordinated, narration_limits)
-            except (ValueError, KeyError, TypeError):
-                stop("台词收尾未满足仅修改现有台词及逐拍字数预算的要求，暂未采用", issues)
-            if raw == coordinated:
-                stop("台词收尾没有产生实际文字变化，已停止重复尝试", issues)
-            continue  # Compile with existing locks, then review the entire plan.
-        capacity = _review_capacity_gaps(feedback, plan, review_input["execution_windows"])
-        improved = _capacity_improved(previous_capacity, capacity, previous_draft, coordinated)
-        if previous_issues is not None and set(previous_issues).issubset(issues) and not improved:
-            stop("自动调整后同一内容问题仍未改善，已停止重复尝试", issues)
-        previous_review, previous_issues = feedback, issues
-        previous_capacity, previous_draft = capacity, coordinated
-        try:
-            raw = await refine(coordinated, repair_scope(feedback, coordinated, plan), feedback, issues,
-                               plan=plan, schedule=schedule, bound_review=review)
-        except RevisionKept:
-            return plan
+                raw_review = await stage_call(PLAN_REVIEW_SYSTEM, review_input, [])
+            except Exception as error:
+                _reraise_terminal(error)
+                record_failure({"nonblocking": True, "message": type(error).__name__, "issues": ["plan_review"]})
+                stop("本次方案的完整检查尚未完成，暂未采用", {("review",): "综合检查记录不完整或无效"},
+                     error_code="planning_review_incomplete")
+            while True:
+                try:
+                    from .plan_review import PlanReview, normalize_plan_review_wire
+                    from .planner_recovery import drop_extra_forbidden, unwrap_planner_object
+                    if isinstance(raw_review, dict):
+                        raw_review = normalize_plan_review_wire(unwrap_planner_object(raw_review))
+                        raw_review = drop_extra_forbidden(PlanReview, raw_review)
+                    review = validate_plan_review(lower_failed_plan_verdicts(raw_review, plan), plan,
+                                                  require_speaker_visibility=True, require_temporal_omission=True,
+                                                  require_temporal_omission_evidence=True, require_visual_execution=True,
+                                                  require_review_policy=True)
+                    break
+                except (ValueError, KeyError, TypeError) as error:
+                    record_failure(plan)
+                    if review_response_repair_used:
+                        stop("本次方案的完整检查尚未完成，暂未采用", {("review",): "综合检查记录不完整或无效"},
+                             error_code="planning_review_incomplete")
+                    # Correct the review record, never reroll authored content or
+                    # erase an explicit rejection. One correction for the entire
+                    # plan shares the durable text-session request budget.
+                    review_response_repair_used = True
+                    correction = {**deepcopy(review_input), "task_kind": "plan_review_response_repair",
+                        "previous_review": deepcopy(raw_review),
+                        "validation_feedback": review_validation_feedback(error),
+                        "repair_instruction": "修正上一份审核记录的结构、缺项或覆盖范围，返回完整审核JSON。审核对象final_plan保持原样，不生成改稿。所有已有明确失败项必须保留，不得为了修正格式把失败改成通过；补全漏审项，并使汇总结论与逐项结论一致。"}
+                    progress("reviewing_plan")
+                    try:
+                        corrected_review = await stage_call(PLAN_REVIEW_SYSTEM, correction, [])
+                    except Exception as error:
+                        _reraise_terminal(error)
+                        record_failure({"nonblocking": True, "message": type(error).__name__, "issues": ["plan_review"]})
+                        stop("本次方案的完整检查尚未完成，暂未采用", {("review",): "综合检查记录不完整或无效"},
+                             error_code="planning_review_incomplete")
+                    try:
+                        preserve_review_rejections(raw_review, corrected_review, plan)
+                    except (ValueError, KeyError, TypeError):
+                        record_failure(plan)
+                        stop("本次方案的完整检查尚未完成，暂未采用", {("review",): "综合检查记录不完整或无效"},
+                             error_code="planning_review_incomplete")
+                    raw_review = corrected_review
+            if review.ready:
+                from .shot_craft import with_shot_suggestions
+                from .line_quality import with_line_focus_suggestions
+                review = with_shot_suggestions(review, plan, strategy)
+                review = with_line_focus_suggestions(review, plan, strategy, locked)
+                plan["plan_review"] = review.model_dump()
+                return plan
+            record_failure(plan)
+            feedback = review.model_dump(exclude={"reviewed_plan_sha256", "reviewed_reference_asset_ids"})
+            issues = _review_issues(feedback, plan)
+            if dialogue_polish_used:
+                stop("单次台词收尾后，本次方案仍有未解决的问题", issues)
+            if (max_refinements > 0 and repairs == max_refinements and _only_natural_speech_failed(review)
+                    and any(beat["narration"] for beat in coordinated["ad_script"]["beats"])):
+                # Replaying the same completed stage reconstructs this flag after
+                # restart; its request and the full review share the session budget.
+                dialogue_polish_used = True
+                progress("refining_storyboard")
+                narration_limits = dialogue_narration_limits(plan)
+                polish_input = {**data, "stage": "plan_refinement", "task_kind": "final_dialogue_polish",
+                    "schema": dialogue_polish_schema(coordinated, narration_limits),
+                    "narration_limits": narration_limits, "draft_storyboard": coordinated,
+                    "final_plan": review_projection(plan), "review_feedback": feedback,
+                    "repair_attempt": repairs, "repair_attempt_limit": max_refinements,
+                    "dialogue_polish_attempt": 1, "dialogue_polish_limit": 1}
+                polish_input.pop("speech_budget", None)
+                try:
+                    candidate = await stage_call(DIALOGUE_POLISH_SYSTEM, polish_input, [])
+                except Exception as error:
+                    _reraise_terminal(error)
+                    record_failure({"nonblocking": True, "message": type(error).__name__, "issues": ["dialogue_polish"]})
+                    stop("台词收尾未满足仅修改现有台词及逐拍字数预算的要求，暂未采用", issues)
+                try:
+                    raw = compose_dialogue_polish(candidate, coordinated, narration_limits)
+                except (ValueError, KeyError, TypeError):
+                    stop("台词收尾未满足仅修改现有台词及逐拍字数预算的要求，暂未采用", issues)
+                if raw == coordinated:
+                    stop("台词收尾没有产生实际文字变化，已停止重复尝试", issues)
+                continue  # Compile with existing locks, then review the entire plan.
+            capacity = _review_capacity_gaps(feedback, plan, review_input["execution_windows"])
+            improved = _capacity_improved(previous_capacity, capacity, previous_draft, coordinated)
+            if previous_issues is not None and set(previous_issues).issubset(issues) and not improved:
+                stop("自动调整后同一内容问题仍未改善，已停止重复尝试", issues)
+            previous_review, previous_issues = feedback, issues
+            previous_capacity, previous_draft = capacity, coordinated
+            try:
+                raw = await refine(coordinated, repair_scope(feedback, coordinated, plan), feedback, issues,
+                                   plan=plan, schedule=schedule, bound_review=review)
+            except RevisionKept:
+                return plan
+    except _PlanAccepted as accepted:
+        return accepted.plan

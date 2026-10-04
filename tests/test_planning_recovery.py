@@ -157,13 +157,13 @@ def test_schema_failure_can_be_retried_and_configuration_failure_cannot(run_case
     client, store, pid, job, calls, _, control, execute = run_case
     control["failure"] = failure
     result = execute()
-    assert result["status"] == "failed" and result["progress"]["error_code"] == code
-    assert calls == ["ad_script", "storyboard", "plan_review"]
     if failure == "invalid":
-        assert result["progress"]["retryable"] is True
-        assert result["progress"]["retry_action"] == "retry_planning"
-        assert client.post(f"/api/projects/{pid}/retry", json={"job_id": job["id"]}).status_code == 200
+        assert result["status"] == "ready"
+        assert calls == ["ad_script", "storyboard", "plan_review"]
+        assert result["submission_count"] == 0
     else:
+        assert result["status"] == "failed" and result["progress"]["error_code"] == code
+        assert calls == ["ad_script", "storyboard", "plan_review"]
         assert result["progress"]["retryable"] is False
         assert client.post(f"/api/projects/{pid}/retry", json={"job_id": job["id"]}).status_code == 409
     assert "PRIVATE" not in json.dumps(client.get(f"/api/projects/{pid}").json())

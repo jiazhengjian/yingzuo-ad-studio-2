@@ -232,6 +232,7 @@ def validate_script(
     require_current_version: bool = True,
     require_selected_evidence: bool = True,
     generation_strategy: str = "legacy_10s",
+    waived_evidence_ids=(),
 ) -> AdScript:
     """Check new drafts without making historical Plan parsing stricter.
 
@@ -255,7 +256,9 @@ def validate_script(
         raise ValueError("广告脚本依据必须与各节拍实际引用的事实一致")
     selected = next(direction for direction in strategy.directions
                     if direction.id == strategy.selected_direction_id)
-    if (final or require_selected_evidence) and not set(selected.evidence_ids).issubset(used):
+    waived = {item for item in waived_evidence_ids or () if isinstance(item, str)}
+    required = set(selected.evidence_ids) - waived
+    if (final or require_selected_evidence) and not required.issubset(used):
         raise ValueError("选中创意的商品依据必须落实到广告脚本节拍")
     profile = speech_profile_for_strategy(strategy)
     overlong = next((index for index, beat in enumerate(script.beats)

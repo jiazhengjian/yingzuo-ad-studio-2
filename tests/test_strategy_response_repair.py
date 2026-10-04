@@ -36,6 +36,8 @@ def repair_case(env, monkeypatch, isolated_skill_loader):
     settings.planner_retry_delay_seconds = 0
     # A new project and the same generated eight-pixel fixture, never user data.
     pid = client.post("/api/projects", json={"brief": "我想为吹风机做一条商品广告", "ad_form": "auto"}).json()["id"]
+    with app.state.store._connection(True) as connection:
+        connection.execute("UPDATE projects SET cta_target='ai_decide' WHERE id=?", (pid,))
     source_path = app.state.store.get_asset(original["id"])["path"]
     asset = client.post(f"/api/projects/{pid}/assets", files={
         "file": ("test-appliance.png", Path(source_path).read_bytes(), "image/png")}).json()

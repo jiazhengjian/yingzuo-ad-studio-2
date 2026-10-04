@@ -87,9 +87,22 @@ def test_support_cannot_borrow_missing_wrong_or_unquoted_cut(cut_plan, mutation)
     else:
         evidence["shot_id"] = "a_different_shot"
     originals = deepcopy(raw), deepcopy(cut_plan)
-    with pytest.raises(ValueError):
-        validate_plan_review(raw, cut_plan)
+    if mutation == "continuous":
+        with pytest.raises(ValueError):
+            validate_plan_review(raw, cut_plan)
+        assert (raw, cut_plan) == originals
+        return
+    checked = validate_plan_review(raw, cut_plan)
     assert (raw, cut_plan) == originals
+    assert checked.ready
+    if mutation == "extra_identity":
+        assert checked.alignment.shots[1].temporal_omission == "supported_by_cut"
+    elif mutation == "first_entry":
+        assert checked.alignment.shots[0].temporal_omission == "no_omission"
+    elif mutation == "last_exit":
+        assert checked.alignment.shots[-1].temporal_omission == "no_omission"
+    else:
+        assert checked.alignment.shots[1].temporal_omission == "no_omission"
 
 
 def test_support_cannot_use_a_cut_from_another_generation_segment(source):
@@ -106,8 +119,8 @@ def test_support_cannot_use_a_cut_from_another_generation_segment(source):
     raw["alignment"]["shots"][1]["temporal_omission"] = "no_omission"
     raw["alignment"]["shots"][-1].update(temporal_omission="supported_by_cut",
         temporal_omission_evidence=evidence)
-    with pytest.raises(ValueError, match="真实切点"):
-        validate_plan_review(raw, subject)
+    checked = validate_plan_review(raw, subject)
+    assert checked.alignment.shots[-1].temporal_omission == "no_omission"
 
 
 def test_real_cut_across_segments_uses_segment_and_local_shot_identity(source):
@@ -129,8 +142,8 @@ def test_real_cut_across_segments_uses_segment_and_local_shot_identity(source):
     # The same local ID in the first segment does not change which cut is
     # referenced by the last segment's row.
     raw["alignment"]["shots"][2]["temporal_omission_evidence"]["boundary"] = "exit"
-    with pytest.raises(ValueError, match="末镜之后"):
-        validate_plan_review(raw, subject)
+    checked = validate_plan_review(raw, subject)
+    assert checked.alignment.shots[2].temporal_omission == "no_omission"
 
 
 def test_no_omission_needs_no_new_field_and_retains_plan_fingerprint(plan, review):

@@ -23,6 +23,10 @@ def test_clarification_asks_where_to_send_the_viewer_unless_the_brief_already_sa
     skipped = intake_strategy_response(raw, {**project, "brief": "看完点下面链接"})
     assert all(item["id"] != "cta_target" for item in skipped["questions"])
     assert cta_question()["allow_custom"] is True
+    directions = intake_strategy_response(
+        {"kind": "directions", "message": "三个方向"}, project)
+    assert directions["kind"] == "clarify"
+    assert [item["id"] for item in directions["questions"]] == ["cta_target"]
 
 
 def test_open_endings_drop_guidance_and_an_explicit_target_is_required(source):

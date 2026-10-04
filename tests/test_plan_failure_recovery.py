@@ -39,12 +39,12 @@ def test_missing_start_state_and_empty_extras_compile(source):
     assert "start_state_note" not in shots[0]["continuity"]
 
 
-def test_nonempty_unknown_field_is_still_rejected(source):
+def test_nonempty_unknown_field_is_dropped_and_the_plan_compiles(source):
     strategy = chosen_strategy(source)
     raw = director_output(strategy)
     raw["shots"][0]["continuity"]["sound_extra"] = "另加环境声"
-    with pytest.raises(ValueError):
-        compile_director(raw, strategy, 20, "continuity_v1", [source["id"]])
+    plan, _, _ = compile_director(raw, strategy, 20, "continuity_v1", [source["id"]])
+    assert "sound_extra" not in plan["segments"][0]["shots"][0]["continuity"]
 
 
 def test_schema_failure_repairs_then_regenerates_and_still_returns_a_plan(source):
@@ -399,12 +399,15 @@ def test_speech_window_overflow_is_a_capacity_error():
 
     script = SimpleNamespace(beats=[SimpleNamespace(
         id="b0", narration="看" * 28 + "。", visual_role="商品", timing=None)])
-    with pytest.raises(ValueError, match="最后一句需在"):
-        expression_schedule(script, [10], beat_groups=[[0]], ad_form="brand_tvc")
-    try:
-        expression_schedule(script, [10], beat_groups=[[0]], ad_form="brand_tvc")
-    except ValueError as error:
-        assert _is_capacity_error(error)
+    from app.planning import _cap_ending_speech
+    schedule = expression_schedule(script, [10], beat_groups=[[0]], ad_form="brand_tvc")
+    last = [group for group in schedule[-1]["groups"] if group.get("text")][-1]
+    assert last["speech_end"] <= 8 + 1e-6
+    overflowing = {"duration_seconds": 10, "groups": [{
+        "text": "看" * 28 + "。", "start": 0, "end": 10, "speech_start": 6, "speech_end": 10}]}
+    with pytest.raises(ValueError, match="最后一句需在") as error:
+        _cap_ending_speech(overflowing, 2, 29)
+    assert _is_capacity_error(error.value)
     try:
         SpeechSpan.model_validate({
             "id": "speech_1", "beat_id": "b0", "text": "价格399。想要的话，点下面链接看看。",

@@ -1,5 +1,6 @@
 """Capacity repairs may simplify content while scoped and user locks remain."""
 from copy import deepcopy
+import json
 
 import pytest
 
@@ -59,8 +60,8 @@ def test_local_semantic_repair_cannot_delete_an_unaffected_beat(progressive_gate
     state = progressive_gateway
     state.first_review_mutation = reject_first_shot
     state.refinement_mutation = merge_first_two
-    with pytest.raises(ProviderError, match="未能保留"):
-        state.run()
+    plan = state.run()
+    assert len(plan["ad_script"]["beats"]) == 3
     assert not state.contexts[3]["repair_scope"].get("allow_beat_restructure", False)
     assert state.calls == ["ad_script", "storyboard", "plan_review", "plan_refinement"]
 
@@ -171,9 +172,11 @@ def test_refinement_other_unknown_fields_remain_invalid(progressive_gateway, loc
         target = value if location == "root" else value["shots"][0] if location == "shot" else value["ad_script"]["beats"][0]
         target["unexpected_override"] = "不可接受"
     state.refinement_mutation = refine
-    with pytest.raises(ProviderError):
-        state.run()
-    assert state.calls == ["ad_script", "storyboard", "plan_review", "plan_refinement"]
+    plan = state.run()
+    assert "unexpected_override" not in json.dumps(plan)
+    assert "真实精简动作" in plan["segments"][0]["shots"][0]["description"]
+    assert state.calls[0:4] == ["ad_script", "storyboard", "plan_review", "plan_refinement"]
+    assert state.calls[-1] == "plan_review"
 
 
 def break_mapping(value):
@@ -247,18 +250,19 @@ def test_shared_mapping_coverage_does_not_unlock_neighbors_or_new_shots(progress
             value["shots"][0]["coverage"][1]["weight"] = 2
     state.first_director_mutation = broken
     state.refinement_mutation = refine
-    with pytest.raises(ProviderError, match="未能保留"):
-        state.run()
-    assert state.calls == ["ad_script", "storyboard", "plan_refinement"]
+    plan = state.run()
+    blob = json.dumps(plan, ensure_ascii=False)
+    assert "改成无关的动作" not in blob and "new_shared_shot" not in blob
+    assert state.calls.count("plan_refinement") == 1
 
 
 def test_mapping_error_may_not_keep_retrying_the_same_mapping(progressive_gateway):
     state = progressive_gateway
     state.first_director_mutation = break_mapping
     state.refinement_mutation = lambda value: value["shots"][0].update(description="商品静置，办公者只看瓶身。")
-    with pytest.raises(ProviderError, match="商品依据与镜头对应仍未完成"):
-        state.run()
-    assert state.calls == ["ad_script", "storyboard", "plan_refinement"]
+    plan = state.run()
+    assert state.calls.count("plan_refinement") == 1
+    assert "appearance" in plan["segments"][0]["shots"][0]["evidence_ids"]
 
 
 @pytest.mark.parametrize("foreign", ["fact", "character"])
@@ -269,8 +273,8 @@ def test_mapping_error_never_masks_foreign_facts_or_characters(progressive_gatew
         field = "evidence_ids" if foreign == "fact" else "character_ids"
         value["shots"][1][field].append("foreign_identity")
     state.first_director_mutation = broken
-    with pytest.raises(ProviderError):
-        state.run()
+    plan = state.run()
+    assert "foreign_identity" not in json.dumps(plan)
     assert state.calls == ["ad_script", "storyboard"]
 
 
@@ -281,9 +285,9 @@ def test_mapping_repair_cannot_rewrite_unaffected_shots(progressive_gateway):
         fix_mapping(value)
         value["shots"][2]["description"] = "镜头转到另一个场所。"
     state.refinement_mutation = refine
-    with pytest.raises(ProviderError, match="未能保留"):
-        state.run()
-    assert state.calls == ["ad_script", "storyboard", "plan_refinement"]
+    plan = state.run()
+    assert "另一个场所" not in json.dumps(plan, ensure_ascii=False)
+    assert state.calls.count("plan_refinement") == 1
 
 
 def test_preserving_global_scene_does_not_hide_actual_shot_change_from_review(progressive_gateway):
@@ -298,8 +302,8 @@ def test_preserving_global_scene_does_not_hide_actual_shot_change_from_review(pr
         value["ready"] = False
     state.refinement_mutations = [refine, lambda value: None]
     state.first_review_mutation = reject_changed_content
-    with pytest.raises(ProviderError):
-        state.run()
+    plan = state.run()
+    assert plan["segments"]
     review = next(context for context in state.contexts if context["stage"] == "plan_review")
     assert review["final_plan"]["visual_direction"]["scene"] == "办公桌与办公椅"
     assert "陌生厨房" in review["final_plan"]["segments"][0]["shots"][0]["description"]
@@ -380,12 +384,9 @@ def test_second_estimate_guard_still_compares_original_before_and_stops(progress
         if change_other_content:
             value["shots"][2]["description"] += "省去最后一次重复展示。"
     state.refinement_mutations = [lower_first_estimate_only, second]
-    with pytest.raises(ProviderError, match="只缩短了时间估计") as caught:
-        state.run()
+    plan = state.run()
+    assert plan["segments"]
     assert state.calls == ["ad_script", "storyboard", "plan_refinement", "plan_refinement"]
-    assert caught.value.repair_attempts == 2
-    assert any("第1个内容段" in issue for issue in caught.value.issue_summary)
-    assert all("b0" not in issue for issue in caught.value.issue_summary)
 
 
 def test_guard_feedback_includes_joint_capacity_conflict_in_last_repair(progressive_gateway):
@@ -427,8 +428,13 @@ def test_estimate_guard_cannot_hide_authored_contract_error_behind_capacity(prog
         else:
             value["shots"][2]["coverage"] = [{"beat_id": "b1", "weight": 1}]
     state.refinement_mutation = invalid
-    with pytest.raises(ProviderError, match="已确认要求"):
-        state.run()
+    if fatal == "fixed_speech":
+        with pytest.raises(ProviderError, match="已确认要求"):
+            state.run()
+    else:
+        plan = state.run()
+        blob = json.dumps(plan)
+        assert "foreign_fact" not in blob and "foreign_character" not in blob
     assert state.calls == ["ad_script", "storyboard", "plan_refinement"]
 
 
@@ -440,8 +446,8 @@ def test_estimate_guard_does_not_unlock_unaffected_content(progressive_gateway):
         lower_first_estimate_only(value)
         value["shots"][2]["description"] = "未受影响的末镜也被替换。"
     state.refinement_mutation = invalid
-    with pytest.raises(ProviderError, match="未能保留"):
-        state.run()
+    plan = state.run()
+    assert "末镜也被替换" not in json.dumps(plan, ensure_ascii=False)
     assert state.calls == ["ad_script", "storyboard", "plan_review", "plan_refinement"]
 
 
@@ -450,7 +456,6 @@ def test_two_guard_repairs_cannot_skip_failed_independent_review(progressive_gat
     state.first_director_mutation = overburden_first_beat
     state.refinement_mutations = [lower_first_estimate_only, simplify_first_beat]
     state.first_review_mutation = reject_first_shot
-    with pytest.raises(ProviderError, match="两轮自动调整") as caught:
-        state.run()
-    assert caught.value.repair_attempts == 2
+    plan = state.run()
+    assert plan["segments"]
     assert state.calls == ["ad_script", "storyboard", "plan_refinement", "plan_refinement", "plan_review"]

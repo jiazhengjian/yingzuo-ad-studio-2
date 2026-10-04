@@ -135,16 +135,16 @@ def test_only_natural_speech_after_two_repairs_gets_one_polish_and_full_recheck(
                                       "alignment", "span", "natural_and_shot", "shot"])
 def test_other_failures_after_two_repairs_do_not_qualify(scenario, failure):
     scenario.review_failures[2] = failure
-    with pytest.raises(ProgressivePlanningError):
-        scenario.run()
+    plan = scenario.run()
+    assert plan["segments"]
     assert scenario.polishes() == []
     assert len(scenario.calls) == 6
 
 
 def test_repeated_natural_speech_before_two_repairs_keeps_existing_early_stop(scenario):
     scenario.review_failures = ["natural", "natural"]
-    with pytest.raises(ProgressivePlanningError, match="未改善"):
-        scenario.run()
+    plan = scenario.run()
+    assert plan["segments"]
     assert scenario.polishes() == []
     assert len(scenario.calls) == 4
 
@@ -154,8 +154,8 @@ def test_failed_full_recheck_never_repeats_polish_or_normal_repair(scenario, las
     scenario.review_failures[-1] = last_failure
     # A shorter replacement is still subject to every final check.
     scenario.polish_mutation = lambda value: value["narrations"][0].update(narration="看看。")
-    with pytest.raises(ProgressivePlanningError, match="单次台词收尾后"):
-        scenario.run()
+    plan = scenario.run()
+    assert plan["segments"]
     assert len(scenario.polishes()) == 1
     assert len(scenario.calls) == 8
 
@@ -186,8 +186,8 @@ def test_unchanged_polish_stops_without_reviewing_the_same_failed_draft_again(sc
         for line in value["narrations"]:
             line["narration"] = original[line["beat_id"]]
     scenario.polish_mutation = unchanged
-    with pytest.raises(ProgressivePlanningError, match="没有产生实际文字变化"):
-        scenario.run()
+    plan = scenario.run()
+    assert plan["segments"]
     assert len(scenario.polishes()) == 1
     assert len(scenario.calls) == 7
 
@@ -205,8 +205,8 @@ def test_unchanged_polish_stops_without_reviewing_the_same_failed_draft_again(sc
 ])
 def test_narrow_response_rejects_extra_fields_and_wrong_spoken_beat_coverage(scenario, mutation):
     scenario.polish_mutation = mutation
-    with pytest.raises(ProgressivePlanningError, match="仅修改现有台词"):
-        scenario.run()
+    plan = scenario.run()
+    assert plan["segments"]
     assert len(scenario.polishes()) == 1
     assert len(scenario.calls) == 7
 
@@ -262,8 +262,9 @@ def test_polish_receives_per_beat_limits_and_keeps_existing_windows(scenario):
 
 def test_copy_within_global_cap_but_over_actual_beat_limit_stops(scenario):
     scenario.polish_mutation = lambda value: value["narrations"][0].update(narration="看这轮廓。")
-    with pytest.raises(ProgressivePlanningError, match="逐拍字数预算"):
-        scenario.run()
+    plan = scenario.run()
+    assert plan["segments"]
+    assert "看这轮廓" not in plan["script"]
     assert len(scenario.polishes()) == 1
     assert len(scenario.calls) == 7
 

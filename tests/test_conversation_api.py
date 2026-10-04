@@ -24,6 +24,10 @@ def env(tmp_path):
     # These downstream gate tests start after the merchant has delegated the
     # advertising form. Unselected-form intake is covered separately.
     p = client.post("/api/projects", json={"brief": "为我的透明玻璃瓶做商品广告", "ad_form": "auto"}).json()
+    # Downstream tests start after the destination question as well. Asking it
+    # is covered by the intake tests; these jobs already chose “让 AI 决定”.
+    with app.state.store._connection(True) as connection:
+        connection.execute("UPDATE projects SET cta_target='ai_decide' WHERE id=?", (p["id"],))
     buf = io.BytesIO()
     Image.new("RGB", (8, 8), "white").save(buf, "PNG")
     a = client.post(f"/api/projects/{p['id']}/assets", files={"file": ("商品.png", buf.getvalue(), "image/png")}).json()

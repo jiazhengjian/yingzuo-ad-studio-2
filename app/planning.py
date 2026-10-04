@@ -161,6 +161,36 @@ def _cap_ending_speech(segment, silence, characters_per_tenth=29):
     last["speech_end"] = target_end
 
 
+def _shrink_ending_line(segment, silence, characters_per_tenth):
+    """Keep the hold. A line that still does not fit is shortened until it does."""
+    try:
+        _cap_ending_speech(segment, silence, characters_per_tenth)
+        return
+    except ValueError:
+        pass
+    groups = segment.get("groups") or []
+    spoken = [index for index, group in enumerate(groups) if group.get("text")]
+    if not spoken:
+        return
+    last = groups[spoken[-1]]
+    duration = float(segment.get("duration_seconds") or 0)
+    deadline = round(max(0.1, duration - silence), 1)
+    start = round(max(float(last.get("start") or 0), deadline - 4), 1)
+    if start >= deadline:
+        start = round(max(0, deadline - 0.5), 1)
+    text = str(last.get("text") or "")
+    while text and not _speech_fits(text, start, deadline, characters_per_tenth):
+        text = text[:-1].rstrip("，,、 ")
+    if text and text[-1] not in "。！？":
+        text += "。"
+    if not text or not _speech_fits(text, start, deadline, characters_per_tenth):
+        text = "看这里。"
+        start = round(max(0, deadline - _minimum_speech_seconds(text, characters_per_tenth)), 1)
+    last["text"] = text
+    last["speech_start"] = start
+    last["speech_end"] = deadline
+
+
 def expression_schedule(script, durations, *, beat_groups=None, characters_per_tenth=29, ad_form=None):
     """Reserve content and speech windows without choosing camera cuts.
 
@@ -199,8 +229,72 @@ def expression_schedule(script, durations, *, beat_groups=None, characters_per_t
                        "duration_seconds": segment["duration_seconds"], "groups": groups})
     silence = ending_hold_seconds(script, ad_form)
     if silence and result:
-        _cap_ending_speech(result[-1], silence, characters_per_tenth)
+        _shrink_ending_line(result[-1], silence, characters_per_tenth)
     return result
+
+
+def align_ending_hold(segment, *, silence=2.0, action_seconds=None):
+    """The freeze starts when the last line ends. The speaking shot borrows time if it must.
+
+    Shot identity is kept. Only internal boundaries move, and only when a later
+    shot would otherwise start while the last line is still being said.
+    """
+    shots = segment.get("shots") or []
+    spans = segment.get("speech_spans") or []
+    if not shots or not spans or silence <= 0:
+        return
+    try:
+        duration = float(segment.get("duration_seconds") or shots[-1].get("end") or 0)
+        speech_end = float(spans[-1]["end"])
+    except (TypeError, ValueError, KeyError):
+        return
+    speech_end = round(min(speech_end, max(0.1, duration - silence)), 1)
+    for index in range(1, len(shots)):
+        prev, shot = shots[index - 1], shots[index]
+        try:
+            start, end, prev_end = float(shot["start"]), float(shot["end"]), float(prev["end"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if start < speech_end - 1e-6 <= end and prev_end <= speech_end + 1e-6:
+            prev["end"] = speech_end
+            shot["start"] = speech_end
+            if float(shot["end"]) < speech_end + 0.1:
+                shot["end"] = round(max(duration, speech_end + 0.1), 1)
+    if action_seconds and len(shots) > 1:
+        speakers = [shot for shot in shots if float(shot["start"]) < speech_end - 1e-6]
+        if speakers:
+            speaker = speakers[-1]
+            have = min(float(speaker["end"]), speech_end) - float(speaker["start"])
+            deficit = round(float(action_seconds) - have, 1)
+            index = shots.index(speaker)
+            while deficit > 0.05 and index > 0:
+                prev = shots[index - 1]
+                spare = round(float(prev["end"]) - float(prev["start"]) - 0.4, 1)
+                if spare <= 0:
+                    index -= 1
+                    continue
+                take = min(spare, deficit)
+                prev["end"] = round(float(prev["end"]) - take, 1)
+                speaker["start"] = round(float(speaker["start"]) - take, 1)
+                deficit = round(deficit - take, 1)
+                index -= 1
+    span = spans[-1]
+    visible = []
+    try:
+        span_start, span_end = float(span["start"]), float(span["end"])
+    except (TypeError, ValueError, KeyError):
+        return
+    for shot in shots:
+        try:
+            if min(float(shot["end"]), span_end) - max(float(shot["start"]), span_start) > 1e-6:
+                visible.append(shot["id"])
+        except (TypeError, ValueError, KeyError):
+            continue
+    if visible:
+        span["shot_ids"] = visible
+        for anchor in span.get("anchors") or []:
+            if isinstance(anchor, dict):
+                anchor["shot_ids"] = list(visible)
 
 
 def validate_expression_schedule(plan, schedule):

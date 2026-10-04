@@ -221,6 +221,7 @@ def intake_strategy_response(raw, project, *, ask_preference=True):
         guarded = guard_ad_form_confirmation(result, project)
         if guarded is not result:
             return guarded
+    from .cta import should_ask_cta
     form = project.get("ad_form")
     kind = result.get("kind")
     if ask_preference and kind == "clarify":
@@ -238,9 +239,16 @@ def intake_strategy_response(raw, project, *, ask_preference=True):
             raise ValueError("广告倾向已确认，不应重复提问；根据已有信息回复或继续策划")
         from .cta import attach_cta_question
         result = attach_cta_question(result, project)
-    elif ask_preference and kind in ("directions", "plan") and needs_ad_form_choice(project):
-        result = {"kind": "clarify", "message": "先确认这条广告的表达倾向，再继续准备方案。",
-                  "questions": [ad_form_question()]}
+    elif ask_preference and kind in ("directions", "plan") and (
+            needs_ad_form_choice(project) or should_ask_cta(project)):
+        from .cta import cta_question
+        questions = []
+        if needs_ad_form_choice(project):
+            questions.append(ad_form_question())
+        if should_ask_cta(project):
+            questions.append(cta_question())
+        result = {"kind": "clarify", "message": "先确认看完视频后希望观众去哪里，再继续准备方案。",
+                  "questions": questions}
     brief = result.get("brief")
     if isinstance(brief, dict):
         bind_brief_ad_form(brief, project)

@@ -482,9 +482,16 @@ def _script_line_offenses(script, strategy, locked_lines, plan=None):
 
     indexes = {id(beat): index for index, beat in enumerate(_beats(script))}
     names = product_terms(strategy) or []
+    seen_cores = []
     for previous, current in zip(spoken, spoken[1:]):
         if _near_duplicate(previous.get("narration"), current.get("narration")):
             add(current, indexes.get(id(current), 0), "相邻台词重复")
+    for beat in spoken:
+        core = _spoken_core(beat.get("narration"))
+        if core and core in seen_cores:
+            add(beat, indexes.get(id(beat), 0), "台词重复")
+        elif core:
+            seen_cores.append(core)
     if form == "scene_story" and spoken:
         third = [beat for beat in spoken if _THIRD_PERSON.search(_spoken_core(beat["narration"]))]
         first = [beat for beat in spoken if _FIRST_PERSON.search(beat["narration"])]

@@ -210,6 +210,8 @@ def test_real_acceptance_sequence_through_api_frozen_gateway_and_reopened_store(
         ({"content": "我想换个剧情广告"}, "scene_story"),
         ({"content": "我想改广告倾向，想做口播广告"}, "presenter_pitch"),
     ]
+    with store._connection(True) as c:
+        c.execute("UPDATE projects SET cta_target='ai_decide' WHERE id=?", (pid,))
     seen = []
     async def fake(self, system, data, sources, **kwargs):
         seen.append((data["stage"], data["ad_form"]))
@@ -382,7 +384,7 @@ def test_preference_and_skipped_facts_are_not_merchant_evidence(label):
 def test_gateway_intake_requests_only_reply_or_clarify_until_form_is_chosen(env, monkeypatch, isolated_skill_loader):
     _, app, _, original = env
     app.state.settings.direction_selection_enabled = True
-    p = {**app.state.store.get_project(env[2]), "ad_form": None}
+    p = {**app.state.store.get_project(env[2]), "ad_form": None, "cta_target": None}
     contexts = []
     async def fake(self, system, data, sources, **kwargs):
         contexts.append(deepcopy(data))
@@ -478,6 +480,8 @@ def test_actual_gateway_candidate_and_selected_job_inherit_preference(env, monke
     _, app, pid, original = env
     store = app.state.store
     app.state.settings.direction_selection_enabled = True
+    with store._connection(True) as c:
+        c.execute("UPDATE projects SET cta_target='ai_decide' WHERE id=?", (pid,))
     job = turn(store, pid, ad_form=form)
     candidate = candidates_for(env)
     raw_brief = candidate.brief.model_dump()

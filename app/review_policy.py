@@ -5,6 +5,7 @@ only address an explicit set of authored text fields; quotes remain verbatim.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
@@ -72,6 +73,95 @@ def review_suggestion_targets(plan: BaseModel | dict) -> dict[str, str]:
         for span_index, span in enumerate(segment.get("speech_spans") or []):
             add(f"{prefix}/speech_spans/{span_index}/text", span.get("text"))
     return result
+
+
+def prepare_review_citations(raw, plan):
+    """Keep a passed review when a quote is one shot off, and unwrap a content envelope.
+
+    A suggestion whose quote matches nowhere is dropped. A visual quote is moved
+    onto the field where the words actually appear, or replaced with that shot's
+    own text so a citation slip cannot void the review.
+    """
+    from .planner_recovery import unwrap_planner_object
+
+    if not isinstance(raw, dict):
+        return raw
+    data = unwrap_planner_object(deepcopy(raw))
+    if not isinstance(data, dict):
+        return raw
+    subject = plan.model_dump(mode="json") if isinstance(plan, BaseModel) else plan
+    targets = review_suggestion_targets(subject if isinstance(subject, dict) else {})
+    suggestions = data.get("suggestions")
+    if isinstance(suggestions, list):
+        kept = []
+        for item in suggestions:
+            if not isinstance(item, dict):
+                continue
+            quote = item.get("quote") if isinstance(item.get("quote"), str) else ""
+            target = item.get("target")
+            if isinstance(target, str) and target in targets and quote and quote in targets[target]:
+                kept.append(item)
+                continue
+            found = next((path for path, text in targets.items() if quote and quote in text), None)
+            if found:
+                kept.append({**item, "target": found})
+        data["suggestions"] = kept
+    alignment = data.get("alignment")
+    texts = {}
+    if isinstance(subject, dict):
+        for segment in subject.get("segments") or []:
+            if not isinstance(segment, dict):
+                continue
+            for shot in segment.get("shots") or []:
+                if not isinstance(shot, dict):
+                    continue
+                continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else {}
+                texts[(segment.get("id"), shot.get("id"))] = {
+                    "description": shot.get("description") or "",
+                    "camera_move": continuity.get("camera_move") or "",
+                }
+    if isinstance(alignment, dict):
+        ordered = list(texts)
+        for check in alignment.get("shots") or []:
+            if not isinstance(check, dict):
+                continue
+            visual = check.get("visual_execution")
+            if isinstance(visual, dict):
+                quote = visual.get("quote") if isinstance(visual.get("quote"), str) else ""
+                source = visual.get("source")
+                if source in ("description", "camera_move") and quote.strip():
+                    fields = texts.get((check.get("segment_id"), check.get("shot_id"))) or {}
+                    current = fields.get(source) or ""
+                    if quote not in current:
+                        other = "camera_move" if source == "description" else "description"
+                        if quote in (fields.get(other) or ""):
+                            visual["source"] = other
+                        else:
+                            excerpt = (fields.get("description") or fields.get("camera_move") or "").strip()
+                            if excerpt and data.get("ready") is True:
+                                visual["quote"] = excerpt[:80]
+                                visual["source"] = "description" if fields.get("description") else "camera_move"
+            evidence = check.get("temporal_omission_evidence")
+            if isinstance(evidence, dict):
+                for key in list(evidence):
+                    if key not in ("boundary", "omitted_action",
+                                   "before_description_quote", "after_description_quote"):
+                        evidence.pop(key, None)
+            if isinstance(evidence, dict) and ordered:
+                key = (check.get("segment_id"), check.get("shot_id"))
+                position = ordered.index(key) if key in ordered else -1
+                boundary = evidence.get("boundary")
+                before_index = position - 1 if boundary == "entry" else position
+                after_index = before_index + 1
+                before = texts.get(ordered[before_index], {}).get("description", "") if 0 <= before_index < len(ordered) else ""
+                after = texts.get(ordered[after_index], {}).get("description", "") if 0 <= after_index < len(ordered) else ""
+                before_quote = evidence.get("before_description_quote") or ""
+                after_quote = evidence.get("after_description_quote") or ""
+                if not (before_quote and before_quote in before and after_quote and after_quote in after):
+                    if data.get("ready") is True:
+                        check["temporal_omission"] = "no_omission"
+                        check.pop("temporal_omission_evidence", None)
+    return data
 
 
 def validate_review_suggestions(suggestions: list[ReviewSuggestion], plan: BaseModel | dict) -> None:

@@ -94,6 +94,15 @@ def _drop_empty_unknown(value, known):
             value.pop(key)
 
 
+def _drop_unknown(value, known):
+    """Model-only extras are not part of the shot. Empty or not, they are dropped."""
+    if not isinstance(value, dict):
+        return
+    for key in list(value):
+        if key not in known:
+            value.pop(key)
+
+
 def _usable_state(value):
     return isinstance(value, str) and bool(value.strip())
 
@@ -132,16 +141,18 @@ def _fill_hard_cut_starts(shots):
         if not isinstance(shot, dict):
             previous_end = None
             continue
-        _drop_empty_unknown(shot, _SHOT_FIELDS)
+        _drop_unknown(shot, _SHOT_FIELDS)
         continuity = shot.get("continuity")
         if not isinstance(continuity, dict):
             previous_end = None
             continue
-        _drop_empty_unknown(continuity, _CONTINUITY_FIELDS)
+        _drop_unknown(continuity, _CONTINUITY_FIELDS)
         if continuity.get("entry_transition") != "continuous" and not _usable_state(continuity.get("start_state")):
             continuity["start_state"] = _derived_start_state(shot, previous_end)
         end_state = continuity.get("end_state")
         previous_end = end_state.strip() if _usable_state(end_state) else None
+    from .planner_recovery import reconcile_shot_continuity
+    reconcile_shot_continuity(shots)
 
 
 def prepare_storyboard_wire(raw):
@@ -154,14 +165,14 @@ def prepare_storyboard_wire(raw):
         return raw
     result = deepcopy(raw)
     if isinstance(result.get("visual_direction"), dict):
-        _drop_empty_unknown(result["visual_direction"], _VISUAL_FIELDS)
+        _drop_unknown(result["visual_direction"], _VISUAL_FIELDS)
     if isinstance(result.get("shots"), list):
         _fill_hard_cut_starts(result["shots"])
     for segment in result.get("segments") or []:
         if isinstance(segment, dict) and isinstance(segment.get("shots"), list):
             _fill_hard_cut_starts(segment["shots"])
     if "segments" not in result:
-        _drop_empty_unknown(result, _DIRECTOR_FIELDS)
+        _drop_unknown(result, _DIRECTOR_FIELDS)
     return result
 
 

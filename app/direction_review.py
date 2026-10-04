@@ -412,7 +412,9 @@ def salvage_direction_review(raw, original: DirectionCandidates, rules: list[dic
     with the same replacement. A stub that only says ready, without the three
     checks, is still rejected.
     """
+    from .planner_recovery import drop_extra_forbidden
     rejected = None
+    raw = drop_extra_forbidden(DirectionReview, raw) if isinstance(raw, dict) else raw
     prepared = _restore_blank_card_lines(_sanitize_raw_directions(raw), original)
     adjustments = _card_adjustment_codes(raw, prepared)
     try:

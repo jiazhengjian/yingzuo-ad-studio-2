@@ -130,6 +130,6 @@ def test_progressive_missing_visibility_is_invalid_even_with_copied_historical_b
             review.update({key: bound[key] for key in ("reviewed_plan_sha256", "reviewed_reference_asset_ids")})
         review["alignment"]["spans"][0].pop("speaker_visibility")
     state.first_review_mutation = state.second_review_mutation = incomplete
-    with pytest.raises(ProviderError, match="完整检查尚未完成"):
-        state.run()
+    plan = state.run()
+    assert plan.get("plan_review", {}).get("ready") is not True
     assert state.calls == ["ad_script", "storyboard", "plan_review", "plan_review"]

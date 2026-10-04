@@ -17,7 +17,7 @@ from .av_review import (AVReview, all_speech_explicitly_off_screen, lower_failed
                         review_speech_requirements, validate_av_review)
 from .schemas import Plan
 from .review_policy import (MAX_REVIEW_SUGGESTIONS, REVIEW_POLICY_VERSION, ReviewSuggestion,
-                            review_suggestion_targets, validate_review_suggestions)
+                            prepare_review_citations, review_suggestion_targets, validate_review_suggestions)
 
 
 _SegmentId = Annotated[str, StringConstraints(strict=True, pattern=r"^[a-zA-Z0-9_-]{1,48}$")]
@@ -175,6 +175,7 @@ def validate_plan_review(raw: PlanReview | dict, plan: Plan | dict, *,
     original-reference snapshot. Later references may only follow that exact
     original prefix; generated media itself has not been reviewed here.
     """
+    raw = prepare_review_citations(raw, plan)
     review = PlanReview.model_validate(raw)
     subject = _validated_review_subject(plan)
     # Live callers explicitly require the new policy even if a provider sends

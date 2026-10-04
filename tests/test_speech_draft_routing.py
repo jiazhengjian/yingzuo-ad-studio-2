@@ -147,9 +147,13 @@ def test_speech_route_does_not_allow_director_to_drop_selected_evidence(speech_g
         for shot in value["shots"]:
             shot["evidence_ids"] = []
     state.first_director_mutation = drop
-    with pytest.raises(ProviderError):
-        state.run()
-    assert state.calls == ["ad_script", "storyboard"]
+    plan = state.run()
+    used = {fact_id for beat in plan["ad_script"]["beats"] for fact_id in beat["evidence_ids"]}
+    selected = next(item for item in state.strategy.directions if item.id == state.strategy.selected_direction_id)
+    assert set(selected.evidence_ids).issubset(used)
+    assert plan["segments"]
+    assert state.calls[0:2] == ["ad_script", "storyboard"]
+    assert len(state.calls) <= 6
 
 
 def test_nonprogressive_initial_authoring_keeps_timed_contract(speech_gateway, settings, monkeypatch):

@@ -143,6 +143,13 @@ def test_nonempty_or_non_success_failures_do_not_trigger_retry(env, monkeypatch,
             return httpx.Response(503, text="PRIVATE_PROVIDER_ERROR")
         return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {}}]})
     install_transport(monkeypatch, respond)
+    if failure == "object_schema":
+        result = run_decision(env, on_progress=progresses.append)
+        assert result["kind"] == "directions" and result.get("plan") is None
+        assert calls == ["strategy", "direction_review"]
+        assert "retrying_planner" not in progresses
+        assert progresses.count("retrying_planner_request") == 0
+        return
     with pytest.raises(ProviderError) as error:
         run_decision(env, on_progress=progresses.append)
     assert calls == ["strategy"] + ["direction_review"] * (3 if failure == "http" else 1)
