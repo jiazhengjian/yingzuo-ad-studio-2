@@ -25,6 +25,13 @@ export function recoveryForJob(job?: Job): JobRecovery | null {
       && job.progress.retry_action === 'retry_planning' && job.progress.retryable !== false) {
       return { kind: 'retry_planning', label: '继续处理' };
     }
+    // A saved storyboard was rejected by a later structure check. Resume replays
+    // that storyboard; only an exhausted replay starts again from the brief.
+    if (job.progress.error_code === 'planning_invalid_response'
+      && job.progress.retry_action !== 'continue_conversation'
+      && /视频段镜头时轴或素材结构无效|独立旁白方案的声音策略、内容或跨段对应无效/.test(job.error || '')) {
+      return { kind: 'retry_planning', label: '继续处理' };
+    }
     if (['planning_invalid_response', 'planning_review_incomplete', 'planning_request_limit'].includes(job.progress.error_code as string)) {
       return { kind: 'continue_conversation' };
     }

@@ -221,6 +221,21 @@ test('incomplete checks and request limits do not ask the merchant to revise req
   }
 });
 
+test('a saved storyboard rejected for segment structure resumes that storyboard', () => {
+  const job = fixture({ kind: 'plan', phase: 'reviewing_plan',
+    error: '视频段镜头时轴或素材结构无效',
+    progress: { error_code: 'planning_invalid_response', retryable: false, retry_action: 'edit_plan' } });
+  assert.equal(recoveryForJob(job).kind, 'retry_planning');
+  assert.equal(recoveryForJob(job).label, '继续处理');
+  assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
+  const html = renderCard(job);
+  assert.match(html, /继续处理/);
+  assert.match(html, /这一步没有在系统这边完成/);
+  assert.doesNotMatch(html, /不能沿用刚才的进度|按已保存的需求继续|输入修改要求/);
+  const exhausted = { ...job, progress: { ...job.progress, retry_action: 'continue_conversation' } };
+  assert.equal(recoveryForJob(exhausted).kind, 'continue_conversation');
+});
+
 test('a structurally invalid planning reply resumes only after automatic recovery is exhausted', () => {
   const held = fixture({ kind: 'plan', error: '规划结果未通过结构校验，已有成果仍保留；尚未开始图片或视频生成',
     progress: { error_code: 'planning_invalid_response', retryable: false, retry_action: 'edit_plan' } });

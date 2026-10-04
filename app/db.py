@@ -394,7 +394,8 @@ class Store:
         a duplicate click must never replay an earlier checkpoint over a worker's
         already-running request or a completed result.
         """
-        from .planning_session import allow_manual_planning_retry, reopen_rejected_stage
+        from .planning_session import (allow_manual_planning_retry, completed_storyboard_checkpoint,
+                                       reopen_rejected_stage)
 
         with self._connection(True) as c:
             job = self._dict(c.execute("SELECT * FROM jobs WHERE id=? AND project_id=?",
@@ -406,15 +407,23 @@ class Store:
             self._guard_job(c, job_id)
             self._require_idle(c, project_id)
             progress = job.get("progress") or {}
-            if progress.get("retry_action") != "retry_planning" or not progress.get("retryable"):
+            payload = dict(job.get("payload") or {})
+            checkpoint = payload.get("planning_checkpoint")
+            # The plan was rejected after storyboard and review had both been saved.
+            # Replay those results instead of opening a new job from the brief.
+            if (progress.get("error_code") == "planning_invalid_response"
+                    and progress.get("retry_action") in ("edit_plan", "retry_planning")
+                    and not payload.get("plan_structure_replayed")
+                    and completed_storyboard_checkpoint(checkpoint)):
+                payload = {**payload, "plan_structure_replayed": True}
+            elif progress.get("retry_action") != "retry_planning" or not progress.get("retryable"):
                 if progress.get("error_code") in ("planning_review_incomplete", "planning_invalid_response", "planning_request_limit"):
                     raise StaleRevision("这次策划已停止，不能直接重提同一步骤；已有内容仍保留，可继续对话")
                 raise StaleRevision("本次方案需要调整，请通过输入框说明修改要求；已有成果仍保留")
-            checkpoint = (job.get("payload") or {}).get("planning_checkpoint")
-            if not isinstance(checkpoint, dict) or checkpoint.get("version") != 1:
+            elif not isinstance(checkpoint, dict) or checkpoint.get("version") != 1:
                 # The card already offered another attempt. Start this job again
                 # from the saved brief instead of refusing before any event.
-                payload = {key: value for key, value in job["payload"].items() if key != "planning_checkpoint"}
+                payload = {key: value for key, value in payload.items() if key != "planning_checkpoint"}
             else:
                 try:
                     checkpoint = allow_manual_planning_retry(checkpoint)
@@ -422,7 +431,7 @@ class Store:
                     checkpoint = reopen_rejected_stage(checkpoint)
                     if checkpoint is None:
                         raise StaleRevision("当前策划进度不能重新尝试，请通过输入框说明修改要求；已有成果仍保留") from None
-                payload = {**job["payload"], "planning_checkpoint": checkpoint}
+                payload = {**payload, "planning_checkpoint": checkpoint}
             progress = {key: value for key, value in progress.items()
                         if key not in ("error_code", "retryable", "retry_action", "issue_summary")}
             now = time.time()

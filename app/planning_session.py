@@ -134,6 +134,18 @@ class PlanningSession:
             return result
 
 
+def completed_storyboard_checkpoint(checkpoint):
+    """True when storyboard and every saved stage finished, so the plan can be rebuilt."""
+    if not isinstance(checkpoint, dict) or checkpoint.get("version") != 1:
+        return False
+    entries = checkpoint.get("entries")
+    if not isinstance(entries, list) or not entries:
+        return False
+    if any(not isinstance(entry, dict) or entry.get("state") != "ready" for entry in entries):
+        return False
+    return any(entry.get("stage") == "storyboard" for entry in entries)
+
+
 def allow_manual_planning_retry(checkpoint):
     """Explicit retry extends only the unfinished request, retaining all results."""
     result = deepcopy(checkpoint)

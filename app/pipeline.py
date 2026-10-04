@@ -82,7 +82,243 @@ class VoiceTooLong(ValueError):
     retryable = False
 
 
-def validate_plan(plan, duration_seconds=None):
+class PlanStructureError(ValueError):
+    """A segment/plan shape the merchant should not have to edit by hand."""
+
+    error_code = "planning_invalid_response"
+    retryable = True
+    retry_action = "retry_planning"
+
+    def __init__(self, message, details):
+        super().__init__(message)
+        self.validation_errors = details
+
+
+# Segment validators the server can correct without another model call.
+_SEGMENT_FIXABLE = {
+    "镜头时段必须从0连续排列，且不超过片段时长",
+    "镜头计划须覆盖完整片段",
+    "镜头内容节拍须非空且不重复，beat_id须保留为beat_ids首项",
+    "旁白时段须在片段内按顺序排列且不重叠，完整句不能跨生成段",
+    "旁白及锚点时段须由对应镜头覆盖",
+    "旁白及锚点时段须与每个引用镜头的时段重叠",
+    "旁白及锚点只能引用本段存在且不重复的镜头ID",
+    "旁白及锚点引用的镜头须按顺序连续排列",
+    "旁白及锚点只能跨同一内容节拍的镜头",
+    "台词锚点只能引用其旁白时段对应的镜头",
+}
+
+
+def _validation_details(error, prefix=()):
+    details = []
+    for item in error.errors(include_url=False, include_context=False, include_input=False):
+        details.append({"loc": tuple(prefix) + tuple(item.get("loc") or ()),
+                        "type": item.get("type", "validation_error"), "msg": item.get("msg", "")})
+    return details
+
+
+def _detail_messages(details):
+    return [str(item.get("msg", "")).removeprefix("Value error, ") for item in details]
+
+
+def _record_plan_validation(settings, details):
+    if settings is None:
+        return
+    from .providers.gateway import save_failed_planner_output
+    save_failed_planner_output(settings, {"stage": "plan_validation",
+        "raw_output": {"check": "segment"}, "validation_errors": details})
+
+
+def _fail_plan_structure(settings, message, details):
+    _record_plan_validation(settings, details)
+    raise PlanStructureError(message, details) from None
+
+
+def _segment_validation_errors(plan):
+    """Validate each segment at the plan's own speech rate, not the historical 2.9 cap."""
+    from .ad_form_playbook import bind_plan_speech_tenth, reset_plan_speech_tenth
+    token = bind_plan_speech_tenth(plan.get("strategy"))
+    try:
+        for index, segment in enumerate(plan["segments"]):
+            try:
+                Segment.model_validate(segment)
+            except ValidationError as error:
+                return _validation_details(error, ("segments", index))
+    finally:
+        reset_plan_speech_tenth(token)
+    return []
+
+
+def _finite(value):
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def _covers(shots, duration):
+    previous = 0.0
+    for shot in shots:
+        start, end = shot.get("start"), shot.get("end")
+        if not _finite(start) or not _finite(end):
+            return False
+        if abs(start - previous) > 0.05 or end <= start or end > duration + 1e-6:
+            return False
+        previous = end
+    return abs(previous - duration) <= 0.05
+
+
+def _shift_window(item, origin):
+    for key in ("start", "end"):
+        value = item.get(key)
+        if _finite(value):
+            item[key] = round(value - origin, 6)
+
+
+def _rebase_segment_clock(segment):
+    """Turn a whole-film clock into this segment's 0..duration clock."""
+    shots = segment.get("shots")
+    if not isinstance(shots, list) or not shots or not isinstance(shots[0], dict):
+        return
+    origin = shots[0].get("start")
+    if not _finite(origin) or origin <= 0.05:
+        return
+    for shot in shots:
+        if isinstance(shot, dict):
+            _shift_window(shot, origin)
+    for span in segment.get("speech_spans") or []:
+        if not isinstance(span, dict) or not _finite(span.get("start")) or span["start"] + 1e-6 < origin:
+            continue
+        _shift_window(span, origin)
+        for anchor in span.get("anchors") or []:
+            if isinstance(anchor, dict):
+                _shift_window(anchor, origin)
+
+
+def _snap_shot_coverage(shots, duration):
+    """Pin the first frame to 0, close gaps, and make the last frame end at duration."""
+    if not shots:
+        return False
+    if not _covers(shots, duration):
+        previous = 0.0
+        for shot in shots:
+            start, end = shot.get("start"), shot.get("end")
+            if not _finite(start) or not _finite(end):
+                return False
+            if abs(start - previous) > 0.05:
+                start = previous
+            end = min(float(duration), max(float(end), start))
+            if end <= start:
+                end = min(float(duration), start + 0.1)
+            shot["start"], shot["end"] = start, end
+            previous = end
+        shots[0]["start"] = 0.0
+        if shots[0]["end"] <= shots[0]["start"]:
+            shots[0]["end"] = min(float(duration), 0.1)
+        if abs(shots[-1]["end"] - duration) > 0.05:
+            shots[-1]["end"] = float(duration)
+        if shots[-1]["end"] <= shots[-1]["start"]:
+            shots[-1]["start"] = max(0.0, float(duration) - 0.1)
+            shots[-1]["end"] = float(duration)
+    if _covers(shots, duration):
+        return True
+    weights = [max(float(shot["end"]) - float(shot["start"]), 0.1) for shot in shots]
+    total = sum(weights)
+    cursor = 0.0
+    for index, shot in enumerate(shots):
+        shot["start"] = cursor
+        if index == len(shots) - 1:
+            shot["end"] = float(duration)
+        else:
+            room = float(duration) - 0.05 * (len(shots) - index - 1)
+            cursor = min(room, max(cursor + 0.05, round(cursor + duration * weights[index] / total, 4)))
+            shot["end"] = cursor
+    return _covers(shots, duration)
+
+
+def _fix_beat_membership(shot):
+    ids = shot.get("beat_ids")
+    if not isinstance(ids, list):
+        return
+    cleaned = []
+    for beat in ids:
+        if not isinstance(beat, str):
+            continue
+        beat = beat.strip()
+        if beat and len(beat) <= 80 and beat not in cleaned:
+            cleaned.append(beat)
+    if not cleaned:
+        return
+    shot["beat_ids"] = cleaned
+    shot["beat_id"] = cleaned[0]
+
+
+def _overlapping_shot_ids(shots, start, end, beat_id=None):
+    matched = []
+    for shot in shots:
+        if not isinstance(shot, dict) or not isinstance(shot.get("id"), str) or not shot["id"].strip():
+            continue
+        if not _finite(shot.get("start")) or not _finite(shot.get("end")):
+            continue
+        if min(shot["end"], end) - max(shot["start"], start) <= 1e-7:
+            continue
+        if beat_id and beat_id not in (shot.get("beat_ids") or [shot.get("beat_id", "")]):
+            continue
+        if shot["id"] not in matched:
+            matched.append(shot["id"])
+    return matched
+
+
+def _retarget_speech(segment):
+    shots = segment.get("shots")
+    spans = segment.get("speech_spans")
+    duration = segment.get("duration_seconds")
+    if not isinstance(shots, list) or not isinstance(spans, list) or type(duration) is not int:
+        return
+    for span in spans:
+        if not isinstance(span, dict) or not _finite(span.get("start")) or not _finite(span.get("end")):
+            continue
+        span["start"] = min(max(float(span["start"]), 0.0), duration)
+        span["end"] = min(max(float(span["end"]), 0.0), duration)
+        if span["end"] <= span["start"]:
+            continue
+        overlapping = _overlapping_shot_ids(shots, span["start"], span["end"], span.get("beat_id"))
+        if overlapping:
+            span["shot_ids"] = overlapping
+        allowed = set(span.get("shot_ids") or [])
+        for anchor in span.get("anchors") or []:
+            if not isinstance(anchor, dict):
+                continue
+            ids = [shot_id for shot_id in anchor.get("shot_ids") or [] if shot_id in allowed]
+            if not ids and span.get("shot_ids"):
+                ids = list(span["shot_ids"])
+            if ids:
+                anchor["shot_ids"] = ids
+
+
+def normalize_plan_structure(plan, *, retarget_speech=False):
+    """Rebase, snap and repair beat membership. Returns a copy, or None if nothing changed."""
+    if not isinstance(plan, dict) or not isinstance(plan.get("segments"), list):
+        return None
+    result = copy.deepcopy(plan)
+    for segment in result["segments"]:
+        if not isinstance(segment, dict):
+            return None
+        shots = segment.get("shots")
+        duration = segment.get("duration_seconds")
+        if not isinstance(shots, list) or not shots or type(duration) is not int:
+            return None
+        _rebase_segment_clock(segment)
+        if not _snap_shot_coverage(shots, duration):
+            return None
+        for shot in shots:
+            if isinstance(shot, dict):
+                _fix_beat_membership(shot)
+        if retarget_speech:
+            _retarget_speech(segment)
+    if result == plan:
+        return None
+    return result
+
+
+def validate_plan(plan, duration_seconds=None, *, settings=None):
     if not isinstance(plan, dict) or plan.get("language") != "zh-CN" or plan.get("aspect_ratio") != "9:16":
         raise ValueError("P0方案必须使用中文与9:16画幅")
     if not str(plan.get("script", "")).strip() and (plan.get("production") or {}).get("speech_mode") != "none":
@@ -107,11 +343,22 @@ def validate_plan(plan, duration_seconds=None):
             raise ValueError("视频生成段缺少完整提示词")
         if not isinstance(segment.get("reference_asset_ids"), list) or not segment["reference_asset_ids"]:
             raise ValueError("每段视频都必须绑定真实商品参考")
-        try:
-            Segment.model_validate(segment)
-        except ValidationError:
-            raise ValueError("视频段镜头时轴或素材结构无效") from None
-    durations = [s["duration_seconds"] for s in segments]
+    details = _segment_validation_errors(plan)
+    if details:
+        messages = _detail_messages(details)
+        if all(message in _SEGMENT_FIXABLE for message in messages):
+            retarget = any(token in message for message in messages for token in ("旁白", "锚点", "台词"))
+            repaired = normalize_plan_structure(plan, retarget_speech=retarget)
+            if repaired is not None:
+                repaired_details = _segment_validation_errors(repaired)
+                if not repaired_details:
+                    plan = repaired
+                    details = []
+                else:
+                    details = repaired_details
+        if details:
+            _fail_plan_structure(settings, "视频段镜头时轴或素材结构无效", details)
+    durations = [s["duration_seconds"] for s in plan["segments"]]
     validate_generation_durations(durations, strategy)
     requested = duration_seconds if duration_seconds is not None else sum(durations)
     segment_durations(requested)  # Validates the product's 10–60 second selection.
@@ -119,11 +366,12 @@ def validate_plan(plan, duration_seconds=None):
         raise ValueError("方案分段与项目所选时长不一致，请重新策划；没有自动改时长")
     if plan.get("audio_strategy") not in ("voiceover", "native"):
         raise ValueError("不支持的音频策略")
-    if plan.get("production") is not None or any(segment.get("speech_spans") is not None for segment in segments):
+    if plan.get("production") is not None or any(segment.get("speech_spans") is not None for segment in plan["segments"]):
         try:
             Plan.model_validate(plan)
-        except ValidationError:
-            raise ValueError("独立旁白方案的声音策略、内容或跨段对应无效，请重新策划") from None
+        except ValidationError as error:
+            _fail_plan_structure(settings, "独立旁白方案的声音策略、内容或跨段对应无效，请重新策划",
+                                 _validation_details(error))
     result = copy.deepcopy(plan)
     result.pop("cta", None)
     return result
@@ -202,9 +450,14 @@ class Pipeline:
             changes = {"status": "failed", "error": message[:500], "lease_until": 0}
             if job["kind"] == "plan":
                 progress = dict(self.store.get_job(job_id).get("progress") or {})
+                retryable = bool(getattr(exc, "retryable", False))
+                retry_action = getattr(exc, "retry_action", "edit_plan")
+                # One replay of a saved storyboard is enough. A second identical
+                # structure failure starts again from the brief instead of looping.
+                if isinstance(exc, PlanStructureError) and (job.get("payload") or {}).get("plan_structure_replayed"):
+                    retryable, retry_action = False, "continue_conversation"
                 progress.update(error_code=getattr(exc, "error_code", "planning_invalid_response"),
-                    retryable=bool(getattr(exc, "retryable", False)),
-                    retry_action=getattr(exc, "retry_action", "edit_plan"))
+                    retryable=retryable, retry_action=retry_action)
                 # Only our bounded planning errors provide these owned summaries.
                 if getattr(exc, "error_code", None) in ("planning_content_failed", "planning_review_incomplete"):
                     progress.update(issue_summary=getattr(exc, "issue_summary", [])[:8],
@@ -299,7 +552,8 @@ class Pipeline:
             except ValidationError:
                 raise ValueError("策划回复未通过对话结构校验；没有自动创建问题或开始制作") from None
             if decision["kind"] == "plan":
-                decision["plan"] = validate_plan(decision["plan"], frozen["project"].get("duration_seconds", 20))
+                decision["plan"] = validate_plan(decision["plan"], frozen["project"].get("duration_seconds", 20),
+                                                  settings=self.settings)
                 self._references(job["project_id"], decision["plan"])
                 for option in decision["creative_options"]:
                     self._references(job["project_id"], {"segments": [option["segment"]]})
@@ -315,7 +569,7 @@ class Pipeline:
             raise ValueError("请先上传至少一张真实商品图")
         legacy_callbacks = {**callbacks, "gates": detail["gates"]} if callbacks else {}
         plan = validate_plan(await self.gateway.plan(detail["project"], detail["assets"], detail["messages"], **legacy_callbacks),
-                             detail["project"].get("duration_seconds", 20))
+                             detail["project"].get("duration_seconds", 20), settings=self.settings)
         self._guard(job["id"], require_current=True)
         self._references(job["project_id"], plan)
         self.store.assert_job_current(job["id"])
@@ -394,7 +648,7 @@ class Pipeline:
 
     async def _generate(self, job):
         project = self.store.get_project(job["project_id"])
-        plan = validate_plan(job["payload"]["plan"], project.get("duration_seconds", 20))
+        plan = validate_plan(job["payload"]["plan"], project.get("duration_seconds", 20), settings=self.settings)
         if project["route"] == "presenter" and not getattr(self.settings, "presenter_verified", False):
             raise ValueError("中文出镜口播能力尚未验证，目前不能生成口播路线")
         budget = self._submission_budget(job)

@@ -8,8 +8,7 @@ from app.schemas import AgentDecision, Plan, Segment, SpeechSpan, shot_character
 from app.strategy import CreativeDirection, ProductBrief, build_strategy, select_rules
 
 
-@pytest.fixture
-def plan_data():
+def speech_plan_data():
     brief = ProductBrief(product_name="蛋糕切块", category="food", audience="办公人群", scenario="办公室下午茶",
         facts=[{"id": "layers", "text": "多层切面", "source_kind": "image", "source_id": "photo"}],
         unknowns=["配料与口味"], assumptions=[])
@@ -42,6 +41,11 @@ def plan_data():
         "facts": {"name": brief.product_name, "claims": [f.text for f in brief.facts]}, "strategy": strategy,
         "ad_script": script, "script_review": {"script": deepcopy(script), "ready": True,
             "checks": [{"criterion": criterion, "passed": True, "note": "离线计划结构测试夹具"} for criterion in CHECK_CRITERIA]}}
+
+
+@pytest.fixture
+def plan_data():
+    return speech_plan_data()
 
 
 def test_complete_speech_can_cross_continuous_shots_within_one_beat(plan_data):

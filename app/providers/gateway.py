@@ -305,6 +305,33 @@ def reviewable_draft_enum_issues(raw, strategy, duration, generation_strategy, *
     return issues
 
 
+def _safe_validation_errors(errors):
+    """Keep pydantic locations and owned messages. Never keep the rejected input."""
+    if not isinstance(errors, list):
+        return []
+    saved = []
+    for item in errors[:12]:
+        if not isinstance(item, dict):
+            continue
+        location = []
+        for part in tuple(item.get("loc") or ())[:12]:
+            if type(part) is int and 0 <= part < 100000:
+                location.append(part)
+            elif isinstance(part, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", part):
+                location.append(part)
+            else:
+                location.append("field")
+        error_type = item.get("type", "validation_error")
+        if not isinstance(error_type, str) or not re.fullmatch(r"[a-z0-9_]{1,64}", error_type):
+            error_type = "validation_error"
+        entry = {"loc": location, "type": error_type}
+        message = str(item.get("msg", "")).removeprefix("Value error, ")
+        if message and "\n" not in message and len(message) <= 120 and not re.search(r"[{}\[\]\"']", message):
+            entry["msg"] = message
+        saved.append(entry)
+    return saved
+
+
 def save_failed_planner_output(settings, stage_result):
     """Best-effort local replay evidence; no prompts, request media or headers."""
     if stage_result is None:
@@ -346,6 +373,9 @@ def save_failed_planner_output(settings, stage_result):
             # data. Retain that bounded JSON only on failure so the exact
             # validator can be replayed offline without another model call.
             record["validation_candidate"] = safe(stage_result["validation_candidate"])
+        safe_errors = _safe_validation_errors(stage_result.get("validation_errors"))
+        if safe_errors:
+            record["validation_errors"] = safe_errors
         content = json.dumps(record, ensure_ascii=False).encode("utf-8")
         if len(content) > 200 * 1024:
             return
