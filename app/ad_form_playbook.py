@@ -26,6 +26,7 @@ STRUCTURE_TO_FORM = {
 CONCRETE_FORMS = ("brand_tvc", "scene_story", "presenter_pitch")
 _SUGGESTION_KINDS = frozenset({
     "ordinary_wording", "expression_quality", "optional_pacing", "shot_variety", "type_fit", "shot_craft",
+    "line_focus",
 })
 # Share of runtime with the product in frame. Scene films keep the playbook's
 # lower target; a storyboard that never opted into the new fields is not scored.

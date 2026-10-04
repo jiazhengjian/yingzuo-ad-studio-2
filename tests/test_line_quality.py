@@ -7,7 +7,7 @@ from app.ad_script import derive_script_evidence, script_stage_schema
 from app.line_quality import (
     apply_line_rewrite, line_offenses, line_style, narration_budget_ok,
     offending_lines, prepare_script_lines, prepare_speech_draft, product_terms,
-    rewrite_script_if_needed, type_line_score,
+    rewrite_script_if_needed, script_line_offenses, type_line_score,
 )
 from app.runtime_skills import stage_skill_context
 from app.strategy import StrategyRecord
@@ -245,3 +245,126 @@ def test_key_line_schema_is_optional_and_rewrite_loads_only_dialogue():
     assert loaded["shared_references"] == []
     assert "说出口的对照" in loaded["skills"][0]["content"]
     assert "speech-timing.md" not in loaded["skills"][0]["loaded_sections"]
+
+
+def _focus(script, form, plan=None):
+    found = []
+    for item in script_line_offenses(script, typed(form), plan=plan):
+        found.extend(item["offenses"])
+    return found
+
+
+def _lines(*texts):
+    return {"beats": [{"id": f"b{index}", "narration": text} for index, text in enumerate(texts)]}
+
+
+def test_presenter_selling_lines_need_a_subject_and_a_connective():
+    bad = _focus(_lines(
+        "早上吹头发，你一般要多久？",
+        "风大，这几下就吹开了。",
+        "你听，我正常说话都听得清。",
+        "带负离子，吹完头发顺。",
+        "399，链接放下面了。",
+    ), "presenter_pitch")
+    assert "卖点没有主语" in bad
+    assert "卖点之间缺少承接" in bad
+    assert "开场问题没有下文" not in bad
+    good = _focus(_lines(
+        "早上吹头发，你一般要多久？",
+        "我用这款吹风机，几下就吹开了。",
+        "而且它声音很小，我正常说话都听得清。",
+        "它带负离子，吹完头发顺。",
+        "399，链接放下面了。",
+    ), "presenter_pitch")
+    assert good == []
+    assert _focus(_lines("看轮廓。", "看桌角。", "留一处。"), "presenter_pitch") == []
+
+
+def test_brand_lines_can_state_the_benefit_without_a_subject():
+    visual = _focus(_lines(
+        "吹风机，先亮起一道银线。",
+        "光扫过去，机身才好看。",
+        "风一开，这缕发丝先飘起来。",
+        "徕芬，银色的一道线。",
+    ), "brand_tvc")
+    assert "只描述画面" in visual
+    assert "卖点没有主语" not in visual
+    assert "卖点之间缺少承接" not in visual
+    terse = _focus(_lines(
+        "十万转高速马达，三分钟吹干。",
+        "一亿负离子，吹完不毛躁。",
+        "机身带负离子护发。",
+        "肩线这一圈，是它的脸。",
+    ), "brand_tvc")
+    assert terse == []
+    copied = "肩线这一圈停在桌角这边。"
+    overlap = _focus(_lines(copied), "brand_tvc", plan={"segments": [{"shots": [
+        {"beat_id": "b0", "description": copied + "侧光停住。"}]}]})
+    assert overlap == ["台词贴着画面"]
+
+
+def test_scene_lines_follow_the_character_and_mention_the_product_once():
+    bare = _focus(_lines("风大，这几下就吹开了。"), "scene_story")
+    assert "卖点没有主语" not in bare
+    assert "卖点之间缺少承接" not in bare
+    assert "人物没带到商品" in bare
+    mixed = _focus(_lines("她走过窗边。", "就坐这儿吧。"), "scene_story")
+    assert "人称不统一" in mixed
+    assert "只描述画面" in mixed
+    assert "人物没带到商品" in mixed
+    assert "卖点没有主语" not in mixed
+    assert _focus(_lines("这块给你。"), "scene_story") == []
+    assert _focus(_lines("又卡在这一步。", "你先按这里。", "嘿，开了。", "那就放这儿吧。"), "scene_story") == []
+    assert "人物没带到商品" not in _focus(_lines("看轮廓。", "看桌角。", "留一处。"), "scene_story")
+
+
+def test_a_bare_selling_line_is_rewritten_once_and_the_same_words_stay():
+    strategy = typed("presenter_pitch")
+    script = script_of(
+        beat("风大，这几下就吹开了。", "b0"),
+        beat("你听，我正常说话都听得清。", "b1"),
+    )
+    calls = []
+
+    async def same_words(system, data, originals, max_tokens):
+        calls.append(data["lines"])
+        return {"lines": [{"beat_id": item["beat_id"], "narration": item["narration"]} for item in data["lines"]]}
+
+    called, result = asyncio.run(rewrite_script_if_needed(same_words, script, strategy, 20))
+    assert called is True and len(calls) == 1
+    assert result["beats"][0]["narration"] == "风大，这几下就吹开了。"
+    assert result["beats"][1]["narration"] == "你听，我正常说话都听得清。"
+
+
+def test_skills_and_replan_show_the_per_type_line_focus_rule(capsys):
+    from pathlib import Path
+    from scripts.replan_offline import _print_report, _script_lines
+
+    root = Path("app/skills")
+    presenter = (root / "shared/ad-form-playbooks/presenter-pitch.md").read_text()
+    brand = (root / "shared/ad-form-playbooks/brand-tvc.md").read_text()
+    scene = (root / "shared/ad-form-playbooks/scene-story.md").read_text()
+    examples = (root / "ads-video-dialogue-writing/references/ad-dialogue-examples.md").read_text()
+    review = (root / "ads-video-plan-review/references/plan-review.md").read_text()
+    assert "风大，这几下就吹开了" in presenter and "我用这款吹风机，几下就吹开了" in presenter
+    assert "十万转高速马达，三分钟吹干" in brand and "不必" in brand
+    assert "至少" in scene and "不套" in scene
+    assert "说出口的对照" in examples
+    assert "一亿负离子，吹完不毛躁" in examples
+    assert "台词是否对焦商品、前后连贯" in review and "line_focus" in review
+    plan = {"ad_script": {"beats": [
+        {"id": "a", "narration": "吹风机，先亮起一道银线。"},
+        {"id": "b", "narration": "十万转高速马达，三分钟吹干。"},
+    ]}, "segments": [{"speech_spans": [
+        {"beat_id": "a", "start": 0, "end": 2},
+        {"beat_id": "b", "start": 2, "end": 4},
+    ], "shots": []}]}
+    rows = _script_lines(plan, typed("brand_tvc"))
+    assert rows[0]["flags"] == ["只描述画面"]
+    assert rows[1]["flags"] == []
+    _print_report({
+        "job_id": "job", "direction_id": "direction", "lines": rows, "shots": [],
+        "review": {"ready": True, "skipped": True, "suggestions": []}, "notes": [], "prompt": "",
+    })
+    printed = capsys.readouterr().out
+    assert "只描述画面" in printed and "未触发" in printed

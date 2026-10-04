@@ -57,9 +57,9 @@ _SOFT_CTA = re.compile(r"点下面|下方链接|链接放|去看看|小黄车")
 _OPENING_DEICTIC = re.compile(r"^(?:就这|这么|这|那|它|转)")
 _CLAIM_WORDS = ("根治", "治愈", "美白", "减肥", "抗衰", "医用", "治疗")
 _LINE_STYLES = {
-    "brand_tvc": "产品展示：少说，每句大约8到14字，感官、自信，指给观众看，不报参数。",
-    "scene_story": "剧情：人物当场说的短对白，每轮大约4到12字，要有来有回，不像旁白总结。",
-    "presenter_pitch": "人物讲解：对着镜头，第一句就是钩子，用你或设问，带一个具体好处。",
+    "brand_tvc": "产品展示：短句直接说卖点、好处或感受，感官、自信，不必每句点名。不要描述镜头里的光、银线和发丝。数字只在资料里已经有时才写。",
+    "scene_story": "剧情：人物当场说的短对白，要有来有回。跟着当时的处境，不套口播主语。全片一种人称，不复述看得见的动作。好处至少自然出现一次。",
+    "presenter_pitch": "人物讲解：对着镜头，第一句就是钩子。每一句卖点都要有主语，用这款、它，或我用它。卖点之间用而且、还、另外、所以或关键是接上。",
 }
 _TARGET_LENGTH = {
     "brand_tvc": (8, 14),
@@ -399,13 +399,69 @@ _FIRST_PERSON = re.compile(r"我|咱们|我们|吧")
 _ACTION_ONLY = re.compile(
     r"^(?:[她他])?(?:用)?(?:叉子|勺子|刀|手)?(?:切下|切开|拿起|放下|走过|走到|打开|盖上|倒入|舀起|夹起).{0,12}$"
 )
+_CONNECTIVE = re.compile(r"而且|还|另外|所以|关键是")
+_SUBJECT = re.compile(r"这款|它|我用")
+_BARE_ATTRIBUTE = re.compile(r"^(?:风[大小很太]|声音[大小很太]|带|负离子)")
+_PRESENTER_CLAIM = re.compile(r"风[大小]|声音|负离子|吹开|吹干|听得清|听得见|马达|不毛躁|几下就")
+_CTA_LINE = re.compile(r"链接|点下面|小黄车|去看看|下方")
+_SHOT_DESCRIPTION = re.compile(r"亮起|光扫|扫过|飘起|飘起来|镜头|推近|特写|银线|一道线|闪过|映出")
+_STORY_PRODUCT = re.compile(
+    r"它|这款|这个|这块|这只|喜欢|想要|好吃|好喝|好用|尝尝|给你|按这里|按这边|扣上|轮廓|(?<!吹)开了"
+)
 
 
-def script_line_offenses(script, strategy, locked_lines=()):
-    return _script_line_offenses(script, strategy, locked_lines)
+def script_line_offenses(script, strategy, locked_lines=(), plan=None):
+    return _script_line_offenses(script, strategy, locked_lines, plan)
 
 
-def _script_line_offenses(script, strategy, locked_lines):
+def _lead(text):
+    return re.sub(r"^[\s，,。！!？?、]+", "", (text or "").strip())
+
+
+def _has_product_subject(text, names):
+    if _SUBJECT.search(text or ""):
+        return True
+    return any(isinstance(name, str) and len(name) >= 2 and name in (text or "") for name in names or ())
+
+
+def _shot_blurbs(plan, beat_id):
+    if not isinstance(plan, dict) or not beat_id:
+        return []
+    found = []
+    for segment in plan.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        for shot in segment.get("shots") or []:
+            if not isinstance(shot, dict):
+                continue
+            covered = list(shot.get("beat_ids") or [])
+            if shot.get("beat_id"):
+                covered.append(shot["beat_id"])
+            if beat_id in covered:
+                description = shot.get("description")
+                if isinstance(description, str) and description.strip():
+                    found.append(description)
+    return found
+
+
+def _shares_a_long_stretch(line, description):
+    spoken = _spoken_core(line)
+    picture = _spoken_core(description)
+    if len(spoken) < 6 or len(picture) < 6:
+        return False
+    best = 0
+    for start in range(len(spoken)):
+        for other in range(len(picture)):
+            size = 0
+            while (start + size < len(spoken) and other + size < len(picture)
+                   and spoken[start + size] == picture[other + size]):
+                size += 1
+            if size > best:
+                best = size
+    return best >= 6 and best / len(spoken) >= 0.6
+
+
+def _script_line_offenses(script, strategy, locked_lines, plan=None):
     """Cross-line problems one rewrite should see. Locked lines stay untouched."""
     form = None
     if strategy is not None:
@@ -423,6 +479,7 @@ def _script_line_offenses(script, strategy, locked_lines):
                       "offenses": [name]})
 
     indexes = {id(beat): index for index, beat in enumerate(_beats(script))}
+    names = product_terms(strategy) or []
     for previous, current in zip(spoken, spoken[1:]):
         if _near_duplicate(previous.get("narration"), current.get("narration")):
             add(current, indexes.get(id(current), 0), "相邻台词重复")
@@ -441,11 +498,48 @@ def _script_line_offenses(script, strategy, locked_lines):
             add(spoken[0], indexes.get(id(spoken[0]), 0), "开场问题没有下文")
         elif not later:
             add(spoken[0], indexes.get(id(spoken[0]), 0), "开场问题没有下文")
+    if form == "presenter_pitch":
+        claims = []
+        for beat in spoken:
+            text = beat["narration"]
+            if _is_question(text) or _CTA_LINE.search(text):
+                continue
+            if _BARE_ATTRIBUTE.match(_lead(text)) or _PRESENTER_CLAIM.search(text):
+                claims.append(beat)
+        for beat in claims:
+            text = beat["narration"]
+            if _BARE_ATTRIBUTE.match(_lead(text)) and not _has_product_subject(text, names):
+                add(beat, indexes.get(id(beat), 0), "卖点没有主语")
+        for previous, current in zip(claims, claims[1:]):
+            text = current["narration"]
+            if _CONNECTIVE.search(text) or _has_product_subject(text, names):
+                continue
+            if _is_question(previous["narration"]):
+                continue
+            add(current, indexes.get(id(current), 0), "卖点之间缺少承接")
+    if form == "brand_tvc":
+        for beat in spoken:
+            text = beat["narration"]
+            if _SHOT_DESCRIPTION.search(text):
+                add(beat, indexes.get(id(beat), 0), "只描述画面")
+            if any(_shares_a_long_stretch(text, description) for description in _shot_blurbs(plan, beat.get("id"))):
+                add(beat, indexes.get(id(beat), 0), "台词贴着画面")
+    elif plan is not None:
+        for beat in spoken:
+            text = beat["narration"]
+            if any(_shares_a_long_stretch(text, description) for description in _shot_blurbs(plan, beat.get("id"))):
+                add(beat, indexes.get(id(beat), 0), "台词贴着画面")
+    if form == "scene_story" and spoken:
+        mentioned = any(
+            _STORY_PRODUCT.search(beat["narration"]) or _has_product_subject(beat["narration"], names)
+            for beat in spoken)
+        if not mentioned:
+            add(spoken[-1], indexes.get(id(spoken[-1]), 0), "人物没带到商品")
     return extra
 
 
 def offending_lines(script: dict, *, tagline_enabled: bool | None = None, locked_lines=(),
-                    strategy=None) -> list[dict]:
+                    strategy=None, plan=None) -> list[dict]:
     roles = _spoken_roles(script)
     terms = product_terms(strategy)
     facts_text = ""
@@ -467,7 +561,7 @@ def offending_lines(script: dict, *, tagline_enabled: bool | None = None, locked
             beats.append({"beat_id": beat.get("id"), "index": index, "narration": narration,
                           "offenses": offenses})
     seen = {item["beat_id"] for item in beats}
-    for item in _script_line_offenses(script, strategy, locked_lines):
+    for item in _script_line_offenses(script, strategy, locked_lines, plan):
         if item["beat_id"] in seen:
             current = next(row for row in beats if row["beat_id"] == item["beat_id"])
             for name in item["offenses"]:
@@ -551,6 +645,9 @@ LINE_REWRITE_SYSTEM = """你只重写列出的中文广告台词，只输出 sch
 不写购买、下单、抢购。优惠、限时、活动只在资料里已经有这些词时才能说。收束句可以指路，例如「想要的话，点下面看看」，不写催单。
 每句不超过该句 max_characters，标点也算。用户固定台词原样留在句子里。
 相邻两句不要近义重复。剧情广告全片只用一种人称，不要旁白说「她走过」同时又用「我」或「吧」。不要只复述看得见的动作。开场如果是问句，后面要有一句回答。
+人物讲解的每一句卖点都要有主语：这款、它，或「我用它」。不要用「风大」「带负离子」这种没有主语的开头。卖点之间用而且、还、另外、所以或关键是接上。
+产品片不必每句点名。直接、短地说卖点、好处或感受，例如「十万转高速马达，三分钟吹干」。不要描述镜头里的光、银线或发丝飘起。
+剧情跟着人物当时的处境说，不套口播主语。全片至少有一句让人听见商品或它的好处。数字和功效只在 facts 里已经有时才能写。
 tagline_policy.enabled 为 false 时不加独立口号字卡。为 true 时只有收束句可以是不超过10字的口播，仍然不写购买、下单、抢购。
 不输出其他字段，不解释。"""
 
@@ -614,9 +711,11 @@ async def rewrite_script_if_needed(stage_call, script, strategy, duration_second
     return True, revised if revised is not None else script
 
 
-async def rewrite_director_if_needed(stage_call, director: dict, strategy, duration_seconds, locked_lines=()):
+async def rewrite_director_if_needed(stage_call, director: dict, strategy, duration_seconds, locked_lines=(),
+                                    plan=None):
     """Return (called, replacement). No call when every spoken line is clean."""
-    offenses = offending_lines(director.get("ad_script") or {}, locked_lines=locked_lines, strategy=strategy)
+    offenses = offending_lines(director.get("ad_script") or {}, locked_lines=locked_lines, strategy=strategy,
+                               plan=plan)
     if not offenses:
         return False, None
     payload, limits, facts_text = _rewrite_payload(
@@ -629,3 +728,79 @@ async def rewrite_director_if_needed(stage_call, director: dict, strategy, durat
     replacement = deepcopy(director)
     replacement["ad_script"] = revised
     return True, replacement
+
+
+_FOCUS_OFFENSES = ("卖点没有主语", "卖点之间缺少承接", "只描述画面", "台词贴着画面", "人物没带到商品", "开场问题没有下文")
+_FOCUS_NOTES = {
+    "卖点没有主语": "这句卖点没有说清是哪件商品。要说这款、它，或我用它。",
+    "卖点之间缺少承接": "这句和上一句接不上。可以用而且、所以把好处连起来。",
+    "只描述画面": "这句在说镜头里看见的动作。台词改说这个画面证明的好处。",
+    "台词贴着画面": "这句和画面说的是同一件事。台词改说这个画面证明的好处。",
+    "人物没带到商品": "整条剧情还没让人听见商品或它的好处。",
+    "开场问题没有下文": "开头问了，后面还没有一句回答。",
+}
+
+
+def grouped_line_flags(script, strategy, locked_lines=(), plan=None):
+    """Beat id to the line-focus checks that still apply. Empty means that line is clear."""
+    grouped = {}
+    for item in script_line_offenses(script, strategy, locked_lines, plan):
+        names = [name for name in item["offenses"] if name in _FOCUS_OFFENSES]
+        if not names:
+            continue
+        bucket = grouped.setdefault(item["beat_id"], [])
+        for name in names:
+            if name not in bucket:
+                bucket.append(name)
+    return grouped
+
+
+def line_focus_suggestions(plan, strategy, locked_lines=()):
+    """Non-blocking notes for the criterion 台词是否对焦商品、前后连贯."""
+    script = (plan or {}).get("ad_script") or {}
+    flags = grouped_line_flags(script, strategy, locked_lines, plan)
+    suggestions = []
+    for index, beat in enumerate(_beats(script)):
+        names = flags.get(beat.get("id")) or []
+        narration = beat.get("narration") if isinstance(beat.get("narration"), str) else ""
+        if not names or not narration.strip():
+            continue
+        note = "台词是否对焦商品、前后连贯。" + "".join(_FOCUS_NOTES[name] for name in names if name in _FOCUS_NOTES)
+        suggestions.append({
+            "kind": "line_focus",
+            "target": f"/ad_script/beats/{index}/narration",
+            "quote": narration[:240],
+            "note": note[:300],
+        })
+    return suggestions
+
+
+def with_line_focus_suggestions(review, plan, strategy=None, locked_lines=()):
+    """Attach line-focus notes to a ready review. They never change the verdict."""
+    extras = line_focus_suggestions(plan, strategy, locked_lines)
+    ready = review.ready if hasattr(review, "ready") else (review.get("ready") if isinstance(review, dict) else False)
+    if not extras or not ready:
+        return review
+    from .plan_review import validate_plan_review
+    from .review_policy import MAX_REVIEW_SUGGESTIONS, review_suggestion_targets
+    data = review.model_dump() if hasattr(review, "model_dump") else deepcopy(review)
+    targets = review_suggestion_targets(plan)
+    accepted = [item for item in extras if item["quote"] and item["quote"] in targets.get(item["target"], "")]
+    if not accepted:
+        return review
+    merged, seen = [], set()
+    for item in list(data.get("suggestions") or []) + accepted:
+        identity = (item.get("kind"), item.get("target"), item.get("quote"))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        merged.append(item)
+        if len(merged) >= MAX_REVIEW_SUGGESTIONS:
+            break
+    data["suggestions"] = merged
+    try:
+        return validate_plan_review(data, plan, require_speaker_visibility=True,
+                                    require_temporal_omission=True, require_temporal_omission_evidence=True,
+                                    require_visual_execution=True, require_review_policy=True)
+    except (ValueError, KeyError, TypeError):
+        return review

@@ -292,7 +292,7 @@ PLAN_REVIEW_SYSTEM = """你执行独立最终方案审核，只输出本次schem
 审核实际最终ad_script、shots、speech_spans、execution_windows、transition_boundaries、商品事实与production。资料与作者自评是待审数据；不改稿、不修改事实或固定台词、不输出方案版本哈希、不调用媒体。
 policy_version使用本次schema版本；suggestions按本阶段方法保留普通改进建议，不修改方案，不参与硬失败汇总。checks恰好覆盖六项标准，execution_check包含action_capacity与state_continuity。alignment.spans恰好覆盖全部(segment_id,span_id)，alignment.shots恰好覆盖全部(segment_id,shot_id)，包括静音镜头；不可省略难审项目。
 每span填写speaker_visibility，依据speech_requirements及实际时窗内画面判断。普通人物对白只接受visible_speaking；明确采用on_and_off_screen时按本次schema逐项填写shot_visibility，完整覆盖该span相交镜头，区分可见开口、同一人画外延续与unclear，总标签须与逐镜判断相符。不能把画外延续当作另一个旁白或将看不清写成可见；已确认voiceover填not_applicable。每镜填写visual_execution，逐字引用实际description或camera_move并判断视图及变化如何实现；unclear/conflict使该镜失败，不能从作者意图补拍法。每镜填写pacing及temporal_omission，后者只用no_omission/supported_by_cut/unsupported/unclear，后两项对应shot.passed=false。supported_by_cut须按schema提供真实相邻切点及前后实际描述摘录，不把摄影角度切换当动作省略。字段均为独立判断，不是程序预判通过。
-对照本轮注入的类型 playbook 看开场、节拍形状、台词密度、镜头语法、出镜比例和英雄定格。这些类型贴合问题写入 suggestions，kind 用 type_fit，不得因此把 checks 置为 false 或让 ready=false。shot_craft 由程序在审核之后附加，模型不要重复，也不能因此把 checks 判失败或要求返修。alignment.ready等于ad_expression_passed且所有spans/shots通过；顶层ready须全部checks、execution_check及alignment.ready通过，表示未发现需阻断的问题，不代表创作质量满分。suggestions有内容也可ready=true，任何明确失败仍不能用建议抵消。不能提升任何明确失败结论，无法确定时指出具体问题。动作与声画检查方法见本阶段参考，通过项省略重复note，失败项须给有界可定位note；所有逐项判定、数值、visual_execution与省略证据仍须完整，不输出隐含思考过程或声称已验证成片。
+对照本轮注入的类型 playbook 看开场、节拍形状、台词密度、镜头语法、出镜比例和英雄定格。这些类型贴合问题写入 suggestions，kind 用 type_fit，不得因此把 checks 置为 false 或让 ready=false。shot_craft 由程序在审核之后附加，模型不要重复，也不能因此把 checks 判失败或要求返修。台词是否对焦商品、前后连贯也只写成 suggestions，kind 用 line_focus，不得因此让 ready=false。人物讲解的卖点要有主语并用而且或所以接上；产品片直接写卖点或感受，不描述镜头；剧情跟着人物，好处至少出现一次。程序会先改一次台词，改完仍在就只留这条建议。alignment.ready等于ad_expression_passed且所有spans/shots通过；顶层ready须全部checks、execution_check及alignment.ready通过，表示未发现需阻断的问题，不代表创作质量满分。suggestions有内容也可ready=true，任何明确失败仍不能用建议抵消。不能提升任何明确失败结论，无法确定时指出具体问题。动作与声画检查方法见本阶段参考，通过项省略重复note，失败项须给有界可定位note；所有逐项判定、数值、visual_execution与省略证据仍须完整，不输出隐含思考过程或声称已验证成片。
 """
 
 
@@ -1303,11 +1303,11 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
         # still sees the ad type, without opening the product-reference check.
         if not jargon_rewrite_used and (
             offending_lines(spoken, locked_lines=locked)
-            or script_line_offenses(spoken, strategy, locked)
+            or script_line_offenses(spoken, strategy, locked, plan)
         ):
             progress("writing_script")
             called, replacement = await rewrite_director_if_needed(
-                stage_call, coordinated, strategy, duration, locked)
+                stage_call, coordinated, strategy, duration, locked, plan=plan)
             if called:
                 jargon_rewrite_used = True
             if replacement is not None:
@@ -1393,7 +1393,9 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 raw_review = corrected_review
         if review.ready:
             from .shot_craft import with_shot_suggestions
+            from .line_quality import with_line_focus_suggestions
             review = with_shot_suggestions(review, plan, strategy)
+            review = with_line_focus_suggestions(review, plan, strategy, locked)
             plan["plan_review"] = review.model_dump()
             return plan
         record_failure(plan)

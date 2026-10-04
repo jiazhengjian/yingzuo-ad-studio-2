@@ -337,6 +337,30 @@ def test_replan_reads_decision_plan_without_writing_diagnostics(tmp_path, source
     assert not (tmp_path / "data" / "diagnostics").exists()
 
 
+def test_line_focus_stays_a_suggestion(source):
+    from app.ad_form_playbook import review_finding_disposition
+    from app.ad_script import CHECK_CRITERIA
+    from app.line_quality import with_line_focus_suggestions
+    from app.plan_review import validate_plan_review
+
+    assert len(CHECK_CRITERIA) == 6
+    assert "line_focus" not in CHECK_CRITERIA
+    assert review_finding_disposition("line_focus") == "suggestion"
+    strategy = _form_strategy(source, "presenter_pitch")
+    raw = director_output(strategy)
+    raw["ad_script"]["beats"][1]["narration"] = "风大，这几下就吹开了。"
+    plan, _, _ = compile_director(raw, strategy, 20, "continuity_v1", [source["id"]])
+    review = validate_plan_review(
+        accepted_review(plan), plan, require_speaker_visibility=True,
+        require_temporal_omission=True, require_temporal_omission_evidence=True,
+        require_visual_execution=True, require_review_policy=True)
+    attached = with_line_focus_suggestions(review, plan, strategy)
+    assert attached.ready is True
+    assert any(item.kind == "line_focus" and item.note.startswith("台词是否对焦商品、前后连贯。")
+               for item in attached.suggestions)
+    assert attached.reviewed_plan_sha256 == review.reviewed_plan_sha256
+
+
 def test_fallback_director_compiles(source):
     strategy = chosen_strategy(source)
     plan, _, _ = compile_director(fallback_director(strategy), strategy, 20, "continuity_v1", [source["id"]])

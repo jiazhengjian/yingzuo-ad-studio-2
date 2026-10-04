@@ -111,7 +111,10 @@ def _order_assets(assets, production):
     return sorted([asset for asset in assets if asset.get("kind") in ("product", "scene", "character")], key=key)
 
 
-def _script_lines(plan):
+def _script_lines(plan, strategy=None):
+    from app.line_quality import grouped_line_flags
+
+    flags = grouped_line_flags(plan.get("ad_script") or {}, strategy, plan=plan) if strategy is not None else {}
     rows = []
     for beat in (plan.get("ad_script") or {}).get("beats") or []:
         windows = []
@@ -128,6 +131,7 @@ def _script_lines(plan):
             "beat_id": beat.get("id"),
             "time": "、".join(dict.fromkeys(windows)),
             "text": beat.get("narration") or "",
+            "flags": list(flags.get(beat.get("id")) or []),
         })
     return rows
 
@@ -226,7 +230,7 @@ async def replan_offline(*, job_id, db_path, stage_call, gateway=None, skip_revi
     return {
         "job_id": job_id,
         "direction_id": strategy.selected_direction_id,
-        "lines": _script_lines(result),
+        "lines": _script_lines(result, strategy),
         "shots": _shots(result),
         "review": {
             "ready": review.get("ready"),
@@ -243,7 +247,8 @@ def _print_report(report):
     print(f"任务 {report['job_id']}，方向 {report['direction_id']}，没有写回数据库。")
     print("台词：")
     for line in report["lines"]:
-        print(f"  {line['beat_id']} {line['time']} {line['text']}")
+        flagged = "、".join(line.get("flags") or []) or "未触发"
+        print(f"  {line['beat_id']} {line['time']} {line['text']} 检查：{flagged}")
     print("镜头：")
     for shot in report["shots"]:
         visible = "商品在画面里" if shot["product_visible"] else "商品不在画面里" if shot["product_visible"] is False else "未标商品"

@@ -47,7 +47,8 @@ def test_wire_requires_explicit_policy_and_bounded_advice_for_current_text(plan)
     assert set(definition["required"]) == {"kind", "target", "quote", "note"}
     assert definition["additionalProperties"] is False
     assert set(definition["properties"]["kind"]["enum"]) == {
-        "ordinary_wording", "expression_quality", "optional_pacing", "shot_variety", "type_fit", "shot_craft"}
+        "ordinary_wording", "expression_quality", "optional_pacing", "shot_variety", "type_fit", "shot_craft",
+        "line_focus"}
     actual = review_suggestion_targets(plan)
     assert set(definition["properties"]["target"]["enum"]) == set(actual)
     assert "/segments/0/shots/0/description" in actual
