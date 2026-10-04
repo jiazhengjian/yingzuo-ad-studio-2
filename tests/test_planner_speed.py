@@ -178,6 +178,7 @@ def test_stream_rejection_retries_once_without_streaming(settings, transport, ca
     metric = json.loads(next(record.getMessage().split(": ", 1)[1] for record in reversed(caplog.records)
                              if record.getMessage().startswith("Planner request metrics:")))
     assert metric["stream"] is False and metric["stream_fallback"] is True
+    assert metric["recovery"] == "nonstream"
 
 
 def test_truncated_sse_retries_non_streaming_and_is_not_a_schema_error(settings, transport, caplog):
@@ -202,6 +203,7 @@ def test_truncated_sse_retries_non_streaming_and_is_not_a_schema_error(settings,
     assert not (settings.data_root / "diagnostics").exists()
     metric = last_planner_metric(caplog)
     assert metric["stream"] is False and metric["stream_fallback"] is True
+    assert metric["recovery"] == "nonstream"
     assert "Planner stream interrupted" in caplog.text
 
 
@@ -337,10 +339,11 @@ def test_unreliable_stream_is_remembered_for_that_provider_only(settings, transp
     assert [stream for _, stream in seen] == [True, False, False, True]
     assert seen[2][0] == "https://api.ai-tudou.net/v1/chat/completions"
     assert "api.deepseek.com" in seen[3][0]
-    assert last_planner_metric(caplog)["stream_fallback"] is True
+    remembered = last_planner_metric(caplog)
+    assert remembered["stream_fallback"] is True and remembered["recovery"] == "nonstream"
 
 
-def test_timeout_falls_back_once_to_the_fast_model(settings, transport):
+def test_timeout_falls_back_once_to_the_fast_model(settings, transport, caplog):
     calls = []
 
     async def respond(request):
@@ -352,8 +355,10 @@ def test_timeout_falls_back_once_to_the_fast_model(settings, transport):
     routed = replace(settings, planner_fallback_provider="deepseek", planner_fallback_model="deepseek-flash",
                      planner_fallback_on=("timeout",))
     transport(respond)
-    assert asyncio.run(Gateway(routed)._planner_json("JSON", {"stage": "storyboard"}, [])) == {"ok": True}
+    with caplog.at_level(logging.INFO, logger="uvicorn.error.planner"):
+        assert asyncio.run(Gateway(routed)._planner_json("JSON", {"stage": "storyboard"}, [])) == {"ok": True}
     assert calls == ["https://api.ai-tudou.net/v1/chat/completions", "https://api.deepseek.com/chat/completions"]
+    assert last_planner_metric(caplog)["recovery"] == "fallback"
 
 
 def test_504_on_the_fallback_does_not_try_a_third_model(settings, transport):

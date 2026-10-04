@@ -114,18 +114,24 @@ def _presenter_offer(env):
     return brief, directions
 
 
+def _watch_salvage(caplog):
+    caplog.set_level(logging.INFO, logger="uvicorn.error.planner")
+
+
 def test_two_invalid_hook_sketches_do_not_fail_a_usable_offer(env, caplog):
     brief, directions = _presenter_offer(env)
     pool = concept_pool_for(directions)
     pool[3]["hook_type"] = "macro_detail"
     pool[4]["hook_type"] = "arresting_line"
     with caplog.at_level(logging.WARNING, logger="app.strategy"):
+        _watch_salvage(caplog)
         corrected, kept = validate_direction_offer(brief, directions, pool)
     assert [item.id for item in corrected] == [item.id for item in directions]
     assert [item.hook_type for item in corrected] == ["direct_question", "counterintuitive", "result_first"]
     assert {item.id for item in kept} == {"direction_0", "direction_1", "direction_2", "spare_2"}
     assert "macro_detail" in caplog.text and "arresting_line" in caplog.text
     assert "瓶身轮廓" not in caplog.text
+    assert "strategy_salvage" in caplog.text
 
 
 def test_distinct_non_top_trio_is_accepted_and_program_pick_is_only_a_metric(env, caplog):
@@ -146,20 +152,24 @@ def test_distinct_non_top_trio_is_accepted_and_program_pick_is_only_a_metric(env
     assert program == ["direction_0", "direction_1", "direction_2"]
     expanded = [direction.model_copy(update={"id": f"alt_{index}"}) for index, direction in enumerate(offer.directions)]
     with caplog.at_level(logging.INFO, logger="app.strategy"):
+        _watch_salvage(caplog)
         corrected, _kept = validate_direction_offer(offer.brief, expanded, pool)
     assert [item.id for item in corrected] == ["alt_0", "alt_1", "alt_2"]
     assert "direction_0" in caplog.text and "alt_0" in caplog.text
+    assert "strategy_salvage" in caplog.text
     outside = [direction.model_copy(update={"id": "missing"}) for direction in offer.directions]
     with pytest.raises(ValueError, match="可用方向不足三个"):
         validate_direction_offer(offer.brief, outside, pool)
 
 
-def test_mismatched_insight_is_copied_from_the_sketch(env):
+def test_mismatched_insight_is_copied_from_the_sketch(env, caplog):
     offer = candidates_for(env)
     pool = concept_pool_for(offer.directions)
     paraphrased = "这句话和短概念不一样，但仍然说得清。"
     directions = [direction.model_copy(update={"consumer_insight": paraphrased}) for direction in offer.directions]
-    corrected, kept = validate_direction_offer(offer.brief, directions, pool)
+    with caplog.at_level(logging.INFO, logger="uvicorn.error.planner"):
+        corrected, kept = validate_direction_offer(offer.brief, directions, pool)
+    assert "strategy_salvage" in caplog.text
     sketches = {item.id: item for item in kept}
     assert corrected[0].consumer_insight == sketches[corrected[0].id].consumer_insight
     assert corrected[0].consumer_insight != paraphrased
@@ -179,10 +189,20 @@ def test_disallowed_direction_hook_is_coerced_to_the_structure_playbook(env, cap
         "film_concept": direction.film_concept.model_copy(update={"structure": "scene_action"}),
     }) for direction in offer.directions]
     with caplog.at_level(logging.WARNING, logger="app.strategy"):
+        _watch_salvage(caplog)
         corrected, _kept = validate_direction_offer(brief, directions, concept_pool_for(directions))
     assert [item.hook_type for item in corrected] == ["awkward_moment", "situational_conflict", "arresting_line"]
+    assert "strategy_salvage" in caplog.text
     assert "Coerced direction hook" in caplog.text
     assert "macro_detail" in caplog.text and "awkward_moment" in caplog.text
+
+
+def test_clean_offer_matching_the_program_pick_is_not_a_salvage(env, caplog):
+    offer = candidates_for(env)
+    with caplog.at_level(logging.INFO, logger="uvicorn.error.planner"):
+        corrected, _kept = validate_direction_offer(offer.brief, offer.directions, concept_pool_for(offer.directions))
+    assert [item.id for item in corrected] == [item.id for item in offer.directions]
+    assert "strategy_salvage" not in caplog.text
 
 
 def test_review_keeps_the_idea_records_tension_and_can_rewrite_a_claim(env):

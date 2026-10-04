@@ -23,14 +23,10 @@ export default function JobRecoveryCard({ job, busy, canEditVoice, canShorten, h
   const incompleteCheck = planning && job.progress.error_code === 'planning_review_incomplete';
   const title = incompleteCheck ? '本次检查未完成' : planning ? hasExistingResult ? '本次修改未完成' : '本次方案未完成'
     : recovery.kind === 'reconcile' ? '提交结果待核对' : retryingVideo ? '视频片段未生成' : '本次制作未完成';
-  const message = planning && job.progress.error_code === 'planning_response_interrupted'
-    ? '策划回复中途断开，已有内容仍然保留。可以重新尝试这一步。'
+  const message = planning && recovery.kind === 'retry_planning'
+    ? '这一步没有在系统这边完成，你的需求已保留。'
     : planning && job.progress.error_code === 'planning_invalid_response'
-    ? recovery.kind === 'retry_planning'
-      ? '本次回复未能形成完整方案，已有内容仍然保留。可以重新尝试这一步。'
-      : '本次回复未能形成完整方案，原需求和已有内容仍然保留。'
-    : recovery.kind === 'retry_planning'
-    ? '当前步骤经过自动重试仍未完成，已保存本轮进度，可稍后重新尝试。'
+    ? '这一步没有在系统这边完成，你的需求已保留。'
     : recovery.kind === 'check_connection'
     ? '策划服务的连接配置或账户状态需要检查，已有内容已保存。'
     : job.progress.error_code === 'planning_request_limit'

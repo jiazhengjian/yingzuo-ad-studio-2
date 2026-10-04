@@ -67,6 +67,7 @@ performance_logger = logging.getLogger("uvicorn.error.planner")
 _UNRELIABLE_STREAM_PROVIDERS: set[str] = set()
 # Same-model non-streaming retry needs enough of the original wait left to be useful.
 _NONSTREAM_RETRY_FLOOR_SECONDS = 30
+_FALLBACK_UNSET = object()
 
 
 def _classify_sse(finish, saw_done):
@@ -93,6 +94,17 @@ def _bounded_planner_timeout(timeout, seconds):
         connect=min(current["connect"], seconds),
         write=min(current["write"], seconds),
         pool=min(current["pool"], seconds))
+
+
+def _planner_budget_seconds(settings, route):
+    """One wall-clock budget for a text call and its automatic recovery."""
+    timeout, wall = planner_request_timing(settings, route)
+    if type(wall) in (int, float) and wall > 0:
+        return float(wall)
+    read = timeout.as_dict().get("read") if hasattr(timeout, "as_dict") else None
+    if type(read) in (int, float) and read > 0:
+        return float(read)
+    return 300.0
 
 
 def _mark_stream_unreliable(provider):
@@ -316,9 +328,10 @@ class PlannerRequestError(ProviderError):
 class PlannerInvalidResponse(ProviderError):
     """The reply parsed, then failed a structural check.
 
-    The planning session does not spend another automatic model call. The
-    merchant can retry the same text step from the workbench. Scope and input
-    changes still use PlanningSessionError with retryable false.
+    Strategy offers are salvaged locally and, when that is not enough, retried
+    once inside the same job. This exception means that automatic recovery
+    already finished. Scope and input changes still use PlanningSessionError
+    with retryable false. A resume control is only the last resort.
     """
 
     error_code = "planning_invalid_response"
@@ -330,9 +343,8 @@ class PlannerInterruptedResponse(ProviderError):
     """Text arrived, then the stream ended before a complete reply.
 
     This is not a schema failure. The in-request non-streaming retry and the
-    configured text fallback already ran when they were allowed; the merchant
-    can still retry the same step. The planning session does not spend another
-    automatic model call on top of those.
+    configured text fallback already ran when they were allowed. The planning
+    session does not spend another automatic model call on top of those.
     """
 
     error_code = "planning_response_interrupted"
@@ -751,7 +763,7 @@ class Gateway:
         return payload, evidence_aliases
 
     async def _planner_json(self, system, context, sources, max_tokens=7000, *, route=None,
-                            on_first_token=None, allow_fallback=True):
+                            on_first_token=None, allow_fallback=_FALLBACK_UNSET, recovery=None):
         # Callers that tests replace keep the historical positional signature.
         # The live stage caller stashes the route before that same call.
         if route is None:
@@ -759,6 +771,9 @@ class Gateway:
                 self.settings, context.get("stage"))
         if on_first_token is None:
             on_first_token = getattr(self, "_active_planner_first_token", None)
+        if allow_fallback is _FALLBACK_UNSET:
+            stashed_fallback = getattr(self, "_planner_allow_fallback", None)
+            allow_fallback = True if stashed_fallback is None else bool(stashed_fallback)
         stream_mode = getattr(self.settings, "planner_stream", "off")
         if stream_mode not in ("off", "on", "auto"):
             stream_mode = "off"
@@ -774,13 +789,19 @@ class Gateway:
             attempts, stream_fallback = ["json"], False
         started = time.monotonic()
         _, call_deadline = planner_request_timing(self.settings, route)
+        cap = getattr(self, "_planner_wall_cap", None)
+        if type(cap) in (int, float) and cap > 0:
+            call_deadline = float(cap) if call_deadline is None else min(float(call_deadline), float(cap))
+        metric_recovery = recovery if recovery is not None else getattr(self, "_planner_recovery", None)
+        if metric_recovery is None and stream_mode in ("on", "auto") and attempts == ["json"]:
+            metric_recovery = "nonstream"
         next_wait = None
         first_token_at = None
         used_stream = False
         response = None
 
         def allow_nonstream_retry(index, mode):
-            nonlocal next_wait
+            nonlocal next_wait, metric_recovery
             if mode != "stream" or index != 0 or len(attempts) < 2:
                 return False
             if call_deadline is None:
@@ -790,6 +811,8 @@ class Gateway:
             if remaining < _NONSTREAM_RETRY_FLOOR_SECONDS:
                 return False
             next_wait = remaining
+            if metric_recovery is None:
+                metric_recovery = "nonstream"
             return True
 
         def note_stream_cut(reason, characters):
@@ -811,6 +834,10 @@ class Gateway:
             payload, evidence_aliases = self._planner_payload(
                 system, context, sources, max_tokens, route, stream=mode == "stream")
             request_timeout, request_deadline = planner_request_timing(self.settings, route)
+            if call_deadline is not None:
+                request_timeout = _bounded_planner_timeout(request_timeout, call_deadline)
+                request_deadline = call_deadline if request_deadline is None else min(
+                    float(request_deadline), float(call_deadline))
             if next_wait is not None:
                 request_timeout = _bounded_planner_timeout(request_timeout, next_wait)
                 request_deadline = next_wait
@@ -892,13 +919,13 @@ class Gateway:
                     context.get("stage"), time.monotonic() - started, first_token_seconds=(
                         None if first_token_at is None else first_token_at - mode_started),
                     stream=mode == "stream", transport="fallback" if not route.primary else "primary",
-                    stream_fallback=stream_fallback or mode == "stream")))
+                    stream_fallback=stream_fallback or mode == "stream", recovery=metric_recovery)))
                 if mode == "stream":
                     abandon_stream()
                 alternate = self._text_fallback(route, status_code=None, timed_out=True) if allow_fallback else None
                 if alternate is not None:
                     return await self._planner_json(system, context, sources, max_tokens, route=alternate,
-                        on_first_token=on_first_token, allow_fallback=False)
+                        on_first_token=on_first_token, allow_fallback=False, recovery="fallback")
                 if mode == "stream":
                     raise PlannerInterruptedResponse() from None
                 raise PlannerRequestError("策划服务连接暂时中断；已有成果仍保留。") from None
@@ -913,11 +940,11 @@ class Gateway:
                     context.get("stage"), time.monotonic() - started, first_token_seconds=(
                         None if first_token_at is None else first_token_at - mode_started),
                     stream=True, transport="fallback" if not route.primary else "primary",
-                    stream_fallback=True)))
+                    stream_fallback=True, recovery=metric_recovery)))
                 alternate = self._text_fallback(route, status_code=None, timed_out=True) if allow_fallback else None
                 if alternate is not None:
                     return await self._planner_json(system, context, sources, max_tokens, route=alternate,
-                        on_first_token=on_first_token, allow_fallback=False)
+                        on_first_token=on_first_token, allow_fallback=False, recovery="fallback")
                 partial = cut.get("content")
                 if isinstance(partial, str) and partial:
                     save_failed_planner_output(self.settings, {"stage": context.get("stage", "unknown"),
@@ -926,6 +953,8 @@ class Gateway:
             if mode == "stream" and not used_stream and response.status_code == 400 and index == 0 and len(attempts) > 1:
                 stream_fallback = True
                 _mark_stream_unreliable(route.provider)
+                if metric_recovery is None:
+                    metric_recovery = "nonstream"
                 continue
             if mode == "stream" and not used_stream and response.status_code < 300:
                 stream_fallback = True
@@ -939,7 +968,7 @@ class Gateway:
             response_body.get("usage") if isinstance(response_body, dict) else None,
             first_token_seconds=None if first_token_at is None else first_token_at - started,
             stream=used_stream, transport="fallback" if not route.primary else "primary",
-            stream_fallback=stream_fallback)))
+            stream_fallback=stream_fallback, recovery=metric_recovery)))
         if response.status_code >= 300:
             logger.warning("Planner transport failure: %s", json.dumps(safe_planner_transport_failure(
                 context.get("stage"), time.monotonic() - started, status_code=response.status_code)))
@@ -947,7 +976,7 @@ class Gateway:
                 alternate = self._text_fallback(route, status_code=response.status_code, timed_out=False) if allow_fallback else None
                 if alternate is not None:
                     return await self._planner_json(system, context, sources, max_tokens, route=alternate,
-                        on_first_token=on_first_token, allow_fallback=False)
+                        on_first_token=on_first_token, allow_fallback=False, recovery="fallback")
                 raise PlannerRequestError("策划服务暂时繁忙；已有成果仍保留。")
             if response.status_code in (401, 402, 403):
                 raise PlannerConfigurationError("策划服务的连接凭证、权限或余额需要检查；已有成果仍保留。")
@@ -1058,6 +1087,8 @@ class Gateway:
                 report_phase(phase)
         on_progress = progress if report_phase else None
 
+        recovery_override = {"route": None, "wall": None, "kind": None}
+
         async def stage_call(system, data, originals, max_tokens=7000):
             nonlocal last_stage_result
             # Every stage sees the same frozen turn, including repairs/reviews.
@@ -1126,7 +1157,7 @@ class Gateway:
                 if on_progress:
                     on_progress("retrying_planner" if kind == "empty" else "retrying_planner_request")
 
-            route = stage_route(self.settings, data["stage"])
+            route = recovery_override["route"] or stage_route(self.settings, data["stage"])
             signature = {"system": system, "context": planner_wire_context(data),
                 "wire_context_version": PLANNER_MODEL_CONTEXT_VERSION,
                 "model": self.settings.planner_model, "max_tokens": max_tokens,
@@ -1184,11 +1215,19 @@ class Gateway:
                         on_planner_stream(data["stage"])
                 self._active_planner_route = route
                 self._active_planner_first_token = note_first_token
+                self._planner_wall_cap = recovery_override["wall"]
+                self._planner_recovery = recovery_override["kind"]
+                # Test doubles keep the historical positional signature. The
+                # recovery call must not chain another model after this one.
+                self._planner_allow_fallback = recovery_override["kind"] not in ("strategy_retry", "fallback")
                 try:
                     return await self._planner_json(system, data, originals, max_tokens=max_tokens)
                 finally:
                     self._active_planner_route = None
                     self._active_planner_first_token = None
+                    self._planner_wall_cap = None
+                    self._planner_recovery = None
+                    self._planner_allow_fallback = None
 
             result = await session.call(data["stage"], signature, perform,
                 on_start=starting, on_retry=retrying)
@@ -1335,15 +1374,37 @@ class Gateway:
                     raise ValueError("已选择方向的商品原图不存在")
             else:
                 request_context = context
+                strategy_started = time.monotonic()
+                strategy_budget = _planner_budget_seconds(self.settings, stage_route(self.settings, "strategy"))
                 for attempt in range(2 if choice_enabled else 1):
-                    raw = await stage_call(STRATEGY_SELECTION_SYSTEM if choice_enabled else STRATEGY_SYSTEM,
-                                           request_context, sources, max_tokens=5500)
+                    try:
+                        raw = await stage_call(STRATEGY_SELECTION_SYSTEM if choice_enabled else STRATEGY_SYSTEM,
+                                               request_context, sources, max_tokens=5500)
+                    finally:
+                        recovery_override["route"] = None
+                        recovery_override["wall"] = None
+                        recovery_override["kind"] = None
                     try:
                         decision, candidates, strategy = checked_strategy_response(raw)
                         break
                     except ValueError as exc:
                         if not choice_enabled or attempt:
                             raise
+                        remaining = strategy_budget - (time.monotonic() - strategy_started)
+                        # One extra model call, inside the original wait. A full
+                        # same-model request needs the floor; a shorter remainder
+                        # can still use the configured fallback model.
+                        if remaining < _NONSTREAM_RETRY_FLOOR_SECONDS:
+                            alternate = self._text_fallback(
+                                stage_route(self.settings, "strategy"), status_code=None, timed_out=True)
+                            if alternate is None or remaining < 1:
+                                raise
+                            recovery_override["route"] = alternate
+                            recovery_override["kind"] = "fallback"
+                            recovery_override["wall"] = remaining
+                        else:
+                            recovery_override["kind"] = "strategy_retry"
+                            recovery_override["wall"] = remaining
                         # One authored correction, with the same sources and all
                         # original guards. Both calls share the durable session
                         # and its request budget; a restart cannot reset them.
@@ -1362,7 +1423,7 @@ class Gateway:
                             "previous_response": copy.deepcopy(raw), "validation_feedback": feedback,
                             "repair_instruction": "上一份入口回复未通过程序校验，尚未向用户展示。根据原始需求重新判断 reply/clarify/directions/plan 路由，只返回修正后的完整 schema JSON。信息不足且用户未授权代定时先澄清；不要为凑三个方向选用不适用品类或缺少事实前提的规则。同一规则可用于实质不同的故事。concept_pool的hook_type只能使用allowed_hook_types。无效短概念会被丢弃，至少保留三个有效短概念。展开的三个方向必须来自这些有效短概念，彼此在机制、钩子和品牌世界路径上至少有两种；不必改成程序记录的那一组。方向上的机制、钩子、品牌世界、观众处境、一句话和事实编号以对应短概念为准。不得修改用户要求、伪造商品事实或绕过来源校验。"}
                         if on_progress:
-                            on_progress("deciding")
+                            on_progress("recovering_strategy")
                 if decision.kind == "directions":
                     if choice_enabled:
                         # The callback checks cancellation/revision before the

@@ -76,7 +76,7 @@ class PlanningSession:
                 counter = "empty_retries" if kind == "empty" else "transient_retries"
                 limit = (1 if kind == "empty" else 2) + 2 * self.state["manual_retries"]
                 if self.state[counter] >= limit:
-                    self.stop(entry, "策划服务暂时未能完成当前步骤；已保存本轮进度，可以稍后重新尝试。")
+                    self.stop(entry, "策划服务暂时未能完成当前步骤；需求已保留。")
                 self.state[counter] += 1
                 # Clear this marker before waiting: a shutdown while waiting
                 # must not charge another retry without another request.

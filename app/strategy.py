@@ -18,6 +18,7 @@ from .production import ProductionPlan, validate_production_sources
 from .ad_form import AdForm
 
 logger = logging.getLogger(__name__)
+performance_logger = logging.getLogger("uvicorn.error.planner")
 
 
 STRATEGY_VERSION = "1.3.0"
@@ -729,6 +730,13 @@ def _metric_id(value: str) -> str:
     return value if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value) else "id"
 
 
+def _record_strategy_salvage() -> None:
+    """One content-free metric when a local salvage changed the offer."""
+    from .planner_runtime import safe_planner_metrics
+    performance_logger.info("Planner request metrics: %s", json.dumps(
+        safe_planner_metrics("strategy", None, recovery="strategy_salvage"), ensure_ascii=True))
+
+
 def _sketch_score(sketch: ConceptSketch, chosen: list[ConceptSketch]) -> tuple:
     """Prefer a new mechanism, hook and brand world. Ties keep earlier sketches."""
     rules = {item.rule_id for item in chosen}
@@ -782,66 +790,81 @@ def validate_direction_offer(brief: ProductBrief, directions: list[CreativeDirec
     _require_unique([item.id for item in pool], "短概念 ID")
     valid: list[ConceptSketch] = []
     dropped_hooks = False
-    for index, sketch in enumerate(pool):
-        issue = _sketch_issue(brief, sketch)
-        if issue is None:
-            valid.append(sketch)
-            continue
-        dropped_hooks = dropped_hooks or issue == "hook"
-        diagnostic = {"index": index, "reason": issue}
-        if issue == "hook" and sketch.hook_type in HOOK_IDS:
-            diagnostic["hook_type"] = sketch.hook_type
-        logger.warning("Dropped invalid concept sketch: %s", json.dumps(diagnostic, ensure_ascii=True))
-    if len(valid) < 3:
-        detail = "开场钩子不属于当前广告类型" if dropped_hooks else "短概念未通过规则、前提或措辞检查"
-        raise ValueError(f"有效短概念不足三个，{detail}")
-    program_pick = select_concept_ids(valid)
-    logger.info("Strategy concept pick: %s", json.dumps({
-        "program_pick": [_metric_id(item) for item in program_pick],
-        "expanded": [_metric_id(direction.id) for direction in directions],
-    }, ensure_ascii=True))
-    by_id = {item.id: item for item in valid}
-    usable: list[CreativeDirection] = []
-    for index, direction in enumerate(directions):
-        sketch = by_id.get(direction.id)
-        if sketch is None:
-            logger.warning("Dropped direction outside the valid sketches: %s", json.dumps(
-                {"index": index}, ensure_ascii=True))
-            continue
-        updated = direction.model_copy(update={
-            "rule_id": sketch.rule_id,
-            "hook_type": sketch.hook_type,
-            "brand_world": sketch.brand_world,
-            "consumer_insight": sketch.consumer_insight,
-            "big_idea": sketch.big_idea,
-            "evidence_ids": list(sketch.evidence_ids),
-        })
-        structure = updated.film_concept.structure if updated.film_concept is not None else None
-        allowed = allowed_hooks(brief.ad_form, structure)
-        if updated.hook_type not in allowed:
-            coerced = nearest_allowed_hook(updated.hook_type, allowed)
-            if coerced is None:
-                logger.warning("Dropped direction with disallowed hook: %s", json.dumps(
-                    {"index": index, "hook_type": updated.hook_type if updated.hook_type in HOOK_IDS else "hook"},
-                    ensure_ascii=True))
+    salvaged = False
+    try:
+        for index, sketch in enumerate(pool):
+            issue = _sketch_issue(brief, sketch)
+            if issue is None:
+                valid.append(sketch)
                 continue
-            logger.warning("Coerced direction hook: %s", json.dumps({
-                "index": index,
-                "from": updated.hook_type if updated.hook_type in HOOK_IDS else "hook",
-                "to": coerced,
-            }, ensure_ascii=True))
-            updated = updated.model_copy(update={"hook_type": coerced})
-        usable.append(updated)
-    if len(usable) < 3:
-        raise ValueError("可用方向不足三个")
-    require_ad_concepts(usable, brief)
-    if len({direction.rule_id for direction in usable}) < 2:
-        raise ValueError("三个方向至少要使用两种创意机制")
-    if len({direction.hook_type for direction in usable}) < 2:
-        raise ValueError("三个方向至少要使用两种开场钩子")
-    if len({direction.brand_world for direction in usable}) < 2:
-        raise ValueError("三个方向至少要使用两种品牌世界路径")
-    return usable, valid
+            salvaged = True
+            dropped_hooks = dropped_hooks or issue == "hook"
+            diagnostic = {"index": index, "reason": issue}
+            if issue == "hook" and sketch.hook_type in HOOK_IDS:
+                diagnostic["hook_type"] = sketch.hook_type
+            logger.warning("Dropped invalid concept sketch: %s", json.dumps(diagnostic, ensure_ascii=True))
+        if len(valid) < 3:
+            detail = "开场钩子不属于当前广告类型" if dropped_hooks else "短概念未通过规则、前提或措辞检查"
+            raise ValueError(f"有效短概念不足三个，{detail}")
+        program_pick = select_concept_ids(valid)
+        logger.info("Strategy concept pick: %s", json.dumps({
+            "program_pick": [_metric_id(item) for item in program_pick],
+            "expanded": [_metric_id(direction.id) for direction in directions],
+        }, ensure_ascii=True))
+        if [direction.id for direction in directions] != program_pick:
+            salvaged = True
+        by_id = {item.id: item for item in valid}
+        usable: list[CreativeDirection] = []
+        for index, direction in enumerate(directions):
+            sketch = by_id.get(direction.id)
+            if sketch is None:
+                salvaged = True
+                logger.warning("Dropped direction outside the valid sketches: %s", json.dumps(
+                    {"index": index}, ensure_ascii=True))
+                continue
+            canonical = (sketch.rule_id, sketch.hook_type, sketch.brand_world, sketch.consumer_insight,
+                         sketch.big_idea, tuple(sketch.evidence_ids))
+            if (direction.rule_id, direction.hook_type, direction.brand_world, direction.consumer_insight,
+                    direction.big_idea, tuple(direction.evidence_ids)) != canonical:
+                salvaged = True
+            updated = direction.model_copy(update={
+                "rule_id": sketch.rule_id,
+                "hook_type": sketch.hook_type,
+                "brand_world": sketch.brand_world,
+                "consumer_insight": sketch.consumer_insight,
+                "big_idea": sketch.big_idea,
+                "evidence_ids": list(sketch.evidence_ids),
+            })
+            structure = updated.film_concept.structure if updated.film_concept is not None else None
+            allowed = allowed_hooks(brief.ad_form, structure)
+            if updated.hook_type not in allowed:
+                coerced = nearest_allowed_hook(updated.hook_type, allowed)
+                salvaged = True
+                if coerced is None:
+                    logger.warning("Dropped direction with disallowed hook: %s", json.dumps(
+                        {"index": index, "hook_type": updated.hook_type if updated.hook_type in HOOK_IDS else "hook"},
+                        ensure_ascii=True))
+                    continue
+                logger.warning("Coerced direction hook: %s", json.dumps({
+                    "index": index,
+                    "from": updated.hook_type if updated.hook_type in HOOK_IDS else "hook",
+                    "to": coerced,
+                }, ensure_ascii=True))
+                updated = updated.model_copy(update={"hook_type": coerced})
+            usable.append(updated)
+        if len(usable) < 3:
+            raise ValueError("可用方向不足三个")
+        require_ad_concepts(usable, brief)
+        if len({direction.rule_id for direction in usable}) < 2:
+            raise ValueError("三个方向至少要使用两种创意机制")
+        if len({direction.hook_type for direction in usable}) < 2:
+            raise ValueError("三个方向至少要使用两种开场钩子")
+        if len({direction.brand_world for direction in usable}) < 2:
+            raise ValueError("三个方向至少要使用两种品牌世界路径")
+        return usable, valid
+    finally:
+        if salvaged:
+            _record_strategy_salvage()
 
 
 def build_direction_candidates(brief, directions, recommended_id, rules, *, direction_review=None) -> DirectionCandidates:

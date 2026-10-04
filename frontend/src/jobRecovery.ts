@@ -8,7 +8,7 @@ export type JobRecovery =
   | { kind: 'check_materials' }
   | { kind: 'check_connection' }
   | { kind: 'unavailable' }
-  | { kind: 'retry_planning'; label: '重新尝试' }
+  | { kind: 'retry_planning'; label: '继续处理' }
   | { kind: 'retry_existing'; label: '继续制作' | '重新合成' }
   | { kind: 'retry_failed_segments'; label: '重试失败片段' };
 
@@ -23,7 +23,7 @@ export function recoveryForJob(job?: Job): JobRecovery | null {
     if (job.progress.error_code === 'planning_configuration_failed') return { kind: 'check_connection' };
     if (job.progress.error_code === 'planning_invalid_response'
       && job.progress.retry_action === 'retry_planning' && job.progress.retryable !== false) {
-      return { kind: 'retry_planning', label: '重新尝试' };
+      return { kind: 'retry_planning', label: '继续处理' };
     }
     if (['planning_invalid_response', 'planning_review_incomplete', 'planning_request_limit'].includes(job.progress.error_code as string)) {
       return { kind: 'continue_conversation' };
@@ -31,7 +31,7 @@ export function recoveryForJob(job?: Job): JobRecovery | null {
     if ((job.progress.error_code === 'planning_request_failed'
       || job.progress.error_code === 'planning_response_interrupted')
       && job.progress.retry_action === 'retry_planning' && job.progress.retryable !== false) {
-      return { kind: 'retry_planning', label: '重新尝试' };
+      return { kind: 'retry_planning', label: '继续处理' };
     }
     return { kind: 'edit_plan' };
   }

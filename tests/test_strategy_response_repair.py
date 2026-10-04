@@ -2,6 +2,7 @@
 import asyncio
 from copy import deepcopy
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ import pytest
 
 from app.db import Store
 from app.pipeline import Pipeline
+from app.providers import gateway as gateway_module
 from app.providers.gateway import Gateway, ProviderError
 from test_conversation_api import env, post_turn
 from test_direction_selection import candidates_for, approved_direction_review, concept_pool_for, isolated_skill_loader
@@ -53,12 +55,14 @@ def repair_case(env, monkeypatch, isolated_skill_loader):
     bad["directions"][2]["label"] = "UNSHOWN_INVALID_DIRECTION"
     state = SimpleNamespace(client=client, app=app, pid=pid, asset=asset, store=app.state.store,
         settings=settings, valid=valid, first=bad, corrected=deepcopy(valid), contexts=[], bodies=[],
-        interrupt_stage=None, interrupt_always=False, interrupted=False, stop_before_repair=None)
+        urls=[], reads=[], interrupt_stage=None, interrupt_always=False, interrupted=False,
+        stop_before_repair=None)
     job = post_turn(local_env, content="仅按可见外观策划，受众和情境允许保守设定，不猜测功能。").json()["job"]
     state.job = job
     state.before = state.store.project_detail(pid)
 
     def respond(request):
+        state.urls.append(str(request.url))
         _, context = request_context(request)
         state.contexts.append(deepcopy(context))
         state.bodies.append(json.loads(request.content))
@@ -79,8 +83,13 @@ def repair_case(env, monkeypatch, isolated_skill_loader):
         return chat_output(approved_direction_review(context["directions"]))
 
     original_client = httpx.AsyncClient
-    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs:
-        original_client(*args, transport=httpx.MockTransport(respond), **kwargs))
+
+    def client_factory(*args, **kwargs):
+        timeout = kwargs.get("timeout")
+        state.reads.append(timeout.as_dict()["read"] if hasattr(timeout, "as_dict") else None)
+        return original_client(*args, transport=httpx.MockTransport(respond), **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
     state.execute = lambda store=None: asyncio.run(
         Pipeline(store or state.store, Gateway(settings), settings).execute(job["id"]))
     state.stages = lambda: [context["stage"] for context in state.contexts]
@@ -95,6 +104,72 @@ def assert_no_plan_or_media(case, result):
     assert detail["renders"] == case.before["renders"]
     assert result["submission_count"] == 0
     assert "UNSHOWN_INVALID_DIRECTION" not in case.client.get(f"/api/projects/{case.pid}").text
+
+
+def planner_recoveries(caplog):
+    found = []
+    for record in caplog.records:
+        message = record.getMessage()
+        if message.startswith("Planner request metrics:"):
+            found.append(json.loads(message.split(": ", 1)[1]).get("recovery"))
+    return found
+
+
+def test_unusable_strategy_offer_is_retried_once_inside_the_same_budget(repair_case, caplog):
+    case = repair_case
+    with caplog.at_level(logging.INFO, logger="uvicorn.error.planner"):
+        result = case.execute()
+    assert result["status"] == "awaiting_input", result.get("error")
+    assert case.stages() == ["strategy", "strategy", "direction_review"]
+    assert case.contexts[1]["task_kind"] == "strategy_response_repair"
+    assert case.contexts[1]["previous_response"] == case.first
+    assert case.contexts[1]["validation_feedback"]
+    assert planner_recoveries(caplog).count("strategy_retry") == 1
+    # The extra call stays inside the original wait; the review is not capped.
+    assert case.reads[0] == 300
+    assert case.reads[1] < case.reads[0]
+    assert case.reads[2] == 300
+    assert_no_plan_or_media(case, result)
+
+
+def test_short_remainder_sends_the_single_retry_to_the_fallback_model(repair_case, monkeypatch, caplog):
+    monkeypatch.setattr(gateway_module, "_NONSTREAM_RETRY_FLOOR_SECONDS", 10**9)
+    case = repair_case
+    case.settings.planner_provider = "tudou"
+    case.settings.planner_model = "gpt-6-sol"
+    case.settings.planner_request_deadline_seconds = 45
+    case.settings.planner_fallback_provider = "deepseek"
+    case.settings.planner_fallback_model = "deepseek-flash"
+    case.settings.planner_fallback_on = ("timeout",)
+    with caplog.at_level(logging.INFO, logger="uvicorn.error.planner"):
+        result = case.execute()
+    assert result["status"] == "awaiting_input", result.get("error")
+    assert case.stages() == ["strategy", "strategy", "direction_review"]
+    assert "ai-tudou.net" in case.urls[0] and "api.deepseek.com" in case.urls[1]
+    assert sum("api.deepseek.com" in url for url in case.urls) == 1
+    assert case.bodies[1]["model"] == "deepseek-flash"
+    assert case.contexts[1]["task_kind"] == "strategy_response_repair"
+    assert case.contexts[1]["previous_response"] == case.first
+    assert case.contexts[1]["validation_feedback"]
+    assert planner_recoveries(caplog).count("fallback") == 1
+    assert case.reads[0] == 45 and case.reads[1] < case.reads[0]
+    assert_no_plan_or_media(case, result)
+
+
+def test_exhausted_budget_without_fallback_stops_after_the_first_strategy_call(repair_case, monkeypatch):
+    monkeypatch.setattr(gateway_module, "_NONSTREAM_RETRY_FLOOR_SECONDS", 10**9)
+    case = repair_case
+    case.settings.planner_request_deadline_seconds = 45
+    result = case.execute()
+    assert result["status"] == "failed"
+    assert case.stages() == ["strategy"]
+    assert len(case.urls) == 1
+    assert result["progress"]["retryable"] is True
+    assert result["progress"]["retry_action"] == "retry_planning"
+    assert "重新尝试" not in (result.get("error") or "")
+    detail = case.store.project_detail(case.pid)
+    assert any("外观" in message["content"] for message in detail["messages"])
+    assert_no_plan_or_media(case, result)
 
 
 def parsed_request(body):

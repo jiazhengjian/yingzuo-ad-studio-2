@@ -62,12 +62,14 @@ test('voice-too-long failures offer editing instead of another provider call', (
   }
 });
 
-test('only exhausted planning request failures expose a planning retry', () => {
+test('only exhausted planning request failures expose a last-resort resume', () => {
   const job = fixture({ kind: 'plan', progress: { error_code: 'planning_request_failed', retry_action: 'retry_planning', retryable: true } });
-  assert.deepEqual(recoveryForJob(job), { kind: 'retry_planning', label: '重新尝试' });
+  assert.deepEqual(recoveryForJob(job), { kind: 'retry_planning', label: '继续处理' });
   assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
-  assert.match(renderCard(job), /重新尝试/);
-  assert.doesNotMatch(renderCard(job), /恢复任务|输入修改要求|检查素材/);
+  const html = renderCard(job);
+  assert.match(html, /继续处理/);
+  assert.match(html, /需求已保留/);
+  assert.doesNotMatch(html, /重新尝试|请重试|恢复任务|输入修改要求|检查素材/);
   for (const progress of [{ error_code: 'planning_request_failed' },
     { ...job.progress, retryable: false }, { error_code: 'planning_content_failed', retry_action: 'retry_planning' }]) {
     assert.equal(retryRequest({ ...job, progress }), null);
@@ -184,15 +186,18 @@ test('planning content failure shows saved localized issues and never adds a sec
 });
 
 
-test('an interrupted planner reply can be retried and is not treated as a schema failure', () => {
+test('an interrupted planner reply keeps the request and one last resume', () => {
   const job = fixture({ kind: 'plan', error: '策划回复中途断开；已有成果仍保留，尚未开始图片或视频生成',
     progress: { error_code: 'planning_response_interrupted', retryable: true, retry_action: 'retry_planning' } });
   assert.equal(recoveryForJob(job).kind, 'retry_planning');
+  assert.equal(recoveryForJob(job).label, '继续处理');
   assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
   const html = renderCard(job);
-  assert.match(html, /回复中途断开/);
-  assert.match(html, /重新尝试/);
-  assert.doesNotMatch(html, /结构校验|输入修改要求|继续对话/);
+  assert.match(html, /这一步没有在系统这边完成/);
+  assert.match(html, /需求已保留/);
+  assert.match(html, /继续处理/);
+  assert.equal((html.match(/<button/g) || []).length, 1);
+  assert.doesNotMatch(html, /重新尝试|请重试|结构校验|输入修改要求|继续对话/);
 });
 
 
@@ -214,7 +219,7 @@ test('incomplete checks and request limits do not ask the merchant to revise req
   }
 });
 
-test('a structurally invalid planning reply can be retried from the workbench', () => {
+test('a structurally invalid planning reply resumes only after automatic recovery is exhausted', () => {
   const held = fixture({ kind: 'plan', error: '规划结果未通过结构校验，已有成果仍保留；尚未开始图片或视频生成',
     progress: { error_code: 'planning_invalid_response', retryable: false, retry_action: 'edit_plan' } });
   assert.equal(recoveryForJob(held).kind, 'continue_conversation');
@@ -222,9 +227,12 @@ test('a structurally invalid planning reply can be retried from the workbench', 
   const job = fixture({ kind: 'plan', error: '规划结果未通过结构校验，已有成果仍保留；尚未开始图片或视频生成',
     progress: { error_code: 'planning_invalid_response', retryable: true, retry_action: 'retry_planning' } });
   assert.equal(recoveryForJob(job).kind, 'retry_planning');
+  assert.equal(recoveryForJob(job).label, '继续处理');
   assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
   const html = renderCard(job);
-  assert.match(html, /未能形成完整方案/);
-  assert.match(html, /重新尝试/);
-  assert.doesNotMatch(html, /输入修改要求|继续对话/);
+  assert.match(html, /这一步没有在系统这边完成/);
+  assert.match(html, /需求已保留/);
+  assert.match(html, /继续处理/);
+  assert.equal((html.match(/<button/g) || []).length, 1);
+  assert.doesNotMatch(html, /重新尝试|请重试|输入修改要求|继续对话/);
 });

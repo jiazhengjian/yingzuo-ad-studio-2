@@ -282,9 +282,13 @@ def _finite_milliseconds(seconds):
     return None
 
 
+_RECOVERY_KINDS = frozenset({"nonstream", "fallback", "strategy_retry", "strategy_salvage"})
+
+
 def safe_planner_metrics(stage: object, elapsed_seconds: object, usage: object = None, *,
                          first_token_seconds: object = None, stream: object = None,
-                         transport: object = None, stream_fallback: object = None) -> dict:
+                         transport: object = None, stream_fallback: object = None,
+                         recovery: object = None) -> dict:
     """Allowlist numeric usage, wall time and time-to-first-token.
 
     Callers can log this once per completed transport request, including empty
@@ -316,6 +320,8 @@ def safe_planner_metrics(stage: object, elapsed_seconds: object, usage: object =
         result["transport"] = transport
     if stream_fallback is True:
         result["stream_fallback"] = True
+    if recovery in _RECOVERY_KINDS:
+        result["recovery"] = recovery
     return result
 
 
