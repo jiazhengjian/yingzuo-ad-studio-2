@@ -103,6 +103,14 @@ def test_emotional_rules_stay_in_the_full_catalog_and_still_need_a_real_fact():
         build_strategy(brief(), [direction("exaggeration", evidence_ids=["missing"])], "d1", select_rules(None))
 
 
+def test_planner_phrases_rewrite_to_plain_words_of_the_same_length():
+    from app.strategy import JARGON_REPLACEMENTS, plain_consumer_wording
+    for source, replacement in JARGON_REPLACEMENTS:
+        assert len(source) == len(replacement)
+        assert consumer_jargon(plain_consumer_wording(f"先{source}一下。")) is None
+    assert plain_consumer_wording("受众意义对应年轻女生生日送礼") == "顾客意义对应年轻女生生日送礼"
+
+
 def test_consumer_copy_rejects_planner_phrases_and_foreign_hooks(env):
     offer = candidates_for(env)
     assert consumer_jargon("采用等离子技术，关注秀发护理") == "关注"
@@ -233,12 +241,15 @@ def test_review_keeps_the_idea_records_tension_and_can_rewrite_a_claim(env):
         validate_direction_review(raw, offer, select_rules(None), product_reference_count=1)
 
 
-def test_review_note_cannot_smuggle_planner_phrasing(env):
+def test_review_note_can_keep_planner_words(env):
     offer = candidates_for(env)
     raw = approved_direction_review([item.model_dump() for item in offer.directions])
     raw["checks"][0]["note"] = "这一条兼顾了卖点呈现。"
-    with pytest.raises(ValueError, match="不要写「兼顾」"):
-        validate_direction_review(raw, offer, select_rules(None), product_reference_count=1)
+    raw["summary"] = "受众会留下记忆点，审核说明可以这么写。"
+    review = validate_direction_review(raw, offer, select_rules(None), product_reference_count=1)
+    assert review.ready
+    assert review.checks[0].note == "这一条兼顾了卖点呈现。"
+    assert "受众" in review.summary
 
 
 def test_plan_replies_do_not_carry_a_new_concept_pool():

@@ -66,6 +66,24 @@ JARGON_PATTERNS = (
     r"满足你对", r"兼顾", r"纳入", r"高端质感", r"打造", r"呈现", r"体现",
     r"主打", r"受众", r"记忆点", r"观看期待", r"卖点", r"策划", r"关注",
 )
+# Same-length plain words. Longer phrases go first so a short word cannot
+# eat part of a longer one. Internal notes and assumptions are not rewritten.
+JARGON_REPLACEMENTS = (
+    ("满足你对", "你想要的"),
+    ("观看期待", "想看下去"),
+    ("高端质感", "看着讲究"),
+    ("记忆点", "记住的"),
+    ("兼顾", "顾到"),
+    ("纳入", "放入"),
+    ("打造", "做出"),
+    ("呈现", "看见"),
+    ("体现", "显出"),
+    ("主打", "重点"),
+    ("受众", "顾客"),
+    ("卖点", "特点"),
+    ("策划", "想法"),
+    ("关注", "在意"),
+)
 CONSUMER_FIELDS = (
     "label", "angle", "audience_value", "product_expression", "story_summary",
     "attraction_mechanism", "hook", "development", "payoff", "consumer_insight", "big_idea",
@@ -643,6 +661,55 @@ def consumer_jargon(text: str) -> str | None:
         if found:
             return found.group(0)
     return None
+
+
+def plain_consumer_wording(text: str) -> str:
+    """Replace planner phrases with plain words. Drop a sentence that still hits.
+
+    Replacements stay the same length so a 30- or 40-character pitch line does
+    not grow past the card limit. Notes, summaries and assumptions are not
+    passed here.
+    """
+    updated = text
+    for _ in range(len(JARGON_REPLACEMENTS) + 1):
+        previous = updated
+        for source, replacement in JARGON_REPLACEMENTS:
+            updated = re.sub(source, replacement, updated)
+        if updated == previous or consumer_jargon(updated) is None:
+            break
+    if consumer_jargon(updated):
+        pieces = re.split(r"(?<=[。！？!?；;])", updated)
+        updated = "".join(piece for piece in pieces if piece and consumer_jargon(piece) is None).strip()
+    while consumer_jargon(updated):
+        updated = updated.replace(consumer_jargon(updated), "", 1).strip()
+    return updated
+
+
+def sanitize_direction_copy(direction: CreativeDirection) -> CreativeDirection:
+    """Rewrite planner phrases on the lines a merchant or a later script can see."""
+    updates = {}
+    for field in CONSUMER_FIELDS:
+        text = getattr(direction, field) or ""
+        if not text:
+            continue
+        plain = plain_consumer_wording(text)
+        if plain and plain != text and consumer_jargon(plain) is None:
+            updates[field] = plain
+    concept = direction.film_concept
+    if concept is not None:
+        concept_updates = {}
+        for field in ("key_visual", "memory_anchor", "sound_role"):
+            text = getattr(concept, field) or ""
+            if not text:
+                continue
+            plain = plain_consumer_wording(text)
+            if plain and plain != text and consumer_jargon(plain) is None:
+                concept_updates[field] = plain
+        if concept_updates:
+            updates["film_concept"] = concept.model_copy(update=concept_updates)
+    if not updates:
+        return direction
+    return direction.model_copy(update=updates)
 
 
 def require_consumer_language(directions: list[CreativeDirection]) -> None:

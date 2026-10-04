@@ -4,6 +4,8 @@ The model judges story semantics. Code checks identity, source references,
 capacity and verdict consistency; it does not claim to prove physical truth.
 A review that already says ready may omit fields the strategy step owns.
 Those fields are copied back. A passed review does not fail the job.
+Planner words in consumer-facing lines are rewritten in place. Check notes,
+the review summary and brief assumptions are internal and are left as written.
 """
 from __future__ import annotations
 
@@ -17,7 +19,8 @@ from pydantic import Field, ValidationError
 from .strategy import (CreativeDirection, DirectionCandidates, DirectionReviewSummary,
                        DirectionReviewCheck, ProductBrief, build_direction_candidates,
                        require_direction_stories, require_direction_value, require_direction_concepts,
-                       require_pitch_lines, require_consumer_language, consumer_jargon)
+                       require_pitch_lines, require_consumer_language, CONSUMER_FIELDS,
+                       plain_consumer_wording, sanitize_direction_copy)
 
 
 performance_logger = logging.getLogger("uvicorn.error.planner")
@@ -141,9 +144,8 @@ def validate_direction_review(raw, original: DirectionCandidates, rules: list[di
         for check in review.checks:
             if check.creative_tension is None or check.hook_strength is None:
                 raise ValueError("新方向审核需要记录创意张力和开场钩子强度，这两项不决定是否通过")
-            phrase = consumer_jargon(check.note)
-            if phrase:
-                raise ValueError(f"审核说明要用观众听得懂的话，不要写「{phrase}」")
+        # checks[].note, summary and brief.assumptions are internal. Only the
+        # lines a merchant can read, or a later script can copy, are scanned.
         require_consumer_language(review.directions)
     if any(direction.story_summary or direction.attraction_mechanism for direction in original.directions):
         require_direction_stories(review.directions)
@@ -280,15 +282,57 @@ def _review_shell(original: DirectionCandidates, raw, *, overlay_text, overlay_e
     return shell
 
 
+_FILM_CONSUMER_FIELDS = ("key_visual", "memory_anchor", "sound_role")
+
+
+def _plain_field(value):
+    if not isinstance(value, str) or not value.strip():
+        return value, False
+    plain = plain_consumer_wording(value)
+    if plain and plain != value:
+        return plain, True
+    return value, False
+
+
+def _sanitize_raw_directions(raw):
+    """Rewrite planner phrases on direction lines. Leave notes and summary alone."""
+    patched = deepcopy(raw)
+    directions = patched.get("directions") if isinstance(patched, dict) else None
+    if not isinstance(directions, list):
+        return patched
+    for item in directions:
+        if not isinstance(item, dict):
+            continue
+        for field in CONSUMER_FIELDS:
+            plain, changed = _plain_field(item.get(field))
+            if changed:
+                item[field] = plain
+        concept = item.get("film_concept")
+        if isinstance(concept, dict):
+            for field in _FILM_CONSUMER_FIELDS:
+                plain, changed = _plain_field(concept.get(field))
+                if changed:
+                    concept[field] = plain
+    return patched
+
+
+def _sanitized_candidates(original: DirectionCandidates) -> DirectionCandidates:
+    directions = [sanitize_direction_copy(direction) for direction in original.directions]
+    if all(updated is direction for updated, direction in zip(directions, original.directions)):
+        return original
+    return original.model_copy(update={"directions": directions})
+
+
 def salvage_direction_review(raw, original: DirectionCandidates, rules: list[dict], *, product_reference_count: int):
     """Keep a ready review. Copy owned fields, then the pre-review directions.
 
     The strategy step already accepted the three directions. A later review
     that says ready must not discard that offer because it omitted hook,
     brand world, insight or the one-line idea. Text the review is allowed to
-    change is kept when it still validates. Otherwise the pre-review
-    directions stand. A stub that only says ready, without the three checks,
-    is still rejected.
+    change is kept when it still validates. Planner wording on those lines is
+    replaced before the retry. Otherwise the pre-review directions stand,
+    with the same replacement. A stub that only says ready, without the three
+    checks, is still rejected.
     """
     rejected = None
     try:
@@ -298,9 +342,11 @@ def salvage_direction_review(raw, original: DirectionCandidates, rules: list[dic
         reasons = review_failure_reasons(first)
         if not (isinstance(raw, dict) and raw.get("ready") is True):
             raise
-    patched = _with_canonical_fields(raw, original)
+    clean_original = _sanitized_candidates(original)
+    clean_raw = _sanitize_raw_directions(raw)
+    patched = _with_canonical_fields(clean_raw, clean_original)
     try:
-        review = validate_direction_review(patched, original, rules, product_reference_count=product_reference_count)
+        review = validate_direction_review(patched, clean_original, rules, product_reference_count=product_reference_count)
     except (ValidationError, ValueError) as exc:
         for code in review_failure_reasons(exc):
             if code not in reasons:
@@ -308,9 +354,10 @@ def salvage_direction_review(raw, original: DirectionCandidates, rules: list[dic
         review = None
     if review is None:
         for overlay, evidence in ((True, True), (True, False), (False, False)):
-            candidate = _review_shell(original, raw, overlay_text=overlay, overlay_evidence=evidence)
+            candidate = _review_shell(clean_original, clean_raw, overlay_text=overlay, overlay_evidence=evidence)
             try:
-                review = validate_direction_review(candidate, original, rules, product_reference_count=product_reference_count)
+                review = validate_direction_review(
+                    candidate, clean_original, rules, product_reference_count=product_reference_count)
                 break
             except (ValidationError, ValueError) as exc:
                 for code in review_failure_reasons(exc):
