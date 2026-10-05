@@ -58,7 +58,7 @@ _OPENING_DEICTIC = re.compile(r"^(?:就这|这么|这|那|它|转)")
 _CLAIM_WORDS = ("根治", "治愈", "美白", "减肥", "抗衰", "医用", "治疗")
 _LINE_STYLES = {
     "brand_tvc": "产品展示：画外旁白，画面里的人不对口型念卖点。可以有不说话、只给画面证明的一拍，不规定那一拍占几秒。画面和产品声音先承担意思，句子仍要有感官。大约15秒整条只围绕一个主好处，旁白、节拍和画面都说这一件。大约30秒可以在主好处之后加一个配角好处，分清主次。45秒以上可以再展开，仍然不要并列清单，不要文案腔。不描述镜头，不编画面上没有的人，不用痛点问句开头。多出来的卖点留空。口播不受这条限制。",
-    "scene_story": "剧情：戏里的人用自己的第一人称说短对白，要有来有回。意图、反应、对照或包袱，每句大约4到10字。不念画面上的动作，也不把这一镜已经看见的事再说一遍，不用她、他做第三人称解说。抱怨、态度或一句提醒可以，口播卖点不行。好处最多一句，是看见结果后的反应。指定去向时只有定格上的短旁白可以画外说，人物不转头推销。",
+    "scene_story": "剧情：戏里的人用自己的第一人称说短对白，要有来有回。意图、反应、对照或包袱，每句大约4到10字。不念画面上的动作，也不把这一镜已经看见的事再说一遍，不用她、他做第三人称解说。抱怨、态度或一句提醒可以，口播卖点不行。好处最多一句，是看见结果后的反应，并且要和这条的主好处是同一件。不念点击或链接，片尾停在结果上，人物不对镜举着产品硬广。",
     "presenter_pitch": "人物讲解：出镜的人用第一人称对着观众说，第一句就是钩子。脸在画面里就对口型；切到商品特写时仍是这个人接着说，不是另配旁白。每一句卖点都要有主语，用这款、它，或我用它。卖点之间用而且、还、另外、所以或关键是接上。资料短时可以补具体场合。可以连着说多个卖点。",
 }
 _TARGET_LENGTH = {
@@ -160,6 +160,8 @@ def type_line_score(text: str, form: str | None, role: str, hook_echo: str = "")
         score -= 4
     if form == "brand_tvc" and _BRAND_COPY.search(text):
         score -= 6
+    elif form == "brand_tvc" and _TELEGRAM.match(text.strip()):
+        score -= 8
     elif form == "brand_tvc" and re.search(r"顺|不吵|听得清|就干|好用|不毛躁|不烫", text):
         score += 4
     elif form == "scene_story" and re.search(r"[你我嘿？！]", text):
@@ -566,8 +568,14 @@ def _shares_a_long_stretch(line, description):
 
 
 _SPEED = re.compile(r"快|几下|吹干|迅速")
-_NOISE = re.compile(r"安静|不吵|声音小|听得清|听得见")
+_NOISE = re.compile(r"安静|不吵|声音小|听得清|听得见|静音")
 _IONS = re.compile(r"负离子")
+# 顺/顺滑/不毛躁 are one benefit. 顺便、顺利、顺口、顺序、顺手、顺路、顺带 are not.
+_SMOOTH = re.compile(
+    r"顺滑|不毛躁|毛躁|柔顺|顺直|不打结|顺了|是顺|头发顺|发丝顺|吹顺|变顺|发尾顺"
+    r"|(?<![便])顺(?!便|利|口|序|手|路|带)"
+)
+_TELEGRAM = re.compile(r"^(?:[\u4e00-\u9fff]{0,8})?是[\u4e00-\u9fff]{1,4}的[。！]?$")
 _DURATION_Q = re.compile(r"多久|吹得久|费时|太慢|好慢")
 _NOISE_Q = re.compile(r"吵|安静|声音")
 _FILLER = re.compile(r"就能出门|就可以出门|吹完就能走|用完就好|这样就行|就能走了")
@@ -582,6 +590,8 @@ def _benefit_dims(text):
         found.add("noise")
     if _IONS.search(text):
         found.add("ions")
+    if _SMOOTH.search(text or ""):
+        found.add("smooth")
     return found
 
 
@@ -799,6 +809,8 @@ def _script_line_offenses(script, strategy, locked_lines, plan=None, duration_se
             bare_name = any(core and core == _spoken_core(name) for name in names)
             if _SHOT_DESCRIPTION.search(text) or bare_name:
                 add(beat, indexes.get(id(beat), 0), "只描述画面")
+            if _TELEGRAM.match(text.strip()):
+                add(beat, indexes.get(id(beat), 0), "电报体")
             if any(_shares_a_long_stretch(text, description) for description in _shot_blurbs(plan, beat.get("id"))):
                 add(beat, indexes.get(id(beat), 0), "台词贴着画面")
     elif plan is not None:
@@ -819,6 +831,10 @@ def _script_line_offenses(script, strategy, locked_lines, plan=None, duration_se
                 add(beat, indexes.get(id(beat), 0), "第三人称解说")
             if _SCENE_PITCH.search(text):
                 add(beat, indexes.get(id(beat), 0), "口播腔")
+            axis = _primary_axis(strategy)
+            tags = _claim_tags(text)
+            if axis and tags and axis not in tags:
+                add(beat, indexes.get(id(beat), 0), "主轴拧了")
         mentioned = any(
             _STORY_PRODUCT.search(beat["narration"]) or _STORY_RESULT.search(beat["narration"])
             or _SCENE_PITCH.search(beat["narration"]) or _has_product_subject(beat["narration"], names)
@@ -876,9 +892,26 @@ def offending_lines(script: dict, *, tagline_enabled: bool | None = None, locked
 _CLAIM_PATTERNS = (
     ("speed", _SPEED),
     ("noise", _NOISE),
+    ("smooth", _SMOOTH),
     ("ions", _IONS),
     *_EXTRA_CLAIMS,
 )
+
+
+def _primary_axis(strategy):
+    """The first benefit the selected direction actually commits to."""
+    if strategy is None:
+        return None
+    try:
+        selected = _selected(_strategy(strategy))
+    except (ValidationError, TypeError, ValueError, KeyError, StopIteration):
+        return None
+    blob = "".join(
+        getattr(selected, field, "") or ""
+        for field in ("product_expression", "consumer_insight", "hook", "payoff", "big_idea")
+    )
+    tags = _ordered_tags(blob)
+    return tags[0] if tags else None
 _CLAUSE_SPLIT = re.compile(r"[，,。！？!?、；;]+")
 _STACK_JOIN = re.compile(r"还|和|与")
 _BRAND_STACKS = ("旁白在堆卖点", "一句里塞了两个卖点", "标签式旁白")
@@ -1446,6 +1479,16 @@ def rewrite_schema(lines: list[dict], beat_cap: int) -> dict:
             one["properties"]["narration"]["description"] = (
                 "这句把时长说满了，或又报了另一个卖点。留空，表示这一拍不说话。"
                 "若还在说同一个好处，写成一句口语，不要加长。")
+        elif "电报体" in offenses:
+            one["properties"]["narration"]["minLength"] = 1
+            one["properties"]["narration"]["description"] = (
+                "这句是「是……的」这种电报标签。改成说得出口的一句，仍然只说同一个好处。"
+                "不要换成另一条卖点，不要留空，也不要写死某一句替换。")
+        elif "主轴拧了" in offenses:
+            one["properties"]["narration"]["minLength"] = 1
+            one["properties"]["narration"]["description"] = (
+                "这句的好处和这条的主好处不是同一件。改成对主好处的反应或态度。"
+                "不要换成另一条卖点，也不要写固定套话。")
         elif "在念画面" in offenses or "第三人称解说" in offenses:
             one["properties"]["narration"]["minLength"] = 1
             one["properties"]["narration"]["description"] = (
@@ -1495,9 +1538,12 @@ def apply_line_rewrite(script: dict, raw, *, limits: dict, locked_lines=(), fact
         beat["narration"] = line.narration
     if strategy is not None:
         try:
-            if script_form(strategy) == "brand_tvc":
+            form_now = script_form(strategy)
+            if form_now in ("brand_tvc", "scene_story"):
                 leftover = _script_line_offenses(revised, strategy, locked_lines, duration_seconds=duration_seconds)
-                blocked = {"旁白像文案", "旁白在堆卖点"}
+                blocked = {"电报体", "主轴拧了"}
+                if form_now == "brand_tvc":
+                    blocked.update({"旁白像文案", "旁白在堆卖点"})
                 if any(name in blocked for item in leftover for name in item["offenses"]):
                     return None
         except (ValidationError, TypeError, ValueError, KeyError):
@@ -1526,10 +1572,10 @@ LINE_REWRITE_SYSTEM = """你只重写列出的中文广告台词，只输出 JSO
 每句不超过该句 max_characters，标点也算。用户固定台词原样留在句子里。旁白太密的句子按 schema 留空，表示这一拍不说话。
 相邻两句不要近义重复。剧情广告全片只用一种人称，不要旁白说「她走过」同时又用「我」或「吧」。不要只复述看得见的动作。人物讲解的开场如果是问句，后面要有一句回答，而且回答的是同一个问题：问吹得久就回答快，不要顺口把安静和负离子也塞进这一句。
 一条卖点说完整再换下一条。快、安静、负离子不要在后面的句子里再报一遍，除非最后一句是有意收回来的总括。没有信息的空话删掉，例如洗完就能出门。只有人物讲解在资料只有几个词时，才补一个具体场合和体感，例如赶早上班、头发厚、旁边还有人在睡。产品片和剧情不要补画面上没有的人、地方或时间。不编数字、规格、价格或折扣。
-产品展示大约15秒整条只围绕一个主好处，像跟人说话。大约30秒可以在这一个主好处之后再留一个配角好处，分清主次。45秒以上可以再展开一句，仍然不要并列清单。不要文案腔，不要「是它的脸」「先到了」「肩线这一圈」，也不要「十万转高速马达」「一亿负离子」这种参数清单。短的口语好处不要改长，也不要补主语。例如「吹完是顺的。」「这风不吵。」「几下就干。」不要描述镜头里的光和动作，不要用痛点问句或场景交代开场。旁白太密，或超过本片时长还能说的卖点，那些句子 narration 留空。至少留一拍只有产品的声音。不编价格。口播不受这条限制，卖点之间仍用而且接上。
+产品展示大约15秒整条只围绕一个主好处，像跟人说话。大约30秒可以在这一个主好处之后再留一个配角好处，分清主次。45秒以上可以再展开一句，仍然不要并列清单。不要文案腔，不要「是它的脸」「先到了」「肩线这一圈」，也不要「十万转高速马达」「一亿负离子」这种参数清单。短的口语好处不要改长，也不要补主语。例如「这风不吵。」「几下就干。」「是……的」这种电报标签要改成说得出口的一句，不要指定某一句替换。顺、顺滑、不毛躁是同一个好处。不要描述镜头里的光和动作，不要用痛点问句或场景交代开场。旁白太密，或超过本片时长还能说的卖点，那些句子 narration 留空。至少留一拍只有产品的声音。不编价格。口播不受这条限制，卖点之间仍用而且接上。
 人物讲解的每一句卖点都要有主语：这款、它，或「我用它」。不要用「风大」「带负离子」这种没有主语的开头。卖点之间用而且、还、另外、所以或关键是接上。
 产品片不必每句点名。直接、短地说画面证明不了的好处。不要描述镜头里的光、银线或发丝飘起。
-剧情对白是意图、反应、对照或包袱，每句大约4到10字，用这个人自己的第一人称。不要把这一镜已经看见的事再说一遍，也不要用她、他做第三人称解说。画面是室友在睡、她没按开关时，不要说「不敢开，怕吵醒她。」改成这个人自己会说的反应、态度，或一句画面带不走的话。不要念室友在睡、她拿吹风机，也不要改成口播卖点。好处最多一句，写成人物看见结果后的反应。指定了去向时用定格上的短旁白，人物不要转头对着镜头推销，这句不要改。数字和功效只在 facts 里已经有时才能写。若某句带了 picture，那就是这一镜已经拍到的内容。口播是出镜的人用第一人称对观众说，商品特写仍是这个人接着说，不是另配旁白，卖点可以连着说。产品展示是画外旁白，不要对口型念卖点，可以留不说话的画面，不规定那一拍占几秒。
+剧情对白是意图、反应、对照或包袱，每句大约4到10字，用这个人自己的第一人称。不要把这一镜已经看见的事再说一遍，也不要用她、他做第三人称解说。画面是室友在睡、她没按开关时，不要说「不敢开，怕吵醒她。」改成这个人自己会说的反应、态度，或一句画面带不走的话。不要念室友在睡、她拿吹风机，也不要改成口播卖点。好处最多一句，写成人物看见结果后的反应，并且和这条的主好处是同一件。剧情不念点击或链接，片尾停在结果上。人物不要转头对着镜头推销。数字和功效只在 facts 里已经有时才能写。若某句带了 picture，那就是这一镜已经拍到的内容。口播是出镜的人用第一人称对观众说，商品特写仍是这个人接着说，不是另配旁白，卖点可以连着说。产品展示是画外旁白，不要对口型念卖点，可以留不说话的画面，不规定那一拍占几秒。
 tagline_policy.enabled 为 false 时不加独立口号字卡。为 true 时只有收束句可以是不超过10字的口播，仍然不写购买、下单、抢购。
 不输出其他字段，不解释。"""
 

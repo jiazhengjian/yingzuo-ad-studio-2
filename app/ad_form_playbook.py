@@ -261,6 +261,16 @@ def ending_policy(form: str | None, cta_target: str | None = None) -> dict:
     from .cta import is_explicit_cta, spoken_cta_line
 
     hold = "结尾留出至少2秒不说话，商品停在画面里。不编链接、地址、门牌或价格。"
+    if form == "scene_story":
+        instruction = (
+            "剧情片尾停在结果镜头，产品定格约2秒。不念点击、链接、私信或到店，转化靠平台按钮。"
+            "人物不对镜举着产品硬广。" + hold
+        )
+        return {
+            "form": "scene_story",
+            "cta_target": "none",
+            "instruction": instruction,
+        }
     if is_explicit_cta(cta_target):
         try:
             line = spoken_cta_line(cta_target, form)

@@ -183,6 +183,10 @@ def answer_cta(answer):
 def should_ask_cta(project):
     if not isinstance(project, dict) or "cta_target" not in project:
         return False
+    # A story ends on the result. The platform button does the converting,
+    # so the clarification card does not ask for a spoken destination.
+    if project.get("ad_form") == "scene_story":
+        return False
     if project.get("cta_target") == "ai_decide" or is_explicit_cta(project.get("cta_target")):
         return False
     if stated_cta(project.get("brief")):
@@ -234,7 +238,7 @@ def spoken_cta_line(target, form=None, script=None):
     try:
         if target in _LINES:
             if form == "scene_story":
-                return _SCENE[target]
+                return ""
             table = _TYPED.get(form or "")
             if table and target in table:
                 return table[target]
@@ -349,13 +353,22 @@ def apply_spoken_policy(script, strategy, cta_target, locked=()):
         if not narration or _locked(narration, locked):
             continue
         beat["narration"] = scrub_ungrounded_prices(narration, source)
+    form = _form(strategy)
+    if form == "scene_story":
+        for beat in beats:
+            if not isinstance(beat, dict):
+                continue
+            narration = beat.get("narration") or ""
+            if not narration or _locked(narration, locked):
+                continue
+            beat["narration"] = strip_guidance(narration)
+        return AdScript.model_validate(data) if hasattr(script, "model_dump") else data
     if cta_target is None:
         return AdScript.model_validate(data) if hasattr(script, "model_dump") else data
     spoken = [beat for beat in beats if isinstance(beat, dict) and (beat.get("narration") or "").strip()
               and not _locked(beat.get("narration"), locked)]
     if not spoken:
         return AdScript.model_validate(data) if hasattr(script, "model_dump") else data
-    form = _form(strategy)
     if is_open_cta(cta_target):
         for beat in spoken:
             cleaned = strip_guidance(beat.get("narration") or "")

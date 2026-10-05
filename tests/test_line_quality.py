@@ -101,8 +101,10 @@ def test_scores_follow_the_ad_type():
     assert "钩子" in line_style("presenter_pitch")
     assert type_line_score("肩线这一圈，是它的脸。", "brand_tvc", "hook") > type_line_score(
         "采用圆肩工艺，呈现高端质感。", "brand_tvc", "hook")
-    assert type_line_score("吹完是顺的。", "brand_tvc", "hook") > type_line_score(
+    assert type_line_score("这风不吵。", "brand_tvc", "hook") > type_line_score(
         "肩线这一圈，是它的脸。", "brand_tvc", "hook")
+    assert type_line_score("吹完是顺的。", "brand_tvc", "hook") < type_line_score(
+        "这风不吵。", "brand_tvc", "hook")
     assert type_line_score("你按这边。", "scene_story", "line") > type_line_score(
         "打造分享场景。", "scene_story", "line")
     assert type_line_score("包太满？折一下。", "presenter_pitch", "hook") > type_line_score(
@@ -191,9 +193,13 @@ def test_rewrite_accepts_only_a_complete_clean_set():
     assert apply_line_rewrite(original, {"lines": []}, limits=limits, facts_text="蓝瓶") is None
     assert original["beats"][0]["narration"] == "关注秀发护理。"
     accepted = apply_line_rewrite(
+        original, {"lines": [{"beat_id": "b0", "narration": "吹完头发顺了。"}]},
+        limits=limits, facts_text="蓝瓶", duration_seconds=20, strategy=strategy)
+    assert accepted["beats"][0]["narration"] == "吹完头发顺了。"
+    stiff = apply_line_rewrite(
         original, {"lines": [{"beat_id": "b0", "narration": "吹完是顺的。"}]},
         limits=limits, facts_text="蓝瓶", duration_seconds=20, strategy=strategy)
-    assert accepted["beats"][0]["narration"] == "吹完是顺的。"
+    assert stiff is None
     literary = apply_line_rewrite(
         original, {"lines": [{"beat_id": "b0", "narration": "肩线这一圈，是它的脸。"}]},
         limits=limits, facts_text="蓝瓶", duration_seconds=20, strategy=strategy)
@@ -210,7 +216,7 @@ def test_rewrite_accepts_only_a_complete_clean_set():
 
 def test_clean_script_does_not_call_and_a_bad_rewrite_keeps_the_original():
     strategy = typed("brand_tvc")
-    clean = script_of(beat("吹完是顺的。"))
+    clean = script_of(beat("几下就干。"))
 
     async def forbidden(*args):
         raise AssertionError("clean script called the model")
@@ -231,11 +237,11 @@ def test_clean_script_does_not_call_and_a_bad_rewrite_keeps_the_original():
     assert calls[0]["lines"][0]["max_characters"] <= 30
 
     async def spoken(system, data, originals, max_tokens):
-        return {"lines": [{"beat_id": item["beat_id"], "narration": "吹完是顺的。"}
+        return {"lines": [{"beat_id": item["beat_id"], "narration": "吹完头发顺了。"}
                           for item in data["lines"]]}
 
     called, result = asyncio.run(rewrite_script_if_needed(spoken, dirty, strategy, 20))
-    assert called is True and result["beats"][0]["narration"] == "吹完是顺的。"
+    assert called is True and result["beats"][0]["narration"] == "吹完头发顺了。"
     locked = "关注秀发护理。"
     assert offending_lines(script_of(beat(locked)), locked_lines=[locked]) == []
 
@@ -281,7 +287,7 @@ def test_presenter_selling_lines_need_a_subject_and_a_connective():
         "早上吹头发，你一般要多久？",
         "我用这款吹风机，几下就吹开了。",
         "而且它声音很小，我正常说话都听得清。",
-        "它带负离子，吹完头发顺。",
+        "而且它带负离子。",
         "399，链接放下面了。",
     ), "presenter_pitch")
     assert good == []
@@ -361,7 +367,8 @@ def test_brand_lines_can_state_the_benefit_without_a_subject():
     assert "卖点没有主语" not in visual
     assert "卖点之间缺少承接" not in visual
     plain = _focus(_lines("吹完是顺的。", "发尾是顺的。"), "brand_tvc")
-    assert plain == []
+    assert plain.count("电报体") == 2
+    assert "旁白在堆卖点" not in plain
     terse = _focus(_lines(
         "十万转高速马达，三分钟吹干。",
         "一亿负离子，吹完不毛躁。",
@@ -488,7 +495,7 @@ def test_voice_track_identity_follows_the_ad_type():
 
 
 def test_brand_voiceover_stays_thin_and_does_not_invent_a_scene():
-    five = _lines("几下就干。", "发尾是顺的。", "就这点。", "再看一眼。", "停在这儿。")
+    five = _lines("几下就干。", "再看这一下。", "就这点。", "再看一眼。", "停在这儿。")
     assert "旁白太密" in _focus(five, "brand_tvc")
     assert "旁白太密" in _focus(five, "brand_tvc", duration_seconds=18)
     assert "旁白太密" not in _focus(five, "brand_tvc", duration_seconds=45)
@@ -507,7 +514,7 @@ def test_brand_voiceover_stays_thin_and_does_not_invent_a_scene():
     assert "旁白开成了讲解" not in showcase
     assert "旁白太密" not in showcase
     assert "旁白在堆卖点" in _focus(_lines("几下就干。", "这风不吵。"), "brand_tvc")
-    assert _focus(_lines("几下就干。", "发尾是顺的。"), "brand_tvc") == []
+    assert "旁白在堆卖点" in _focus(_lines("几下就干。", "发尾是顺的。"), "brand_tvc")
 
     strategy = typed("brand_tvc")
 
@@ -518,7 +525,7 @@ def test_brand_voiceover_stays_thin_and_does_not_invent_a_scene():
     called, result = asyncio.run(rewrite_script_if_needed(blank, five, strategy, 20))
     assert called is True
     assert [beat["narration"] for beat in result["beats"]] == [
-        "几下就干。", "发尾是顺的。", "就这点。", "", "",
+        "几下就干。", "再看这一下。", "就这点。", "", "",
     ]
 
     async def boom(*args, **kwargs):

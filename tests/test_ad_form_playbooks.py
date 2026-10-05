@@ -120,8 +120,9 @@ def test_validate_script_uses_the_type_cap_and_keeps_the_legacy_beat_limit():
     assert "点下面" not in ending("presenter_pitch", "ai_decide")["instruction"]
     assert "英雄定格" in ending_policy("brand_tvc")["instruction"]
     assert "定格" in ending_policy("scene_story")["instruction"]
-    assert "想带走" in ending("scene_story", "link")["instruction"]
-    assert "转头" in ending("scene_story", "link")["instruction"]
+    story_ending = ending("scene_story", "link")["instruction"]
+    assert "想带走" not in story_ending and "点下面" not in story_ending
+    assert "定格" in story_ending and "平台按钮" in story_ending
     assert "点下面" not in ending("scene_story", "ai_decide")["instruction"]
     from app.ad_form_playbook import brand_voiceover_budget
     short = brand_voiceover_budget(18)
