@@ -803,6 +803,8 @@ def test_stacked_brand_voiceover_is_collapsed_before_the_plan_is_ready(progressi
         beats[1]["narration"] = "带负离子，吹完是顺的。"
         beats[2]["narration"] = "点下面链接，把它看清楚。"
         value["shots"][0]["description"] = "同一瓶子停在夜里的桌面，机位不动。"
+        value["shots"][1]["description"] = "带负离子的光扫过。旁白说这句话时画面基本停住。"
+        value["shots"][1]["visual_motif"] = "负离子"
 
     state.first_director_mutation = stack
     plan = state.run()
@@ -812,6 +814,9 @@ def test_stacked_brand_voiceover_is_collapsed_before_the_plan_is_ready(progressi
     assert "点下面链接" in narrations[2]
     assert "不吵" not in "".join(narrations) and "负离子" not in "".join(narrations)
     assert "这风不吵" not in plan["segments"][0]["shots"][0]["description"]
+    shot_text = " ".join(shot.get("description") or "" for shot in plan["segments"][0]["shots"])
+    assert "负离子" not in shot_text and "旁白说这句话" not in shot_text
+    assert all((shot.get("visual_motif") or "") != "负离子" for shot in plan["segments"][0]["shots"])
     assert plan["plan_review"]["ready"] is True
     assert "plan_review" in state.calls
 
@@ -833,7 +838,7 @@ def test_stacked_brand_voiceover_is_not_marked_ready_when_it_cannot_be_rewritten
 
     monkeypatch.setattr(
         "app.line_quality.apply_brand_claim_collapse",
-        lambda director, strategy, locked_lines=(): (director, False))
+        lambda director, strategy, locked_lines=(), duration_seconds=None: (director, False))
     monkeypatch.setattr("app.line_quality.rewrite_director_if_needed", keep_stack)
     state.first_director_mutation = stack
     with pytest.raises(ProviderError, match="堆卖点"):

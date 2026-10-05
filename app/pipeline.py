@@ -45,6 +45,12 @@ def video_submission_spec(plan, segment, assets=None):
     tenth = speech_profile_for_strategy(strategy).characters_per_tenth
     if tenth != LEGACY_TENTH:
         spec["speech_characters_per_tenth"] = tenth
+    brief = strategy.get("brief") if isinstance(strategy, dict) else getattr(strategy, "brief", None)
+    form = brief.get("ad_form") if isinstance(brief, dict) else getattr(brief, "ad_form", None)
+    # Story prompts use this to avoid telling the character to look at the camera.
+    # Other forms keep the previous request shape.
+    if form == "scene_story":
+        spec["ad_form"] = form
     director = direction_context(plan)
     if director is not None:
         spec["director_context"] = director

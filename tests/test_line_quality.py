@@ -5,7 +5,7 @@ import pytest
 
 from app.ad_script import derive_script_evidence, script_stage_schema
 from app.line_quality import (
-    apply_line_rewrite, brand_stack_remaining, collapse_brand_claims, line_offenses,
+    apply_brand_claim_collapse, apply_line_rewrite, brand_stack_remaining, collapse_brand_claims, line_offenses,
     line_style, narration_budget_ok, offending_lines, prepare_script_lines,
     prepare_speech_draft, product_terms, rewrite_director_if_needed,
     rewrite_script_if_needed, script_line_offenses, type_line_score,
@@ -551,3 +551,103 @@ def test_stacked_brand_voiceover_keeps_one_benefit_and_the_call_to_action():
     assert "不要整条都写成画外音" in scene_book
     assert "剧情可以用旁白" not in sound
     assert "character_dialogue" in sound and "定格那一句" in sound
+
+
+def test_brand_claim_capacity_follows_duration_and_the_whole_piece():
+    strategy = typed("brand_tvc")
+    live = _lines(
+        "夜里吹，几下就干。",
+        "这风不吵。",
+        "带负离子。",
+        "点下面链接，把它看清楚。",
+    )
+    short, _ = collapse_brand_claims(live, duration_seconds=15)
+    assert [beat["narration"] for beat in short["beats"]] == [
+        "夜里吹，几下就干。", "", "", "点下面链接，把它看清楚。",
+    ]
+    assert brand_stack_remaining(live, strategy, duration_seconds=15) is True
+    assert brand_stack_remaining(short, strategy, duration_seconds=15) is False
+    medium, _ = collapse_brand_claims(live, duration_seconds=30)
+    assert [beat["narration"] for beat in medium["beats"]] == [
+        "夜里吹，几下就干。", "这风不吵。", "", "点下面链接，把它看清楚。",
+    ]
+    assert brand_stack_remaining(medium, strategy, duration_seconds=30) is False
+    assert "旁白在堆卖点" in _focus(live, "brand_tvc", duration_seconds=30)
+    assert "旁白在堆卖点" not in _focus(medium, "brand_tvc", duration_seconds=30)
+    long, _ = collapse_brand_claims(live, duration_seconds=45)
+    assert [beat["narration"] for beat in long["beats"]] == [
+        "夜里吹，几下就干。", "这风不吵。", "带负离子。", "点下面链接，把它看清楚。",
+    ]
+    crowded = _lines("几下就干。", "这风不吵。", "带负离子。", "机身很轻。")
+    capped, _ = collapse_brand_claims(crowded, duration_seconds=60)
+    assert [beat["narration"] for beat in capped["beats"]] == ["几下就干。", "这风不吵。", "带负离子。", ""]
+    assert "一句里塞了两个卖点" in _focus(
+        _lines("几下就干，这风不吵。"), "brand_tvc", duration_seconds=45)
+    pitch = typed("presenter_pitch")
+
+    async def keep_pitch(*args, **kwargs):
+        raise RuntimeError("rewrite down")
+
+    _, pitch_result = asyncio.run(rewrite_script_if_needed(
+        keep_pitch, _lines("几下就干。", "这风不吵。", "带负离子。"), pitch, 15))
+    assert [beat["narration"] for beat in pitch_result["beats"]] == [
+        "几下就干。", "这风不吵。", "带负离子。",
+    ]
+
+    director = {
+        "title": "夜里轻响",
+        "video_flow": "先说干得快，再演示不吵和负离子。",
+        "ad_script": {
+            "core_message": "干得快，也不吵，还带负离子。",
+            "beats": live["beats"],
+        },
+        "shots": [
+            {"id": "shot_0", "coverage": [{"beat_id": "b0", "weight": 1}],
+             "description": "几下就干。旁边还在演示不吵。",
+             "purpose": "看见干得快", "visual_motif": "负离子"},
+            {"id": "shot_1", "coverage": [{"beat_id": "b1", "weight": 1}],
+             "description": "这风不吵。旁白说这句话时画面基本停住。",
+             "purpose": "听见安静", "visual_motif": "安静"},
+            {"id": "shot_2", "coverage": [{"beat_id": "b2", "weight": 1}],
+             "description": "带负离子的光扫过。",
+             "purpose": "看见负离子", "visual_motif": "负离子"},
+        ],
+    }
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("rewrite down")
+
+    called, replacement = asyncio.run(rewrite_director_if_needed(boom, director, strategy, 15))
+    assert called is True and replacement is not None
+    assert replacement["shots"][0]["description"] == "几下就干。"
+    assert "不吵" not in replacement["shots"][0]["description"]
+    assert replacement["shots"][0]["visual_motif"] == ""
+    assert "旁白说这句话" not in replacement["shots"][1]["description"]
+    assert "不吵" not in replacement["shots"][1]["description"]
+    assert "负离子" not in replacement["shots"][2]["description"]
+    assert "负离子" not in replacement["ad_script"]["core_message"]
+    assert "不吵" not in replacement["video_flow"] and "负离子" not in replacement["video_flow"]
+    longer, changed = apply_brand_claim_collapse(director, strategy, (), 30)
+    assert changed is True
+    assert longer["ad_script"]["beats"][1]["narration"] == "这风不吵。"
+    assert longer["shots"][1]["description"].startswith("这风不吵")
+    assert "负离子" not in longer["shots"][2]["description"]
+    assert longer["shots"][0]["visual_motif"] == ""
+    assert longer["shots"][1]["visual_motif"] == ""
+
+
+def test_blanked_voiceover_pointer_is_scrubbed_from_the_shot():
+    strategy = typed("brand_tvc")
+    director = {"ad_script": _lines("几下就干。", "带负离子。"), "shots": [
+        {"id": "shot_0", "coverage": [{"beat_id": "b0", "weight": 1}],
+         "description": "镜头快速推近，风口对着发尾。"},
+        {"id": "shot_1", "coverage": [{"beat_id": "b1", "weight": 1}],
+         "description": "旁白说这句话时画面基本停住。"},
+    ]}
+    folded, changed = apply_brand_claim_collapse(director, strategy, (), 15)
+    assert changed is True
+    assert folded["ad_script"]["beats"][1]["narration"] == ""
+    assert "旁白说这句话" not in folded["shots"][1]["description"]
+    assert folded["shots"][1]["description"] == "这一拍不说话，画面停住。"
+    assert "快速推近" in folded["shots"][0]["description"]
+    assert folded["shots"][0]["description"].endswith("风口对着发尾。")

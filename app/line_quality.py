@@ -57,7 +57,7 @@ _SOFT_CTA = re.compile(r"点下面|下方链接|链接放|去看看|小黄车")
 _OPENING_DEICTIC = re.compile(r"^(?:就这|这么|这|那|它|转)")
 _CLAIM_WORDS = ("根治", "治愈", "美白", "减肥", "抗衰", "医用", "治疗")
 _LINE_STYLES = {
-    "brand_tvc": "产品展示：画面和产品声音先承担意思，句子仍要有感官。说人话，大约15到20秒只说2到3句，一个主好处，不要文案腔，也不要把几个卖点排成清单。可以说画面证明不了的好处。不描述镜头，不编画面上没有的人，不用痛点问句开头。旁白太密或又报了另一个卖点时，多出来的句子留空。",
+    "brand_tvc": "产品展示：画面和产品声音先承担意思，句子仍要有感官。大约15秒整条只围绕一个主好处，旁白、节拍和画面都说这一件。大约30秒可以在主好处之后加一个配角好处，分清主次。45秒以上可以再展开，仍然不要并列清单，不要文案腔。不描述镜头，不编画面上没有的人，不用痛点问句开头。多出来的卖点留空。口播不受这条限制。",
     "scene_story": "剧情：人物的短对白，要有来有回。意图、反应、对照或包袱，每句大约4到10字。不念画面上的动作，不讲口播卖点。好处最多一句，是看见结果后的反应。指定去向时用定格上的短旁白，人物不转头推销。",
     "presenter_pitch": "人物讲解：对着镜头，第一句就是钩子。每一句卖点都要有主语，用这款、它，或我用它。卖点之间用而且、还、另外、所以或关键是接上。资料短时可以补具体场合。",
 }
@@ -509,6 +509,36 @@ def _claim_tags(text):
     return found
 
 
+def _ordered_tags(text):
+    ranked = []
+    for name, pattern in _CLAIM_PATTERNS:
+        match = pattern.search(text or "")
+        if match:
+            ranked.append((match.start(), name))
+    ranked.sort()
+    found = []
+    for _, name in ranked:
+        if name not in found:
+            found.append(name)
+    return found
+
+
+def brand_claim_capacity(duration_seconds):
+    """How many distinct benefits a product showcase may state.
+
+    A missing duration stays in the short band: one claim. Around 30 seconds
+    the piece may add one supporting claim after the main one. At 45 seconds
+    and longer a third claim can be developed. One sentence still cannot hold
+    two claims. This cap is only for brand_tvc. 口播 is not limited here.
+    """
+    duration = duration_seconds if isinstance(duration_seconds, int) and duration_seconds > 0 else 15
+    if duration < 25:
+        return 1
+    if duration < 45:
+        return 2
+    return 3
+
+
 def _spoken_length(text):
     return len(re.sub(r"[，。！？、,.!?\s]", "", text or ""))
 
@@ -662,15 +692,21 @@ def _script_line_offenses(script, strategy, locked_lines, plan=None, duration_se
         if len(content_lines) >= budget["rewrite_at"]:
             for beat in content_lines[budget["preferred_max"]:]:
                 add(beat, indexes.get(id(beat), 0), "旁白太密")
-        introduced = set()
+        introduced = []
+        capacity = brand_claim_capacity(duration_seconds)
         for beat in content_lines:
             text = beat["narration"]
             if _BRAND_COPY.search(text):
                 add(beat, indexes.get(id(beat), 0), "旁白像文案")
-            tags = _claim_tags(text)
-            if tags and introduced and not tags <= introduced:
+            tags = _ordered_tags(text)
+            novel = [tag for tag in tags if tag not in introduced]
+            # The first spoken line can still be 「一句里塞了两个卖点」.
+            # A later line stacks only when it would pass the duration cap.
+            if introduced and novel and len(introduced) + len(novel) > capacity:
                 add(beat, indexes.get(id(beat), 0), "旁白在堆卖点")
-            introduced |= tags
+            for tag in tags:
+                if tag not in introduced:
+                    introduced.append(tag)
         for beat in spoken:
             text = beat["narration"]
             if not _CTA_LINE.search(text) and _BRAND_OFFSCREEN.search(text):
@@ -827,15 +863,19 @@ def _terminal_mark(text):
     return match.group(0) if match else "。"
 
 
-def collapse_brand_claims(script, locked_lines=()):
-    """Keep the first benefit in a product-ad voiceover. Later benefits go blank.
+def collapse_brand_claims(script, locked_lines=(), duration_seconds=None):
+    """Keep one main benefit in a product-ad voiceover, plus duration room.
 
-    A call-to-action line and any user-locked line stay as written. The same
-    benefit may repeat. A result with no new claim, such as 吹完是顺的, stays
-    when it is not riding on a second claim in that line.
+    About 15 seconds stays on that one claim. About 30 seconds may keep one
+    later supporting claim. At 45 seconds and longer a third claim may stay.
+    A second claim inside the same sentence is still removed. A call-to-action
+    line and any user-locked line stay as written. The same benefit may repeat.
+    A result with no new claim, such as 吹完是顺的, stays when it is not riding
+    on a claim this line dropped. Callers use this for brand_tvc only.
     """
     revised = deepcopy(script) if isinstance(script, dict) else {"beats": []}
-    primary = None
+    capacity = brand_claim_capacity(duration_seconds)
+    allowed = []
     changed = False
     for beat in _beats(revised):
         if not isinstance(beat, dict):
@@ -844,25 +884,33 @@ def collapse_brand_claims(script, locked_lines=()):
         if not isinstance(text, str) or not text.strip():
             continue
         if _locked(text, locked_lines) or _CTA_LINE.search(text):
+            if _locked(text, locked_lines):
+                for tag in _ordered_tags(text):
+                    if tag not in allowed:
+                        allowed.append(tag)
             continue
+        line_tag = None
         kept = []
         dropped_foreign = False
         for piece in _spoken_pieces(text):
             tags = _claim_tags(piece)
-            if primary is None:
-                if not tags:
-                    kept.append(piece)
-                    continue
-                primary = _earliest_tag(piece) or next(iter(tags))
-                if tags <= {primary}:
+            if not tags:
+                kept.append(piece)
+                continue
+            tag = _earliest_tag(piece) or next(iter(tags))
+            if line_tag is not None and tag != line_tag:
+                dropped_foreign = True
+                continue
+            if tag in allowed or len(allowed) < capacity:
+                if tag not in allowed:
+                    allowed.append(tag)
+                line_tag = tag
+                if tags <= {tag}:
                     kept.append(piece)
                 else:
                     dropped_foreign = True
                 continue
-            if tags and not tags <= {primary}:
-                dropped_foreign = True
-                continue
-            kept.append(piece)
+            dropped_foreign = True
         if dropped_foreign and not any(_claim_tags(piece) for piece in kept):
             kept = []
         new = ("，".join(kept) + _terminal_mark(text)) if kept else ""
@@ -882,9 +930,249 @@ def brand_stack_remaining(script, strategy, locked_lines=(), plan=None, duration
     return False
 
 
+_PIECE_HOLD = "产品留在画面里。"
+_SILENT_HOLD = "这一拍不说话，画面停住。"
+_VO_POINTER = re.compile(
+    r"旁白.{0,12}(?:说|念)|画外音?.{0,8}(?:说|念)|说这句|配上旁白|跟着旁白|随着旁白"
+)
+_BEAT_TEXT_FIELDS = ("purpose", "message", "visual_role")
+_SHOT_TEXT_FIELDS = ("description", "purpose")
+_CONTINUITY_TEXT_FIELDS = (
+    "start_state", "allowed_changes", "end_state", "camera_move", "entry_reason",
+)
+
+
+def _shot_beat_ids(shot):
+    found = []
+    if not isinstance(shot, dict):
+        return found
+    for part in shot.get("coverage") or []:
+        if isinstance(part, dict) and isinstance(part.get("beat_id"), str):
+            found.append(part["beat_id"])
+    if isinstance(shot.get("beat_id"), str) and shot["beat_id"]:
+        found.append(shot["beat_id"])
+    for beat_id in shot.get("beat_ids") or []:
+        if isinstance(beat_id, str) and beat_id:
+            found.append(beat_id)
+    return found
+
+
+def _narration_by_id(script):
+    found = {}
+    for beat in _beats(script):
+        if isinstance(beat, dict) and isinstance(beat.get("id"), str):
+            text = beat.get("narration")
+            found[beat["id"]] = text.strip() if isinstance(text, str) else ""
+    return found
+
+
+def _allowed_brand_tags(script, locked_lines, duration_seconds):
+    """Claims the collapsed voiceover still speaks, in first-heard order."""
+    capacity = brand_claim_capacity(duration_seconds)
+    allowed = []
+    for beat in _beats(script):
+        if not isinstance(beat, dict):
+            continue
+        text = beat.get("narration")
+        if not isinstance(text, str) or not text.strip() or _CTA_LINE.search(text):
+            continue
+        locked = _locked(text, locked_lines)
+        for tag in _ordered_tags(text):
+            if tag in allowed:
+                continue
+            if locked or len(allowed) < capacity:
+                allowed.append(tag)
+    return allowed
+
+
+def _visual_sentences(text):
+    parts = re.findall(r"[^。！？!?；;\n]+[。！？!?；;]?", text or "")
+    return [part.strip() for part in parts if part and part.strip()]
+
+
+_CAMERA_QUICK = re.compile(r"快速|快切|尽快|快推|迅速(?=推|拉|摇|移|切|转)")
+
+
+def _visual_claim_tags(text):
+    """Benefit tags in a picture line. 快速推近 is camera, not a second claim."""
+    return _claim_tags(_CAMERA_QUICK.sub("", text or ""))
+
+
+def _filter_claim_sentence(sentence, permitted):
+    """Drop clauses that state a benefit this spot is not allowed to show."""
+    pieces = re.findall(r"[^，,]+[，,]?", sentence or "")
+    if not pieces:
+        return ""
+    kept = []
+    dropped_foreign = False
+    for piece in pieces:
+        tags = _visual_claim_tags(piece)
+        if tags and not tags <= permitted:
+            dropped_foreign = True
+            continue
+        kept.append(piece)
+    if dropped_foreign and not any(_visual_claim_tags(piece) & permitted for piece in kept):
+        return ""
+    body = "".join(kept).strip("，, ")
+    if not body:
+        return ""
+    mark = sentence.strip()[-1] if sentence.strip()[-1:] in "。！？!?；;" else ""
+    if mark and not body.endswith(mark):
+        body += mark
+    return body
+
+
+def _permitted_tags(narrations, beat_ids, allowed):
+    """Primary claim everywhere; a supporting claim only on the beat that says it."""
+    permitted = set(allowed[:1])
+    for beat_id in beat_ids:
+        permitted.update(tag for tag in _ordered_tags(narrations.get(beat_id, "")) if tag in allowed)
+    return permitted
+
+
+def _rewrite_claim_text(text, permitted, *, blank_hold):
+    if not isinstance(text, str) or not text.strip():
+        return text
+    sentences = []
+    for sentence in _visual_sentences(text):
+        if _VO_POINTER.search(sentence) and blank_hold:
+            continue
+        kept = _filter_claim_sentence(sentence, permitted)
+        if kept:
+            sentences.append(kept)
+    if sentences:
+        return "".join(sentences)
+    if not _visual_claim_tags(text) and not (blank_hold and _VO_POINTER.search(text)):
+        return text
+    return _SILENT_HOLD if blank_hold else _PIECE_HOLD
+
+
+def _align_brand_piece(container, locked_lines, duration_seconds):
+    """Shots, beats and the motif follow the same claims the voiceover kept.
+
+    Product showcase only. A 15 second piece cannot show a second benefit in
+    the picture after the line was blanked. A longer piece may show its
+    supporting claim on the beat that speaks it, not as a flat list, and the
+    motif stays on the main claim.
+    """
+    if not isinstance(container, dict):
+        return False
+    script = container.get("ad_script") if isinstance(container.get("ad_script"), dict) else container
+    if not isinstance(script, dict):
+        return False
+    narrations = _narration_by_id(script)
+    allowed = _allowed_brand_tags(script, locked_lines, duration_seconds)
+    if not allowed:
+        texts = []
+        for beat in _beats(script):
+            if not isinstance(beat, dict):
+                continue
+            for field in _BEAT_TEXT_FIELDS:
+                value = beat.get(field)
+                if isinstance(value, str):
+                    texts.append(value)
+        for shot in _iter_shots(container):
+            description = shot.get("description")
+            if isinstance(description, str):
+                texts.append(description)
+        discovered = []
+        capacity = brand_claim_capacity(duration_seconds)
+        for text in texts:
+            for tag in _ordered_tags(_CAMERA_QUICK.sub("", text)):
+                if tag not in discovered:
+                    discovered.append(tag)
+                if len(discovered) >= capacity:
+                    break
+            if len(discovered) >= capacity:
+                break
+        allowed = discovered
+    changed = False
+    primary = set(allowed[:1])
+    for field in ("core_message", "audience_takeaway", "video_flow"):
+        value = script.get(field) if field != "video_flow" else container.get(field)
+        host = script if field != "video_flow" else container
+        if not isinstance(value, str) or not value.strip():
+            continue
+        updated = _rewrite_claim_text(value, primary, blank_hold=False)
+        if updated != value:
+            host[field] = updated
+            changed = True
+    for beat in _beats(script):
+        if not isinstance(beat, dict):
+            continue
+        spoken = beat.get("narration") if isinstance(beat.get("narration"), str) else ""
+        if _locked(spoken, locked_lines) or _CTA_LINE.search(spoken or ""):
+            permitted = set(_ordered_tags(spoken)) | primary
+        else:
+            permitted = _permitted_tags(narrations, [beat.get("id")], allowed)
+        for field in _BEAT_TEXT_FIELDS:
+            value = beat.get(field)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            updated = _rewrite_claim_text(value, permitted, blank_hold=not spoken.strip())
+            if updated != value:
+                beat[field] = updated
+                changed = True
+    beats = [beat for beat in _beats(script) if isinstance(beat, dict)]
+    shots = _iter_shots(container)
+    for index, shot in enumerate(shots):
+        covered = _shot_beat_ids(shot)
+        if not covered and len(shots) == len(beats) and isinstance(beats[index].get("id"), str):
+            covered = [beats[index]["id"]]
+        spoken = "".join(narrations.get(beat_id, "") for beat_id in covered)
+        blank_hold = bool(covered) and not spoken.strip()
+        permitted = _permitted_tags(narrations, covered, allowed)
+        for field in _SHOT_TEXT_FIELDS:
+            value = shot.get(field)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            updated = _rewrite_claim_text(value, permitted, blank_hold=blank_hold)
+            if updated != value:
+                shot[field] = updated
+                changed = True
+        motif = shot.get("visual_motif")
+        if isinstance(motif, str) and motif.strip():
+            updated = _rewrite_claim_text(motif, primary, blank_hold=False)
+            if _visual_claim_tags(updated) - primary or (primary and _visual_claim_tags(motif) - primary):
+                updated = ""
+            elif updated == _PIECE_HOLD or updated == _SILENT_HOLD:
+                updated = ""
+            if updated != motif:
+                shot["visual_motif"] = updated
+                changed = True
+        continuity = shot.get("continuity")
+        if isinstance(continuity, dict):
+            for field in _CONTINUITY_TEXT_FIELDS:
+                value = continuity.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    continue
+                updated = _rewrite_claim_text(value, permitted, blank_hold=False)
+                if updated != value:
+                    continuity[field] = updated
+                    changed = True
+    return changed
+
+
+def _iter_shots(container):
+    if not isinstance(container, dict):
+        return []
+    if isinstance(container.get("shots"), list):
+        return [shot for shot in container["shots"] if isinstance(shot, dict)]
+    found = []
+    for segment in container.get("segments") or []:
+        if isinstance(segment, dict):
+            found.extend(shot for shot in segment.get("shots") or [] if isinstance(shot, dict))
+    return found
+
+
 def _sync_quoted_narration(director, before, after):
-    """Drop a shot sentence that still quotes the voiceover we just rewrote."""
+    """Drop a shot sentence that still quotes the voiceover we just rewrote.
+
+    A blanked line also drops stage directions that only pointed at it, such as
+    「旁白说这句话时画面基本停住」, so the video prompt does not invent a line.
+    """
     pairs = []
+    blanked = set()
     for left, right in zip(_beats(before), _beats(after)):
         old = left.get("narration") if isinstance(left, dict) else ""
         new = right.get("narration") if isinstance(right, dict) else ""
@@ -892,38 +1180,118 @@ def _sync_quoted_narration(director, before, after):
         new = new.strip() if isinstance(new, str) else ""
         if old and old != new:
             pairs.append((old, new))
-    if not pairs or not isinstance(director, dict):
+        if old and not new and isinstance(left, dict) and isinstance(left.get("id"), str):
+            blanked.add(left["id"])
+    if not isinstance(director, dict):
         return
-    for shot in director.get("shots") or []:
-        if not isinstance(shot, dict):
-            continue
-        description = shot.get("description")
-        if not isinstance(description, str) or not description:
-            continue
-        updated = description
-        for old, new in pairs:
-            if old in updated:
-                updated = updated.replace(old, new)
-                continue
-            bare = old.rstrip("。！？!?")
-            if bare and bare in updated:
-                updated = updated.replace(bare, new.rstrip("。！？!?") if new else "")
-        if updated != description:
-            shot["description"] = updated
+    beats = [beat for beat in _beats(after) if isinstance(beat, dict)]
+    shots = _iter_shots(director)
+    for index, shot in enumerate(shots):
+        covered = _shot_beat_ids(shot)
+        if not covered and blanked and len(shots) == len(beats):
+            beat_id = beats[index].get("id")
+            if isinstance(beat_id, str):
+                covered = [beat_id]
+        fields = []
+        for field in ("description", "purpose"):
+            if isinstance(shot.get(field), str):
+                fields.append((shot, field))
+        continuity = shot.get("continuity")
+        if isinstance(continuity, dict):
+            for field in _CONTINUITY_TEXT_FIELDS:
+                if isinstance(continuity.get(field), str):
+                    fields.append((continuity, field))
+        for host, field in fields:
+            updated = host[field]
+            for old, new in pairs:
+                if old and old in updated:
+                    updated = updated.replace(old, new if new else "")
+                    continue
+                bare = old.rstrip("。！？!?")
+                if bare and bare in updated:
+                    updated = updated.replace(bare, new.rstrip("。！？!?") if new else "")
+            if blanked and (not covered or blanked.intersection(covered)):
+                kept = [sentence for sentence in _visual_sentences(updated) if not _VO_POINTER.search(sentence)]
+                if len(kept) != len(_visual_sentences(updated)):
+                    updated = "".join(kept)
+            updated = re.sub(r"[，,]{2,}", "，", updated).strip("，, ")
+            if updated != host[field]:
+                if not updated.strip() and field == "description":
+                    updated = _SILENT_HOLD
+                elif not updated.strip() and field != "description":
+                    updated = host[field]
+                host[field] = updated
 
 
-def apply_brand_claim_collapse(director, strategy, locked_lines=()):
-    """Return (director, changed). Only product-ad voiceover is rewritten."""
-    if not isinstance(director, dict) or _brand_form(strategy) != "brand_tvc":
-        return director, False
-    script = director.get("ad_script") or {}
-    revised, changed = collapse_brand_claims(script, locked_lines)
-    if not changed:
-        return director, False
+def _fold_brand_director(director, locked_lines, duration_seconds):
+    """Return (director, changed). Narration, beats and shots share one claim set."""
+    script = director.get("ad_script") if isinstance(director.get("ad_script"), dict) else {"beats": []}
+    revised, narration_changed = collapse_brand_claims(script, locked_lines, duration_seconds)
     replacement = deepcopy(director)
     replacement["ad_script"] = revised
+    aligned = _align_brand_piece(replacement, locked_lines, duration_seconds)
+    before_shots = deepcopy(_iter_shots(replacement))
     _sync_quoted_narration(replacement, script, revised)
+    quote_changed = _iter_shots(replacement) != before_shots
+    if not narration_changed and not aligned and not quote_changed:
+        return director, False
     return replacement, True
+
+
+def brand_visual_claim_overflow(container, strategy, locked_lines=(), duration_seconds=None):
+    """True when a product showcase still shows a benefit the voiceover does not keep."""
+    if _brand_form(strategy) != "brand_tvc" or not isinstance(container, dict):
+        return False
+    script = container.get("ad_script") if isinstance(container.get("ad_script"), dict) else container
+    allowed = _allowed_brand_tags(script, locked_lines, duration_seconds)
+    if not allowed:
+        return False
+    primary = set(allowed[:1])
+    narrations = _narration_by_id(script)
+    for field in ("core_message", "audience_takeaway"):
+        value = script.get(field) if isinstance(script, dict) else ""
+        if isinstance(value, str) and _visual_claim_tags(value) - primary:
+            return True
+    flow = container.get("video_flow")
+    if isinstance(flow, str) and _visual_claim_tags(flow) - primary:
+        return True
+    beats = [beat for beat in _beats(script) if isinstance(beat, dict)]
+    for beat in beats:
+        spoken = beat.get("narration") if isinstance(beat.get("narration"), str) else ""
+        if _locked(spoken, locked_lines) or _CTA_LINE.search(spoken or ""):
+            continue
+        permitted = _permitted_tags(narrations, [beat.get("id")], allowed)
+        for field in _BEAT_TEXT_FIELDS:
+            value = beat.get(field)
+            if isinstance(value, str) and _visual_claim_tags(value) - permitted:
+                return True
+    shots = _iter_shots(container)
+    for index, shot in enumerate(shots):
+        covered = _shot_beat_ids(shot)
+        if not covered and len(shots) == len(beats) and isinstance(beats[index].get("id"), str):
+            covered = [beats[index]["id"]]
+        permitted = _permitted_tags(narrations, covered, allowed)
+        for field in _SHOT_TEXT_FIELDS:
+            value = shot.get(field)
+            if isinstance(value, str) and _visual_claim_tags(value) - permitted:
+                return True
+        motif = shot.get("visual_motif")
+        if isinstance(motif, str) and _visual_claim_tags(motif) - primary:
+            return True
+        continuity = shot.get("continuity")
+        if isinstance(continuity, dict):
+            for field in _CONTINUITY_TEXT_FIELDS:
+                value = continuity.get(field)
+                if isinstance(value, str) and _visual_claim_tags(value) - permitted:
+                    return True
+    return False
+
+
+def apply_brand_claim_collapse(director, strategy, locked_lines=(), duration_seconds=None):
+    """Return (director, changed). Only a product showcase is rewritten."""
+    if not isinstance(director, dict) or _brand_form(strategy) != "brand_tvc":
+        return director, False
+    return _fold_brand_director(director, locked_lines, duration_seconds)
 
 
 def narration_budget_ok(script: dict, strategy, duration_seconds: int) -> bool:
@@ -1022,7 +1390,7 @@ LINE_REWRITE_SYSTEM = """你只重写列出的中文广告台词，只输出 JSO
 每句不超过该句 max_characters，标点也算。用户固定台词原样留在句子里。旁白太密的句子按 schema 留空，表示这一拍不说话。
 相邻两句不要近义重复。剧情广告全片只用一种人称，不要旁白说「她走过」同时又用「我」或「吧」。不要只复述看得见的动作。人物讲解的开场如果是问句，后面要有一句回答，而且回答的是同一个问题：问吹得久就回答快，不要顺口把安静和负离子也塞进这一句。
 一条卖点说完整再换下一条。快、安静、负离子不要在后面的句子里再报一遍，除非最后一句是有意收回来的总括。没有信息的空话删掉，例如洗完就能出门。只有人物讲解在资料只有几个词时，才补一个具体场合和体感，例如赶早上班、头发厚、旁边还有人在睡。产品片和剧情不要补画面上没有的人、地方或时间。不编数字、规格、价格或折扣。
-产品片大约15到20秒只留2到3句，整条只说一个主好处，像跟人说话。不要文案腔，不要「是它的脸」「先到了」「肩线这一圈」，也不要「十万转高速马达」「一亿负离子」这种参数清单。短的口语好处不要改长，也不要补主语。例如「吹完是顺的。」「这风不吵。」「几下就干。」不要描述镜头里的光和动作，不要用痛点问句或场景交代开场。旁白太密，或后面又报了另一个卖点，那些句子 narration 留空。至少留一拍只有产品的声音。不编价格。
+产品展示大约15秒整条只围绕一个主好处，像跟人说话。大约30秒可以在这一个主好处之后再留一个配角好处，分清主次。45秒以上可以再展开一句，仍然不要并列清单。不要文案腔，不要「是它的脸」「先到了」「肩线这一圈」，也不要「十万转高速马达」「一亿负离子」这种参数清单。短的口语好处不要改长，也不要补主语。例如「吹完是顺的。」「这风不吵。」「几下就干。」不要描述镜头里的光和动作，不要用痛点问句或场景交代开场。旁白太密，或超过本片时长还能说的卖点，那些句子 narration 留空。至少留一拍只有产品的声音。不编价格。口播不受这条限制，卖点之间仍用而且接上。
 人物讲解的每一句卖点都要有主语：这款、它，或「我用它」。不要用「风大」「带负离子」这种没有主语的开头。卖点之间用而且、还、另外、所以或关键是接上。
 产品片不必每句点名。直接、短地说画面证明不了的好处。不要描述镜头里的光、银线或发丝飘起。
 剧情对白是意图、反应、对照或包袱，每句大约4到10字。不要念室友在睡、她拿吹风机这种画面，也不要改成「带负离子，吹完是顺的」这种口播。好处最多一句，写成人物看见结果后的反应。指定了去向时用定格上的短旁白，人物不要转头对着镜头推销。数字和功效只在 facts 里已经有时才能写。
@@ -1099,7 +1467,9 @@ async def rewrite_script_if_needed(stage_call, script, strategy, duration_second
     """
     data = script.model_dump() if hasattr(script, "model_dump") else deepcopy(script)
     brand = _brand_form(strategy) == "brand_tvc"
-    collapsed, changed = collapse_brand_claims(data, locked_lines) if brand else (data, False)
+    collapsed, changed = collapse_brand_claims(data, locked_lines, duration_seconds) if brand else (data, False)
+    if brand and _align_brand_piece(collapsed, locked_lines, duration_seconds):
+        changed = True
     working = collapsed if changed else data
     offenses = offending_lines(working, locked_lines=locked_lines, strategy=strategy,
                                duration_seconds=duration_seconds)
@@ -1120,7 +1490,9 @@ async def rewrite_script_if_needed(stage_call, script, strategy, duration_second
         revised = None
         chosen = working
     if brand:
-        chosen, _ = collapse_brand_claims(chosen, locked_lines)
+        chosen, again = collapse_brand_claims(chosen, locked_lines, duration_seconds)
+        if _align_brand_piece(chosen, locked_lines, duration_seconds) or again:
+            changed = True
     if revised is None and not changed:
         return True, script
     return True, chosen
@@ -1135,8 +1507,11 @@ async def rewrite_director_if_needed(stage_call, director: dict, strategy, durat
     """
     script = director.get("ad_script") or {}
     brand = _brand_form(strategy) == "brand_tvc"
-    collapsed, changed = collapse_brand_claims(script, locked_lines) if brand else (script, False)
-    working = collapsed if changed else script
+    folded = director
+    changed = False
+    if brand:
+        folded, changed = _fold_brand_director(director, locked_lines, duration_seconds)
+    working = (folded.get("ad_script") or {}) if brand else script
     offenses = offending_lines(working, locked_lines=locked_lines, strategy=strategy,
                                plan=plan, duration_seconds=duration_seconds)
     if not offenses and not changed:
@@ -1153,7 +1528,16 @@ async def rewrite_director_if_needed(stage_call, director: dict, strategy, durat
                                          offense_names={item["beat_id"]: item["offenses"] for item in offenses})
     chosen = revised if revised is not None else working
     if brand:
-        chosen, _ = collapse_brand_claims(chosen, locked_lines)
+        folded = deepcopy(folded)
+        folded["ad_script"] = chosen
+        folded, again = _fold_brand_director(folded, locked_lines, duration_seconds)
+        chosen = folded.get("ad_script") or chosen
+        changed = changed or again
+        if revised is None and not changed and _narration_text(chosen) == _narration_text(script):
+            shots_same = _iter_shots(folded) == _iter_shots(director)
+            if shots_same:
+                return True, None
+        return True, folded
     if revised is None and not changed and _narration_text(chosen) == _narration_text(script):
         return True, None
     replacement = deepcopy(director)

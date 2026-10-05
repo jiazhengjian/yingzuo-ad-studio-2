@@ -201,7 +201,7 @@
     {
       "id": "ads-video-dialogue-writing",
       "display_name": "Ads Video Dialogue Writing",
-      "version": "1.9.1",
+      "version": "1.9.2",
       "stages": [
         "ad_script",
         "storyboard",
@@ -525,7 +525,7 @@
     {
       "id": "script-expression",
       "path": "shared/script-expression.md",
-      "version": "1.8.2",
+      "version": "1.8.3",
       "stages": [
         "ad_script",
         "storyboard",
@@ -546,7 +546,7 @@
     {
       "id": "ad-form-playbook-brand-tvc",
       "path": "shared/ad-form-playbooks/brand-tvc.md",
-      "version": "1.4.2",
+      "version": "1.4.3",
       "stages": ["strategy", "direction_review", "ad_script", "content_draft", "storyboard", "plan_refinement", "plan_review", "speech_draft"],
       "ad_forms": ["brand_tvc"],
       "source_refs": [{"source_id": "tvc-director-local", "path": "tvc-director-examples.md", "sha256": "c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1"}],

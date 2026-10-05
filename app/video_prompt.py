@@ -128,6 +128,12 @@ def _voice_lines(production, director, spans, characters, *, ad_form=None):
             raise ValueError("人物对白缺少已确认的说话角色")
         name = characters[speaker["id"]]
         if production.get("speech_delivery") == "on_and_off_screen":
+            if ad_form == "scene_story":
+                return [
+                    f"声音方式：同一人物{name}在戏里开口说台词，嘴型与字同步，不转头看镜头。"
+                    f"只有切到看不见这个说话人的嘴时，才由她本人在画外接着说。其余角色不说话。声音：{voice}。"
+                    "声线保持连贯是执行要求，不是已验证的声纹。"
+                ]
             return [
                 f"声音方式：同一人物{name}说全部台词。只要她的脸在画面里，就看着镜头亲口说，嘴型与字同步；"
                 f"只有切到看不见嘴的商品特写时，才由她本人在画外接着说。其余角色不说话。声音：{voice}。"
@@ -146,15 +152,49 @@ def _speech_overlaps(shot, span):
 
 _NO_FACE = re.compile(r"不露脸|看不见嘴|看不到脸|后脑|背对|手部特写|只拍手|只见手|嘴不在画面")
 _FACE = re.compile(r"面向镜头|露脸|看镜头")
+_OTHER_PERSON = re.compile(r"室友|同事|旁边的人|另一个人|别人|好友|朋友|路人")
 _MOUTH_CLOSED = re.compile(r"嘴未张开|嘴巴未张开|未开口|闭嘴|嘴闭合|嘴巴紧闭|嘴唇紧闭")
 
 
-def _speaker_face_visible(shot):
+def _cast_names(production, speaker_id):
+    speaker = ""
+    others = []
+    for person in (production or {}).get("characters") or []:
+        if not isinstance(person, dict):
+            continue
+        name = person.get("name") or ""
+        if not isinstance(name, str) or not name:
+            continue
+        if person.get("id") == speaker_id:
+            speaker = name
+        else:
+            others.append(name)
+    return speaker, others
+
+
+def _clause_hides_someone_else(clause, speaker_name, other_names):
+    """A roommate's 后脑 is not the speaker's mouth."""
+    if not _NO_FACE.search(clause or ""):
+        return False
+    named_other = any(name and name in clause for name in other_names)
+    speaker_here = bool(speaker_name and speaker_name in clause)
+    return bool((_OTHER_PERSON.search(clause) or named_other) and not speaker_here)
+
+
+def _speaker_face_visible(shot, speaker_name="", other_names=()):
     continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else {}
     blob = " ".join(part for part in (
         shot.get("description") or "", continuity.get("camera_move") or "", continuity.get("start_state") or "",
     ) if isinstance(part, str))
-    if not _NO_FACE.search(blob):
+    clauses = re.split(r"[，,。；;！？!?]", blob)
+    hides_speaker = False
+    for clause in clauses:
+        if not _NO_FACE.search(clause):
+            continue
+        if _clause_hides_someone_else(clause, speaker_name, other_names):
+            continue
+        hides_speaker = True
+    if not hides_speaker:
         return True
     if _FACE.search(blob) and not re.search(r"不露脸|看不见嘴|看不到脸", blob):
         return True
@@ -233,9 +273,13 @@ def _compile_grouped_video(segment, template):
             speaker_id = production.get("speaker_id")
             speaking_here = any(_speech_overlaps(shot, span) for span in spans)
             name = characters.get(speaker_id, "")
-            face_visible = _speaker_face_visible(shot)
+            speaker_name, other_names = _cast_names(production, speaker_id)
+            face_visible = _speaker_face_visible(shot, speaker_name, other_names)
             if speaking_here and speaker_id in shot.get("character_ids", []) and face_visible:
-                lines.append(f"  本镜{name}面向镜头说话，嘴型与台词同步。")
+                if segment.get("ad_form") == "scene_story":
+                    lines.append(f"  本镜{name}在戏里开口说，嘴型与台词同步，不转头看镜头。")
+                else:
+                    lines.append(f"  本镜{name}面向镜头说话，嘴型与台词同步。")
                 if shot.get("id") == first_speaking_shot:
                     lines.append("  从本镜第一帧开口说话，不先闭嘴停顿。")
             elif speaking_here and speaker_id in shot.get("character_ids", []) and not face_visible:
@@ -252,7 +296,7 @@ def _compile_grouped_video(segment, template):
         speaking_face = (production and production.get("speech_mode") == "character_dialogue" and spans
                          and any(_speech_overlaps(shot, span) for span in spans)
                          and production.get("speaker_id") in shot.get("character_ids", [])
-                         and _speaker_face_visible(shot))
+                         and _speaker_face_visible(shot, *_cast_names(production, production.get("speaker_id"))))
         if speaking_face and isinstance(continuity, dict):
             continuity = {**continuity, "start_state": _mouth_open_state(continuity.get("start_state"))}
         lines.extend(_continuity_lines(continuity, shot["description"]))

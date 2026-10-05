@@ -75,6 +75,24 @@ def test_new_template_is_traced_and_does_not_ban_a_spoken_cta_word():
     assert "台词只说出来，不显示成字幕。" in compiled["prompt"]
 
 
+def test_roommate_back_of_head_does_not_mark_the_speaker_off_camera():
+    segment = _segment(delivery="on_and_off_screen", ad_form="scene_story")
+    segment["shots"][0]["description"] = "她对着镜子吹发，室友只露后脑和肩头。"
+    prompt = compile_grouped_video(segment)
+    opening = prompt.split("镜头1 |", 1)[1].split("镜头2 |", 1)[0]
+    assert "画外接着说" not in opening
+    assert "嘴型与台词同步" in opening
+    assert "不转头看镜头" in opening
+    assert "看着镜头亲口说" not in prompt
+    assert "面向镜头说话" not in opening
+    hidden = _segment(delivery="on_and_off_screen", ad_form="scene_story")
+    hidden["shots"][0]["description"] = "她背对镜头，只露后脑。"
+    hidden_opening = compile_grouped_video(hidden).split("镜头1 |", 1)[1].split("镜头2 |", 1)[0]
+    assert "画外接着说" in hidden_opening
+    presenter = compile_grouped_video(_segment(delivery="on_and_off_screen"))
+    assert "看着镜头亲口说" in presenter
+
+
 def test_character_dialogue_never_uses_the_legacy_voiceover_prompt():
     segment = {"audio_strategy": "native", "speech_spans": None, "shots": [],
                "production": {"speech_mode": "character_dialogue", "speaker_id": "char_host", "characters": []}}
