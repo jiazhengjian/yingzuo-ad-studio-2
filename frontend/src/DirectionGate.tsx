@@ -40,10 +40,23 @@ function techniqueTag(option: DirectionOption) {
   return rule || hook;
 }
 
+const SKELETON_LABELS: Record<string, string> = {
+  product_visual: '拆解', world_intercut: '穿梭', lifestyle: '生活',
+};
+
+function pictureLabel(option: DirectionOption) {
+  const concept = option.film_concept;
+  if (!concept) return '';
+  return SKELETON_LABELS[concept.visual_skeleton || ''] || SKELETON_LABELS[concept.structure] || '';
+}
+
 function PitchLines({ option }: { option: DirectionOption }) {
   const rows = [
     ['核心创意', clip(option.product_expression, 60)],
     ['洞察', clip(option.consumer_insight, 40)],
+    ['怎么讲画面', pictureLabel(option)],
+    ['侧面证明', clip(option.film_concept?.side_proof, 40)],
+    ['贯穿母题', clip(option.film_concept?.visual_motif, 16)],
     ['0–3秒', clip(option.hook, 40)],
     ['中段', clip(option.film_concept?.key_visual, 40)],
     ['结尾', clip(option.payoff, 40)],

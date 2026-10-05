@@ -19,6 +19,7 @@ from pydantic import Field, ValidationError
 from .strategy import (CreativeDirection, DirectionCandidates, DirectionReviewSummary,
                        DirectionReviewCheck, ProductBrief, build_direction_candidates,
                        require_direction_stories, require_direction_concepts,
+                       direction_visuals_authored,
                        require_pitch_lines, require_consumer_language, CONSUMER_FIELDS,
                        CARD_LIMITS, PITCH_LINE, plain_consumer_wording, consumer_jargon,
                        sanitize_direction_copy, prepare_direction_card, clip_pitch)
@@ -161,7 +162,9 @@ def validate_direction_review(raw, original: DirectionCandidates, rules: list[di
                 raise ValueError(f"方向 {direction.id} 必须说明受众为何在意及商品价值如何体现")
     if all(len(direction.hook) <= 40 and len(direction.payoff) <= 40 for direction in original.directions):
         require_pitch_lines(review.directions)
-    require_direction_concepts(review.directions, brief if review.ready else None)
+    require_direction_concepts(
+        review.directions, brief if review.ready else None,
+        require_visuals=bool(review.ready and direction_visuals_authored(original.directions)))
     for direction in review.directions:
         if direction.production is None:
             raise ValueError("修订方向须保留商品约束、出镜角色和声音形式")
@@ -232,11 +235,13 @@ def _with_canonical_fields(raw, original: DirectionCandidates):
         concept = incoming.get("film_concept")
         previous_concept = previous.film_concept
         if isinstance(concept, dict) and previous_concept is not None:
-            for field in ("memory_anchor", "sound_role"):
+            for field in ("memory_anchor", "sound_role", "visual_motif", "side_proof"):
                 previous_value = getattr(previous_concept, field) or ""
                 incoming_value = concept.get(field)
                 if previous_value and (not isinstance(incoming_value, str) or not incoming_value.strip()):
                     concept[field] = previous_value
+            if previous_concept.visual_skeleton and not concept.get("visual_skeleton"):
+                concept["visual_skeleton"] = previous_concept.visual_skeleton
     return patched
 
 
@@ -290,7 +295,8 @@ def _review_shell(original: DirectionCandidates, raw, *, overlay_text, overlay_e
     return shell
 
 
-_FILM_CONSUMER_FIELDS = ("key_visual", "memory_anchor", "sound_role")
+_FILM_CONSUMER_FIELDS = ("key_visual", "visual_motif", "side_proof", "memory_anchor", "sound_role")
+_FILM_LIMITS = {"key_visual": PITCH_LINE, "side_proof": 40, "visual_motif": 16}
 
 
 def _plain_field(value):
@@ -331,7 +337,7 @@ def _sanitize_raw_directions(raw):
                 value = concept.get(field)
                 if not isinstance(value, str) or not value.strip():
                     continue
-                limit = PITCH_LINE if field == "key_visual" else None
+                limit = _FILM_LIMITS.get(field)
                 fitted = _fit_text(value, limit) if limit else plain_consumer_wording(value)
                 if fitted and fitted != value:
                     concept[field] = fitted

@@ -118,6 +118,10 @@ class ImageObservationCorrection(_StrictModel):
 
 ProductFilmStructure = Literal["product_visual", "world_intercut", "lifestyle"]
 FilmStructure = Literal["product_visual", "world_intercut", "lifestyle", "scene_action", "presenter_explanation"]
+VisualSkeleton = ProductFilmStructure
+_VISUAL_SKELETONS = {"product_visual", "world_intercut", "lifestyle"}
+_BRAND_AUTO_SKELETONS = {"product_visual", "world_intercut"}
+_SIDE_PROOF_SPEC = re.compile(r"\d|[０-９]|价格|价钱|折扣|规格|参数")
 
 
 class CreativeIntent(_StrictModel):
@@ -135,6 +139,14 @@ PITCH_LINE = 40
 class FilmConcept(_StrictModel):
     """Structure plus the middle beat. Memory and sound are filled in the script."""
     structure: FilmStructure = Field(description="影片如何组织：产品视觉呈现/产品与场景交替/生活方式/剧情行动/人物讲解；不是三个候选必须各选一种")
+    visual_skeleton: VisualSkeleton | None = Field(default=None, exclude_if=lambda value: value is None,
+        description="导演层怎么讲画面：product_visual拆解、world_intercut穿梭、lifestyle生活。商家不选。新的三个方向必填")
+    visual_motif: Annotated[str, StringConstraints(strip_whitespace=True, max_length=16)] = Field(
+        default="", exclude_if=lambda value: not value,
+        description="贯穿母题，只写一个元素，不超过16字")
+    side_proof: Annotated[str, StringConstraints(strip_whitespace=True, max_length=40)] = Field(
+        default="", exclude_if=lambda value: not value,
+        description="侧面证明，不超过40字。用场景、过程或概念层比喻让人看见好处，不写规格、价格或数字")
     key_visual: LongText = Field(description="中段，不超过40字。写这一拍的具体动作：剧情是转折，讲解是演示，产品片是产品高光。不是运镜清单")
     memory_anchor: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
         description="历史字段。新方向不写；脚本从核心画面和收尾推导观众留下的印象")
@@ -249,12 +261,22 @@ def require_direction_value(directions: list[CreativeDirection]) -> None:
             raise ValueError(f"方向 {direction.id} 必须说明受众为何在意及商品价值如何体现")
 
 
-def require_direction_concepts(directions: list[CreativeDirection], brief: ProductBrief | None = None) -> None:
+def direction_visuals_authored(directions: list[CreativeDirection]) -> bool:
+    """True when every direction already carries a director-layer skeleton."""
+    return bool(directions) and all(
+        direction.film_concept is not None and direction.film_concept.visual_skeleton
+        for direction in directions)
+
+
+def require_direction_concepts(directions: list[CreativeDirection], brief: ProductBrief | None = None,
+                               *, require_visuals: bool = False) -> None:
     """Check authored structure, not whether the prose realizes its intent.
 
     Call only for newly authored offers/reviews or retention of an existing
     concept. Legacy records remain readable and selectable without migration.
     Semantic agreement with original user sources belongs to the review.
+    require_visuals is for a fresh three-direction offer, or a review of one
+    that already wrote the skeleton. Older concepts stay readable without it.
     """
     if brief is not None and brief.creative_intent is None:
         raise ValueError("新方向必须明确用途场景、成片地点要求和参考意图")
@@ -274,6 +296,46 @@ def require_direction_concepts(directions: list[CreativeDirection], brief: Produ
         }.get(brief.ad_form)
         if structures is not None and concept.structure not in structures:
             raise ValueError(f"方向 {direction.id} 的影片结构与主要广告表达方式不一致")
+    if require_visuals and brief is not None and len(directions) == 3:
+        _require_visual_contract(directions, brief)
+
+
+def _require_visual_contract(directions: list[CreativeDirection], brief: ProductBrief) -> None:
+    """Director-layer skeleton, one motif, and one side proof. Merchants do not pick these."""
+    concepts = []
+    for direction in directions:
+        concept = direction.film_concept
+        motif = (concept.visual_motif or "").strip()
+        proof = (concept.side_proof or "").strip()
+        if concept.visual_skeleton not in _VISUAL_SKELETONS or not motif or not proof:
+            raise ValueError(f"方向 {direction.id} 必须写怎么讲画面、贯穿母题和侧面证明")
+        if _SIDE_PROOF_SPEC.search(proof):
+            raise ValueError(f"方向 {direction.id} 的侧面证明不写规格、价格或数字")
+        concepts.append(concept)
+    form = brief.ad_form
+    preference = brief.creative_intent.structure_preference
+    if form == "presenter_pitch":
+        if any(concept.visual_skeleton != "lifestyle" for concept in concepts):
+            raise ValueError("人物讲解用生活画面讲，不用拆解或穿梭")
+    elif form == "brand_tvc":
+        if any(concept.visual_skeleton != concept.structure for concept in concepts):
+            raise ValueError("产品片的画面骨架要和这条的结构一致")
+        if preference == "auto":
+            if any(concept.structure not in _BRAND_AUTO_SKELETONS for concept in concepts):
+                raise ValueError("产品片没有锁定结构时，用拆解或穿梭来讲")
+            if len({concept.structure for concept in concepts}) < 2:
+                raise ValueError("产品片的三个方向不能用同一种画面结构")
+    elif form == "scene_story":
+        if any(concept.visual_skeleton == "product_visual" for concept in concepts):
+            raise ValueError("剧情不用拆解来讲画面")
+        if sum(concept.visual_skeleton == "world_intercut" for concept in concepts) > 1:
+            raise ValueError("剧情三个方向里最多一个用轻穿梭")
+    signatures = [
+        (concept.visual_skeleton, (concept.visual_motif or "").strip(), (concept.side_proof or "").strip())
+        for concept in concepts
+    ]
+    if len(set(signatures)) < len(signatures):
+        raise ValueError("三个方向要在画面结构、贯穿母题或侧面证明上彼此不同")
 
 
 class StrategyRecord(_StrictModel):
@@ -707,7 +769,7 @@ def sanitize_direction_copy(direction: CreativeDirection) -> CreativeDirection:
     concept = direction.film_concept
     if concept is not None:
         concept_updates = {}
-        for field in ("key_visual", "memory_anchor", "sound_role"):
+        for field in ("key_visual", "visual_motif", "side_proof", "memory_anchor", "sound_role"):
             text = getattr(concept, field) or ""
             if not text:
                 continue
@@ -770,7 +832,8 @@ def _consumer_texts(direction: CreativeDirection) -> list[tuple[str, str]]:
     texts = [(field, getattr(direction, field) or "") for field in CONSUMER_FIELDS]
     concept = direction.film_concept
     if concept is not None:
-        texts.extend((field, getattr(concept, field) or "") for field in ("key_visual", "memory_anchor", "sound_role"))
+        texts.extend((field, getattr(concept, field) or "") for field in (
+            "key_visual", "visual_motif", "side_proof", "memory_anchor", "sound_role"))
     return [(field, text) for field, text in texts if text]
 
 

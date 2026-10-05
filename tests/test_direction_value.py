@@ -97,6 +97,7 @@ def test_review_can_correct_presenter_concept_in_same_request_but_not_approve_vo
     raw["brief"]["ad_form"] = "presenter_pitch"
     for direction in raw["directions"]:
         direction["film_concept"]["structure"] = "presenter_explanation"
+        direction["film_concept"]["visual_skeleton"] = "lifestyle"
     original = DirectionCandidates.model_validate(raw)
     before = deepcopy(raw)
     reviewed = approved_direction_review(raw["directions"])

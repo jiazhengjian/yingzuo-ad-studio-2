@@ -9,7 +9,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from decimal import Decimal
 import re
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
@@ -77,6 +77,11 @@ class DirectedShot(_DraftModel):
     description: str = Field(min_length=1, max_length=1500)
     product_visible: bool | None = Field(default=None, exclude_if=lambda value: value is None,
         description="本镜商品是否在画面里。讲解时拿在手里或放在身前也算在画面里")
+    visual_motif: str = Field(default="", max_length=16, exclude_if=lambda value: not value,
+        description="本镜承接的一个贯穿元素，可空。不写进description")
+    match_cut: Literal["motion", "color", "scale"] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+        description="与上一镜的轻匹配：motion动作、color颜色、scale尺度。可空")
     purpose: str = Field(min_length=1, max_length=300)
     evidence_ids: list[_FactID] = Field(max_length=12)
     character_ids: list[_ID] = Field(max_length=8,
@@ -288,7 +293,7 @@ DIRECTOR_SYSTEM = """你执行中文商品广告分镜落地，只输出本次sc
 初次storyboard的continuous镜头不要重复填写start_state，程序从前镜end_state完整继承；非连续镜头仍须起态。
 每镜coverage按顺序列相邻beat_id及weight，weight为相对份额而非秒数。同一beat可跨相邻多镜，一镜可覆盖相邻多beat，展平后须完整顺序覆盖内容稿，不倒序或跳过。镜头不能跨scene_change或请求边界，连续多拍同镜按真实动作标continuous。
 台词只填写在ad_script，timing.visual_seconds只估视觉动作及必要观看，speech_overlap=false表示先动作后完整话语。时长方法按本阶段资源执行，不能只降低估计凑预算。台词要能说出口并承接核心创意的意思，旧方向若只有 big_idea 就承接那一句，不把关注、呈现、兼顾、打造、采用某技术这类策划词念给观众。问句的下一句回答同一个问题，一个卖点说一次，不写没有信息的空话。只有人物讲解在资料短时才补具体场合和体感，不编数字、规格、价格或折扣。产品片大约15到20秒只留2到3句旁白，一个主卖点，至少留一拍只有产品声音，不描述镜头，不编画面上没有的人，不用痛点问句开场。剧情用短对白，不念画面，好处用人物看见结果后的反应；指定去向时在定格上用短旁白，人物不转头推销。若 shared_references 含本类型 playbook，开场、节拍、景别、切节奏和英雄定格按那一份安排，台词密度不超过 speech_budget。entry_transition=cut只省略入镜前过程，不能据此把镜内未完成动作的end_state写成完成。
-初次分镜先写 video_flow，再按它写 shots。video_flow 和开场镜头要让人看出已选方向的 hook 和核心创意，用能拍到的画面，不把这些字段的策划词念进台词。每镜 description 写清主体和动作、景别与运镜、光线、产品是否在画面里、环境、台词落点。不写如同、仿佛、像什么一样、高级感、氛围感。camera_move 同时写景别和运动。product_visible 标明产品是否在画面里。切在动作完成或特点出现时，不按秒均分。最后一镜大约留 2 秒机位停住，产品留在画面里，不另加字卡。出镜时长按 playbook：产品展示大约八成，剧情大约一半，人物讲解大约七成；没有 playbook 时大约七成。不改已经写好的台词。
+初次分镜先写 video_flow，再按它写 shots。video_flow 和开场镜头要让人看出已选方向的 hook 和核心创意，用能拍到的画面，不把这些字段的策划词念进台词。每镜 description 写清主体和动作、景别与运镜、光线、产品是否在画面里、环境、台词落点。不写如同、仿佛、像什么一样、高级感、氛围感。概念里的产品世界比喻留在方向，镜头改成光线、材质、位置和动作。可选 visual_motif 写一个贯穿元素；相邻镜头可用 match_cut 标 motion、color 或 scale，不写进 description。camera_move 同时写景别和运动。product_visible 标明产品是否在画面里。切在动作完成或特点出现时，不按秒均分。最后一镜大约留 2 秒机位停住，产品留在画面里，不另加字卡。出镜时长按 playbook：产品展示大约八成，剧情大约一半，人物讲解大约七成；没有 playbook 时大约七成。不改已经写好的台词。
 返修严格依repair_scope和本次schema，范围外beat/shot原样保留；narrations专用收尾以其窄schema为准，不用一般Skill合同扩展输出。不得重选方向、增加确认或触发媒体，不输出隐含思考过程。
 """
 
@@ -1151,9 +1156,11 @@ def _mark_skeleton(raw):
 
 
 def fallback_director(strategy, locked_lines=()):
-    """A compilable storyboard when the model cannot return a valid one.
+    """Last-resort storyboard after generation failure, not the creative bar.
 
-    It uses only facts and characters already on the selected direction.
+    A plain product hold in a real place is only this compilable fallback.
+    Direction generation still aims at the hybrid craft. It uses only facts
+    and characters already on the selected direction.
     """
     selected = next(item for item in strategy.directions if item.id == strategy.selected_direction_id)
     evidence = list(dict.fromkeys(selected.evidence_ids))

@@ -372,7 +372,7 @@ class StrategyDecision(BaseModel):
                 raise ValueError("方向阶段需要恰好三个候选，不得替用户选中或先写方案")
             if self.recommended_direction_id is not None and self.recommended_direction_id not in {d.id for d in self.directions}:
                 raise ValueError("推荐标记必须指向本组候选")
-            require_direction_concepts(self.directions, self.brief)
+            require_direction_concepts(self.directions, self.brief, require_visuals=True)
             self.directions, self.concept_pool = validate_direction_offer(
                 self.brief, self.directions, self.concept_pool)
         elif self.kind == "plan":
@@ -443,6 +443,19 @@ def strategy_decision_schema(*, new_directions: bool = False, retain_direction_s
             film["required"] = [name for name in film.get("required", []) if name != field]
         film["properties"]["key_visual"]["minLength"] = 4
         film["properties"]["key_visual"]["maxLength"] = 40
+        film["properties"]["visual_skeleton"] = {
+            "type": "string",
+            "enum": ["product_visual", "world_intercut", "lifestyle"],
+            "description": "导演层怎么讲画面：product_visual拆解、world_intercut穿梭、lifestyle生活。商家不选",
+        }
+        film["properties"]["visual_motif"]["minLength"] = 1
+        film["properties"]["visual_motif"]["maxLength"] = 16
+        film["properties"]["side_proof"]["minLength"] = 1
+        film["properties"]["side_proof"]["maxLength"] = 40
+        for field in ("visual_skeleton", "visual_motif", "side_proof"):
+            film["properties"][field].pop("default", None)
+        film["required"] = list(dict.fromkeys([
+            *film.get("required", []), "visual_skeleton", "visual_motif", "side_proof"]))
         hook_enum = playbook_hook_ids(ad_form)
         for definition in ("CreativeDirection", "ConceptSketch"):
             schema["$defs"][definition]["properties"]["hook_type"] = {"type": "string", "enum": hook_enum}
@@ -535,6 +548,17 @@ def validate_concept_revision(directions, brief, existing_direction, existing_in
     if "reference_intent" not in permissions:
         if any(d.film_concept.structure != old_concept["structure"] for d in directions):
             raise ValueError("本轮未要求更换影片结构，须保留已选结构")
+        for direction in directions:
+            concept = direction.film_concept
+            if concept is None:
+                continue
+            updates = {}
+            for field in ("visual_skeleton", "visual_motif", "side_proof"):
+                previous = old_concept.get(field) or None
+                if previous and getattr(concept, field) != previous:
+                    updates[field] = previous
+            if updates:
+                direction.film_concept = concept.model_copy(update=updates)
     if isinstance(existing_intent, dict):
         current = brief.creative_intent.model_dump()
         for field in ("setting_requirement", "reference_intent", "structure_preference", "use_context"):
@@ -549,7 +573,7 @@ STRATEGY_SELECTION_SYSTEM = """你是中文商品广告策划入口，只输出�
 先判断allowed_decisions允许的分支。普通问题用reply；无商品原图不进入directions或plan。必要澄清按Orchestrator执行，每轮最多3题；planning_requested=true或用户明确授权决定时可用保守创作假设继续，未知商品事实不能猜测。
 ad_form是服务端已保存的广告类型，与route不同。非空时原样继承到brief.ad_form，不重复询问；只可确认已经选定的广告类型，不能口头宣布另一类型。明确改类型但已选类型未对应时用固定id=ad_form问题确认，不生成旧类型方向。空值且准备策划时询问该固定问题；普通reply不强塞问题。对商家可见的话不要写「保存值」或「保存的偏好」，还没选定就说还没选定广告类型。固定选项“根据商品推荐”合法，其他未知事实问题仍按Skill使用options=[]。auto保持auto，不代用户改值。
 kind=directions返回完整非null的brief，含本轮facts、unknowns、assumptions及creative_intent。每条fact包含id/text/source_kind/source_id；merchant的text必须是evidence_sources原话连续子串，不加来源标签；image的source_id只引用assets原图。方向的evidence_ids只能引用本次brief.facts。仅reply/clarify可按情况brief=null，不假设程序会补历史事实。
-direction_selection_required不豁免必要澄清。新提案先在concept_pool写恰好6个短概念，每个只含id、rule_id、hook_type、brand_world、evidence_ids，不写句子。hook_type只能使用本次context.allowed_hook_types以及schema里hook_type的enum；这些就是当前广告类型playbook允许的id，不得输出其他钩子。优先展开机制、钩子和品牌世界彼此不同的三个。若换一组，也必须来自有效短概念，且这三项至少各有两种。方向id与短概念一致。程序用短概念上的机制、钩子、品牌世界和evidence_ids覆盖方向里写偏的同名字段。selected_direction_id=null，最多通过根recommended_direction_id推荐一条，不在direction内增加recommended字段。每条须有完整production、film_concept（structure和一句中段key_visual），以及product_expression、consumer_insight、hook、payoff、reason、hook_type、brand_world。product_expression是核心创意，不超过60字，写成「把【已确认特点】和【一个动作或画面】绑在一起：……」。consumer_insight是洞察，不超过40字，写成观众心里为什么在意的一句话，不写他们正在做什么，这是假设不是调研。hook是0–3秒，payoff是结尾，key_visual是中段，reason是为什么吸引人，这四句各不超过40字。中段按广告类型：剧情是转折，讲解是演示，产品片是产品高光。reason说明为什么会被吸引、停下来并记住，不承诺转化。不要写big_idea、audience_value、story_summary、attraction_mechanism、angle、development、memory_anchor、sound_role。情绪走向、视觉调性和分镜留给脚本。用观众能说的话，不写关注、呈现、兼顾、纳入、打造、高端质感、满足你对。商品功能与效果必须由evidence_ids里的事实支撑；情绪、场景、夸张和幽默写入创意，不写成功效，也不必另找事实编号。
+direction_selection_required不豁免必要澄清。新提案先在concept_pool写恰好6个短概念，每个只含id、rule_id、hook_type、brand_world、evidence_ids，不写句子。hook_type只能使用本次context.allowed_hook_types以及schema里hook_type的enum；这些就是当前广告类型playbook允许的id，不得输出其他钩子。优先展开机制、钩子和品牌世界彼此不同的三个。若换一组，也必须来自有效短概念，且这三项至少各有两种。方向id与短概念一致。程序用短概念上的机制、钩子、品牌世界和evidence_ids覆盖方向里写偏的同名字段。selected_direction_id=null，最多通过根recommended_direction_id推荐一条，不在direction内增加recommended字段。每条须有完整production、film_concept（structure、visual_skeleton、一句中段key_visual、一个visual_motif、一句side_proof），以及product_expression、consumer_insight、hook、payoff、reason、hook_type、brand_world。visual_skeleton是导演层怎么讲画面：product_visual拆解、world_intercut穿梭、lifestyle生活，商家不另选。生活不是平铺的真场景演示。有已知好处时，默认工艺是生活里的问题、一小段和母题绑在一起的产品世界可视化、真实结果、产品定格。真场景演示不是创意标准，只在生成失败或缺少素材时兜底。visual_motif是一个贯穿元素，不超过16字。side_proof不超过40字，用场景、过程或概念层比喻看见好处，不写规格、价格或数字。三条要在结构或骨架、母题、侧面证明上彼此不同；没有锁定结构的产品片不能三条同一种结构。product_expression是核心创意，不超过60字，写成「把【已确认特点】和【一个动作或画面】绑在一起：……」。consumer_insight是洞察，不超过40字，写成观众心里为什么在意的一句话，不写他们正在做什么，这是假设不是调研。hook是0–3秒，payoff是结尾，key_visual是中段，reason是为什么吸引人，这四句各不超过40字。中段按广告类型：剧情是转折，讲解是演示，产品片是产品高光。reason说明为什么会被吸引、停下来并记住，不承诺转化。不要写big_idea、audience_value、story_summary、attraction_mechanism、angle、development、memory_anchor、sound_role。情绪走向、视觉调性和分镜留给脚本。用观众能说的话，不写关注、呈现、兼顾、纳入、打造、高端质感、满足你对。商品功能与效果必须由evidence_ids里的事实支撑；情绪、场景、夸张和幽默写入创意，不写成功效，也不必另找事实编号。不引入九宫格当视频首帧、结尾Logo或口号烧录、剧情锁成七成以上产品、Seedance或Nano提示语法。
 rule_id须来自本轮strategy_rules，适用category且prerequisites由本次facts满足；不可改品类绕过限制。可复用同一合适规则与可靠事实，不输出三套脚本、逐镜时轴或媒体请求。
 existing_direction非空且未明确重开方向时，不重新三选；明确修改用kind=plan，仅返回沿用原id/rule_id的一条方向。已有价值、展开和概念字段保留或依授权更新，不删空；历史缺字段不强补。普通问题用reply，意图冲突无法确认时clarify。product_supplement为真时只能kind=plan，把新商品事实并进brief，沿用原方向，不澄清、不重开。direction_reopen非空时才重新三选，并说明先前方向因商家要求而先放下。
 existing_creative_intent非空时，concept_revision_permissions限定可修改的意图字段，其余逐字保留；structure_preference和film_concept.structure仅在reference_intent获准变更时可更新。权限仅限定范围，不提供新事实；本轮明确固定要求与已选核心不能被旧AI执行建议替代。
@@ -559,9 +583,11 @@ existing_creative_intent非空时，concept_revision_permissions限定可修改�
 
 FILM_CONCEPT_SYSTEM = """
 只输出 JSON。新提案先区分 audience（给谁看）、creative_intent.use_context（产品用途环境）、creative_intent.setting_requirement（用户明确要求的成片地点）和creative_intent.reference_intent（用户所述视觉目标或实际取得的参考特点）。没有明确指定地点时setting_requirement为空；给造型师在理发店使用不等于整片必须拍理发店，旧AI稿的地点也不是用户要求。brief.scenario是兼容情境摘要，不能覆盖上述区分；direction.scenario记录该创意实际拟用的画面环境。未经访问的视频不可声称已分析，可如实承接用户用文字描述的参考意图。
-新三选必须填写brief.creative_intent。structure_preference只在用户明确要求或参考明确限定时选product_visual/world_intercut/lifestyle，否则auto；不要按品类或用途自动锁定。每条film_concept只填写structure和一句key_visual，不写memory_anchor或sound_role。三种产品结构是构思方法：product_visual让产品本身及有依据的特征独立组织全片，不强制拆零件或无人；world_intercut让产品世界与环境/品牌世界轮流展开，通过具体视觉关系衔接；lifestyle让产品留在生活或使用世界内呈现。剧情主要行动用scene_action，人物面向观众讲解用presenter_explanation；这些不是三种广告倾向的替代，也不能为了三个方向每种结构硬凑一条。
+新三选必须填写brief.creative_intent。structure_preference只在用户明确要求或参考明确限定时选product_visual/world_intercut/lifestyle，否则auto；不要按品类或用途自动锁定，也不要为画面骨架另出一题。商家仍只选presenter_pitch、brand_tvc、scene_story，不选拆解、穿梭或生活。
+每条film_concept填写structure、visual_skeleton、一句key_visual、一个visual_motif、一句side_proof，不写memory_anchor或sound_role。visual_skeleton是导演层怎么讲画面：product_visual是电影化拆解，world_intercut是穿梭，lifestyle是生活。拆解让产品本身及有依据的特征组织全片，不强制拆零件或无人；穿梭让产品世界与环境轮流展开，用具体视觉关系衔接。生活不是把人放进真实房间演示一遍。有已知好处时，默认工艺是：生活里的问题，一小段和母题绑在一起的产品世界可视化（例如蓝光里的离子颗粒、巧克力蛋糕前的可可采收），再回到真实结果，最后产品定格。平铺的真场景演示不是创意标准，只在生成失败或缺少素材时由程序兜底。只有外观事实时，用看得见的形态变化，不编功效世界。visual_motif只写一个贯穿元素，不超过16字。side_proof不超过40字，用场景、过程或概念层比喻看见好处，不写规格、价格或数字。概念可以比喻，镜头仍写能拍到的动作。
+人物讲解的structure仍是presenter_explanation，visual_skeleton用lifestyle，画面以人和商品特写为主，不用整条重穿梭或拆解；有好处可证明时仍要有那一小段产品世界，而不是只在真实房间里演示。产品片在structure_preference=auto时，三条只用product_visual或world_intercut，且不能三条都是同一种。用户明确锁定某种产品结构时，三条都留在该结构里，可以都是product_visual，再用母题或侧面证明分开。剧情的structure仍可用scene_action，visual_skeleton默认lifestyle，三条里最多一条用轻的world_intercut，不用product_visual。三个方向必须在结构或骨架、母题、侧面证明上彼此不同。同一背景只换口号不算三个方向。不要为了凑满三种骨架硬拆用户没要的结构。不引入九宫格当视频首帧、结尾Logo或口号烧录、剧情锁成七成以上产品、Seedance或Nano提示语法。
 key_visual是中段的一句具体动作，不超过40字：剧情写转折，讲解写演示，产品片写产品高光。核心创意写在product_expression，洞察写在consumer_insight。不要在方向里写memory_anchor、sound_role、story_summary、big_idea。记忆点、声音任务、情绪走向和视觉调性由选中后的脚本从这些短句和简报来写。声音形式只放在production。光影、形态与运动关系本身可以表达有依据的设计/功能概念，不强迫视觉广告补人物故事；但纯摄影词或三个部位清单不构成概念。抽象隐喻不作为实测、内部机理或效果证明，不用前后对照暗示未知功效。
-用户明确参考纯产品概念时，三条都在product_visual内构思，可以共享同一卖点和规则，凭视觉组织、变化及产品记忆点形成实质区别。auto不强求三种结构各一；只有结构名、色彩、机位或标题不同不等于三种创意。现有rule_id是产品价值切入方法，不代替film_concept，也不能把旧规则里的故事/疑问示例当所有广告的固定骨架。
+用户明确参考纯产品概念时，三条都在product_visual内构思，可以共享同一卖点和规则，但母题或侧面证明必须分开。没有锁定结构的产品片不能三条都用同一种结构。只有结构名、色彩、机位或标题不同不等于三种创意。现有rule_id是产品价值切入方法，不代替film_concept，也不能把旧规则里的故事/疑问示例当所有广告的固定骨架。
 修订已选方向时，已有film_concept与creative_intent必须保留或依据最新用户需求同步更新；不能删空、退成通用人物故事或把use_context变成拍摄硬要求。历史缺少这些字段时不强制补写，不重新三选。用户已选定的核心视觉、卖点联系与声音职责交给后续展开，具体动作密度仍服从时长。
 existing_creative_intent非空时，concept_revision_permissions列明本轮可按用户要求更改的意图字段，未列出的字段逐字保留；structure_preference和film_concept.structure仅在reference_intent获准变更时可更新。普通文案、声音、时长修改不释放影片结构和参考要求；无法确定用户是否要改变核心意图时沿用当前clarify分支，不能自行清空要求。这个列表只授权范围，不提供新商品事实。
 """

@@ -110,6 +110,26 @@ test('direction cards stay on the short pitch and keep the production line', () 
   assert.doesNotMatch(html, /<input|<textarea|<select|role="dialog"|scene_action|presenter_explanation|product_visual|film_concept/);
 });
 
+test('a direction card says how the picture works, the side proof and the motif', () => {
+  const production = { version: '1.0.0', product_constraints: [], characters: [], speech_mode: 'voiceover', speaker_id: '', voice_description: '自然旁白' };
+  const options = [
+    { ...filmDirection('a', 'product_visual'), production, film_concept: { ...filmDirection('a').film_concept, visual_skeleton: 'product_visual', visual_motif: '蓝光', side_proof: '蓝光里的离子颗粒贴着发丝。' } },
+    { ...filmDirection('b', 'world_intercut'), production, film_concept: { ...filmDirection('b', 'world_intercut').film_concept, visual_skeleton: 'world_intercut', visual_motif: '可可', side_proof: '可可从枝头到蛋糕的那一层。' } },
+    { ...filmDirection('c', 'lifestyle'), production },
+  ];
+  const html = markup(gate({ options }));
+  assert.ok(html.includes('怎么讲画面'));
+  assert.ok(html.includes('拆解'));
+  assert.ok(html.includes('穿梭'));
+  assert.ok(html.includes('生活'));
+  assert.ok(html.includes('侧面证明'));
+  assert.ok(html.includes('贯穿母题'));
+  assert.ok(html.includes('蓝光里的离子颗粒贴着发丝。'));
+  assert.ok(!html.includes('product_visual'));
+  assert.ok(!html.includes('生活方式'));
+  assert.ok(!html.includes('产品视觉呈现'));
+});
+
 test('the same sentence can label two beats, and blank lines do not create empty rows', () => {
   const repeated = '吹风机与环绕它的气流一起进入画面。';
   const one = { ...filmDirection('a'), big_idea: repeated, story_summary: repeated, product_expression: repeated,

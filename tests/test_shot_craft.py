@@ -2,6 +2,8 @@
 import asyncio
 from copy import deepcopy
 
+import pytest
+
 from app.progressive_planning import compile_director, compose_refinement, director_schema
 from app.plan_review import validate_plan_review
 from app.runtime_skills import stage_skill_context
@@ -303,6 +305,24 @@ def test_phase_lines_stay_inside_one_request():
     request = compiled_video_request(segment)
     assert set(request) == {"prompt", "skill_trace"}
     assert "images" not in request and "分阶段" in request["prompt"]
+
+
+def test_optional_motif_and_match_cut_survive_and_stay_off_old_shots(source):
+    from pydantic import ValidationError
+    strategy = chosen_strategy(source)
+    raw = director_output(strategy, count=2)
+    plan, _, _ = compile_director(raw, strategy, 12, "continuity_v1", [source["id"]])
+    assert "visual_motif" not in plan["segments"][0]["shots"][0]
+    assert "match_cut" not in plan["segments"][0]["shots"][0]
+    raw["shots"][1]["visual_motif"] = "蓝光"
+    raw["shots"][1]["match_cut"] = "color"
+    plan, _, _ = compile_director(raw, strategy, 12, "continuity_v1", [source["id"]])
+    shots = [shot for segment in plan["segments"] for shot in segment["shots"]]
+    assert shots[1]["visual_motif"] == "蓝光"
+    assert shots[1]["match_cut"] == "color"
+    raw["shots"][1]["match_cut"] = "logo"
+    with pytest.raises(ValidationError):
+        compile_director(raw, strategy, 12, "continuity_v1", [source["id"]])
 
 
 def test_initial_schema_asks_for_flow_without_changing_the_stored_contract():

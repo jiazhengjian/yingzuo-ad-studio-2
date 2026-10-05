@@ -69,8 +69,15 @@ def candidates_for(env):
             "通过桌面搭配前后的构图变化，让瓶形成为办公桌布置选择的一部分。",
             "保持瓶子不变，依次展示早晚光线下的外形与自然光全貌。",
         ][i],
-        film_concept={"structure": ("scene_action" if i == 1 else "world_intercut") if brief.ad_form == "scene_story"
+        film_concept={
+            "structure": ("scene_action" if i == 1 else "world_intercut") if brief.ad_form == "scene_story"
+            else ("world_intercut" if i == 1 else "product_visual") if brief.ad_form == "brand_tvc"
             else ("lifestyle" if i == 1 else "product_visual"),
+            "visual_skeleton": ("world_intercut" if i == 2 else "lifestyle") if brief.ad_form == "scene_story"
+            else ("world_intercut" if i == 1 else "product_visual") if brief.ad_form == "brand_tvc"
+            else ("lifestyle" if i == 1 else "product_visual"),
+            "visual_motif": ["窗光沿瓶身", "空出的桌角", "早晚同一束光"][i],
+            "side_proof": ["光从一条轮廓走到整只瓶子。", "整理出来的空位被这只瓶子占住。", "光线换过，还是同一只瓶子。"][i],
             "key_visual": ["窗光勾勒同一瓶身，从线条逐渐看清轮廓。", "整理后的桌角由瓶身轮廓占据。", "同一瓶身上的光线由早到晚流动。"][i],
             "memory_anchor": ["完整瓶形接住开场的轮廓线。", "桌角留下这一只瓶子。", "光线改变，瓶形始终一致。"][i],
             "sound_role": "画外音补充桌面用品的选择语境，不复述画面动作。"},
@@ -107,7 +114,8 @@ def candidates_for(env):
                 "characters": [{"id": "char_presenter", "name": "讲解者",
                     "description": "创作设定：成年桌面用品讲解者"}],
                 "speech_mode": "character_dialogue", "speaker_id": "char_presenter"})
-            direction.film_concept = direction.film_concept.model_copy(update={"structure": "presenter_explanation"})
+            direction.film_concept = direction.film_concept.model_copy(update={
+                "structure": "presenter_explanation", "visual_skeleton": "lifestyle"})
             direction.product_expression = "讲解者面向观众介绍瓶形，并拿起实物说明桌面选择。"
             direction.story_summary = "讲解者向观众提出桌面布置的选择，拿起瓶子介绍外形，再回到完整商品。"
     return build_direction_candidates(brief, directions, "direction_0", select_rules(None))

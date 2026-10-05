@@ -30,10 +30,10 @@ def test_fresh_direction_schema_stays_smaller_than_the_essay_contract():
         return json.dumps(strategy_decision_schema(new_directions=True, ad_form=ad_form),
                            ensure_ascii=False, separators=(",", ":"))
     # Essay contract was 11425, then the one-line card was 9842.
-    # The picture card is 10109. The character description now names the default Chinese look.
+    # The picture card is 10109. Skeleton, motif and side proof are now required.
     typed = packed("brand_tvc")
-    assert len(typed) == 10155
-    assert len(packed()) == 10373
+    assert len(typed) == 10627
+    assert len(packed()) == 10845
     direction = strategy_decision_schema(new_directions=True, ad_form="brand_tvc")["$defs"]["CreativeDirection"]["properties"]
     film = strategy_decision_schema(new_directions=True, ad_form="brand_tvc")["$defs"]["FilmConcept"]["properties"]
     assert "key_visual" in film and "memory_anchor" not in film

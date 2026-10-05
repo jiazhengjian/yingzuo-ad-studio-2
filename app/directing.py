@@ -68,6 +68,7 @@ def storyboard_continuity_schema():
 _SHOT_FIELDS = {
     "id", "coverage", "description", "product_visible", "purpose", "evidence_ids",
     "character_ids", "continuity", "start", "end", "narration", "beat_id", "beat_ids",
+    "visual_motif", "match_cut",
 }
 _CONTINUITY_FIELDS = {
     "start_state", "allowed_changes", "end_state", "camera_move", "entry_transition", "entry_reason",

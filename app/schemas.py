@@ -46,6 +46,11 @@ class Shot(BaseModel):
     character_ids: list[str] = Field(default_factory=list, max_length=8, exclude_if=lambda value: not value, description="实际出现在本镜的已确定角色ID；无人画面为空")
     product_visible: bool | None = Field(default=None, exclude_if=lambda value: value is None,
         description="本镜商品是否在画面里；讲解时拿在手里或放在身前也算。历史镜头可缺省")
+    visual_motif: str = Field(default="", max_length=16, exclude_if=lambda value: not value,
+        description="本镜承接的一个贯穿元素。历史镜头可缺省")
+    match_cut: Literal["motion", "color", "scale"] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+        description="与上一镜的轻匹配：motion动作、color颜色、scale尺度。历史镜头可缺省")
 
     @model_validator(mode="after")
     def beat_membership(self):

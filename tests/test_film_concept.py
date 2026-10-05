@@ -71,6 +71,90 @@ def test_new_film_concept_omits_memory_and_sound_without_inventing_them(env, fie
     assert not getattr(decision.directions[0].film_concept, field)
 
 
+def test_brand_tvc_directions_are_not_all_the_same_structure(env):
+    raw = fresh(candidates_for(env))
+    raw["brief"]["ad_form"] = "brand_tvc"
+    raw["brief"]["creative_intent"]["structure_preference"] = "auto"
+    for direction in raw["directions"]:
+        direction["film_concept"]["structure"] = "product_visual"
+        direction["film_concept"]["visual_skeleton"] = "product_visual"
+    with pytest.raises(ValidationError, match="同一种画面结构"):
+        StrategyDecision.model_validate(raw)
+
+
+def test_brand_tvc_can_mix_breakdown_and_intercut(env):
+    raw = fresh(candidates_for(env))
+    raw["brief"]["ad_form"] = "brand_tvc"
+    for direction, skeleton in zip(raw["directions"], ("product_visual", "world_intercut", "product_visual")):
+        direction["film_concept"]["structure"] = skeleton
+        direction["film_concept"]["visual_skeleton"] = skeleton
+    decision = StrategyDecision.model_validate(raw)
+    assert {item.film_concept.structure for item in decision.directions} == {"product_visual", "world_intercut"}
+
+
+def test_locked_product_visual_can_share_structure_when_the_motif_differs(env):
+    raw = fresh(candidates_for(env))
+    raw["brief"]["ad_form"] = "brand_tvc"
+    raw["brief"]["creative_intent"]["structure_preference"] = "product_visual"
+    for direction in raw["directions"]:
+        direction["film_concept"]["structure"] = "product_visual"
+        direction["film_concept"]["visual_skeleton"] = "product_visual"
+    decision = StrategyDecision.model_validate(raw)
+    assert {item.film_concept.structure for item in decision.directions} == {"product_visual"}
+    assert len({item.film_concept.visual_motif for item in decision.directions}) == 3
+
+
+def test_same_background_with_a_new_slogan_is_not_three_directions(env):
+    raw = fresh(candidates_for(env))
+    raw["brief"]["creative_intent"]["structure_preference"] = "product_visual"
+    for direction in raw["directions"]:
+        direction["label"] = direction["label"] + "新口号"
+        direction["film_concept"]["structure"] = "product_visual"
+        direction["film_concept"]["visual_skeleton"] = "product_visual"
+        direction["film_concept"]["visual_motif"] = "同一束窗光"
+        direction["film_concept"]["side_proof"] = "光停在瓶身上。"
+    with pytest.raises(ValidationError, match="彼此不同"):
+        StrategyDecision.model_validate(raw)
+
+
+def test_scene_story_allows_at_most_one_light_intercut(env):
+    raw = fresh(candidates_for(env))
+    raw["brief"]["ad_form"] = "scene_story"
+    for index, direction in enumerate(raw["directions"]):
+        direction["film_concept"]["structure"] = "scene_action"
+        direction["film_concept"]["visual_skeleton"] = "lifestyle" if index == 1 else "world_intercut"
+    with pytest.raises(ValidationError, match="轻穿梭"):
+        StrategyDecision.model_validate(raw)
+
+
+def test_presenter_picture_stays_lifestyle(env):
+    raw = fresh(candidates_for(env))
+    raw["brief"]["ad_form"] = "presenter_pitch"
+    for direction in raw["directions"]:
+        direction["film_concept"]["structure"] = "presenter_explanation"
+        direction["film_concept"]["visual_skeleton"] = "product_visual"
+    with pytest.raises(ValidationError, match="生活画面"):
+        StrategyDecision.model_validate(raw)
+
+
+def test_side_proof_does_not_invent_a_price(env):
+    raw = fresh(candidates_for(env))
+    raw["directions"][0]["film_concept"]["side_proof"] = "只要99元。"
+    with pytest.raises(ValidationError, match="价格"):
+        StrategyDecision.model_validate(raw)
+
+
+def test_direction_prompt_does_not_default_to_a_plain_real_scene():
+    from app.planning import FILM_CONCEPT_SYSTEM
+    from pathlib import Path
+    assert "真场景演示不是创意标准" in FILM_CONCEPT_SYSTEM
+    assert "产品世界" in FILM_CONCEPT_SYSTEM
+    assert "生成失败或缺少素材" in FILM_CONCEPT_SYSTEM
+    skill = Path("app/skills/ads-video-creative-strategy/references/film-concept.md").read_text()
+    assert "真场景演示不是创意标准" in skill
+    assert "九宫格" in skill
+
+
 def test_use_context_and_film_location_remain_distinct_data(env):
     raw = fresh(candidates_for(env))
     intent = {"use_context": "给办公室顾客选择桌面用品", "setting_requirement": "全片纯影棚",
@@ -127,6 +211,10 @@ def test_fresh_schema_and_revision_schema_do_not_leave_concept_nullable():
         brief = schema["$defs"]["ProductBrief"]
         assert "creative_intent" in brief["required"]
         assert brief["properties"]["creative_intent"] == {"$ref": "#/$defs/CreativeIntent"}
+    fresh_film = strategy_decision_schema(new_directions=True)["$defs"]["FilmConcept"]
+    for field in ("visual_skeleton", "visual_motif", "side_proof"):
+        assert field in fresh_film["required"]
+    assert "visual_skeleton" not in strategy_decision_schema()["$defs"]["FilmConcept"]["required"]
     historical = strategy_decision_schema()
     assert "film_concept" not in historical["$defs"]["CreativeDirection"]["required"]
     assert "creative_intent" not in historical["$defs"]["ProductBrief"]["required"]
