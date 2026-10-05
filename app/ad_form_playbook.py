@@ -234,11 +234,15 @@ def ending_policy(form: str | None, cta_target: str | None = None) -> dict:
     A destination line is spoken only when the merchant named one. Otherwise the
     ending stays on the product, the brand line, or the story, then holds.
     """
-    from .cta import cta_line, is_explicit_cta
+    from .cta import is_explicit_cta, spoken_cta_line
 
     hold = "结尾留出至少2秒不说话，商品停在画面里。不编链接、地址、门牌或价格。"
     if is_explicit_cta(cta_target):
-        line = cta_line(cta_target)
+        try:
+            line = spoken_cta_line(cta_target, form)
+        except Exception:
+            from .cta import cta_line
+            line = cta_line(cta_target)
         instruction = (
             f"结尾必须说出「{line}」。人物讲解由出镜的人说，产品片由旁白说，剧情由人物或收束旁白说。"
             f"这句话要在停留之前说完。{hold}"

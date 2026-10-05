@@ -1,6 +1,6 @@
 """Ending destination is asked once, then spoken only when the merchant chose it."""
 from app.ad_form import ad_form_question, intake_strategy_response
-from app.cta import apply_spoken_policy, cta_question, should_ask_cta, stated_cta
+from app.cta import apply_spoken_policy, cta_line, cta_question, should_ask_cta, spoken_cta_line, stated_cta
 from app.progressive_planning import compile_director
 from test_progressive_planning import chosen_strategy, director_output
 from test_providers import source
@@ -49,3 +49,17 @@ def test_open_endings_drop_guidance_and_an_explicit_target_is_required(source):
     assert "点下面" not in quiet["beats"][0]["narration"]
     priced = apply_spoken_policy({"beats": [{"id": "b0", "narration": "价格399。"}]}, strategy, "link")
     assert "399" not in priced["beats"][0]["narration"] or "点下面" in priced["beats"][-1]["narration"]
+
+
+def test_each_ad_type_speaks_the_link_in_its_own_voice():
+    presenter = spoken_cta_line("link", "presenter_pitch")
+    brand = spoken_cta_line("link", "brand_tvc")
+    story_voice = spoken_cta_line("link", "scene_story", {"beats": [{"narration": "她还在睡。"}]})
+    story_line = spoken_cta_line("link", "scene_story", {"beats": [{"narration": "我还没醒。"}]})
+    assert presenter != brand != story_voice
+    assert "你" in presenter and "这款" in presenter and "点下面链接" in presenter
+    assert "我" not in brand and "点下面链接" in brand
+    assert story_voice != story_line
+    assert "点下面链接" in story_voice and "点下面链接" in story_line
+    assert spoken_cta_line("link", "unknown-form") == cta_line("link")
+    assert "399" not in presenter and "折" not in brand

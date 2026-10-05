@@ -218,6 +218,21 @@ def test_transport_failure_is_classified_and_exception_chain_redacted(settings, 
     assert_redacted(exc.value)
 
 
+def test_deterministic_400_is_not_sent_again(settings, install_transport):
+    from app.providers.gateway import PlannerInvalidResponse
+    seen = []
+
+    def handle(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(400, json={"error": {"message": "prompt must contain json"}})
+
+    install_transport(handle)
+    with pytest.raises(PlannerInvalidResponse, match="未接受本次请求"):
+        asyncio.run(Gateway(settings)._planner_json("请只输出 JSON 对象。", {"stage": "ad_script"}, []))
+    assert len(seen) == 1
+    assert seen[0]["response_format"] == {"type": "json_object"}
+
+
 def test_visual_json_plan_uses_stage_specific_reasoning(settings, install_transport, source, plan, strategy_stage):
     outputs = stage_outputs(strategy_stage, plan)
     stages = []

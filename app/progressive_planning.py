@@ -1079,6 +1079,74 @@ def seal_director_evidence(draft):
     return data
 
 
+def _review_score(review):
+    data = review.model_dump() if hasattr(review, "model_dump") else review
+    if not isinstance(data, dict):
+        return 0
+    checks = data.get("checks") if isinstance(data.get("checks"), list) else []
+    passed = sum(1 for item in checks if isinstance(item, dict) and item.get("passed") is True)
+    failed = sum(1 for item in checks if isinstance(item, dict) and item.get("passed") is False)
+    ready = 50 if data.get("ready") else 0
+    alignment = data.get("alignment") if isinstance(data.get("alignment"), dict) else {}
+    align_ready = 20 if alignment.get("ready") else 0
+    suggestions = len(data.get("suggestions") or [])
+    return ready + align_ready + passed * 5 - failed * 3 - suggestions
+
+
+def is_placeholder_plan(plan):
+    """The built-in two-line board. It is not a finished ad."""
+    if not isinstance(plan, dict):
+        return False
+    beats = ((plan.get("ad_script") or {}).get("beats") or [])
+    lines = [beat.get("narration") for beat in beats if isinstance(beat, dict) and (beat.get("narration") or "").strip()]
+    if lines != ["看这里。", "就是这个。"]:
+        return False
+    shots = [shot for segment in (plan.get("segments") or []) for shot in (segment.get("shots") or [])]
+    if not shots:
+        shots = plan.get("shots") or []
+    descriptions = [shot.get("description") or "" for shot in shots if isinstance(shot, dict)]
+    return bool(descriptions) and all("放在画面中间" in item for item in descriptions)
+
+
+def choose_accepted_plan(candidates, skeleton=None):
+    """Keep the best real plan. The skeleton is only for when nothing was produced."""
+    reviewed, plain = [], []
+    for item in candidates or []:
+        if not isinstance(item, dict):
+            continue
+        plan = item.get("plan")
+        if not isinstance(plan, dict) or is_placeholder_plan(plan):
+            continue
+        review = item.get("review") if item.get("review") is not None else plan.get("plan_review")
+        checks = review.get("checks") if isinstance(review, dict) else None
+        if isinstance(checks, list) and checks:
+            reviewed.append((_review_score(review), plan))
+        else:
+            plain.append(plan)
+    if reviewed:
+        return max(reviewed, key=lambda item: item[0])[1]
+    if plain:
+        return plain[-1]
+    return skeleton
+
+
+def _draft_lines(draft):
+    data = draft.model_dump() if hasattr(draft, "model_dump") else draft
+    if not isinstance(data, dict):
+        return []
+    lines = []
+    for beat in data.get("beats") or []:
+        if isinstance(beat, dict) and isinstance(beat.get("narration"), str) and beat["narration"].strip():
+            lines.append(beat["narration"].strip())
+    return lines
+
+
+def _mark_skeleton(raw):
+    if isinstance(raw, dict):
+        raw["_fallback_skeleton"] = True
+    return raw
+
+
 def fallback_director(strategy, locked_lines=()):
     """A compilable storyboard when the model cannot return a valid one.
 
@@ -1152,7 +1220,7 @@ async def _recover_storyboard_schema(stage_call, director_system, data, assets, 
         return candidate
     except Exception as error:
         _reraise_terminal(error)
-    return fallback_director(strategy, locked)
+    return _mark_skeleton(fallback_director(strategy, locked))
 
 
 async def progressive_plan(*, stage_call, on_progress, record_failure, strategy, draft,
@@ -1209,18 +1277,60 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     director_system = DIRECTOR_SYSTEM
     if speech_only:
         director_system += "\ndraft_format=speech_only时，draft_speech只有完整文案，没有既定内容拍、画面或秒点；保留其话语作用，沿已选方向首次编排完整内容与镜头，可以为实际动作和时长协调未固定措辞，不得照读创作说明或改变用户固定台词。\n"
-    try:
-        raw = await stage_call(director_system, data, assets)
-    except Exception as error:
-        _reraise_terminal(error)
+    raw = None
+    storyboard_errors = 0
+    while raw is None and storyboard_errors < 3:
         try:
             raw = await stage_call(director_system, data, assets)
         except Exception as error:
             _reraise_terminal(error)
+            storyboard_errors += 1
             record_failure({"nonblocking": True, "message": type(error).__name__, "issues": ["storyboard"]})
-            raw = fallback_director(strategy, locked)
+    if raw is None:
+        limit = profile.max_beat_characters
+        kept_lines = [line for line in (_draft_lines(draft) or list(locked)) if len(line) <= limit]
+        if kept_lines:
+            record_failure({"nonblocking": True, "message": "分镜没有返回，已沿用已有台词",
+                            "issues": ["storyboard"], "error_code": "storyboard_kept_lines"})
+            raw = fallback_director(strategy, kept_lines)
+        else:
+            record_failure({"nonblocking": True,
+                            "message": "分镜阶段没有留下可用内容，占位稿不是完成的方案",
+                            "issues": ["fallback_skeleton"], "error_code": "fallback_skeleton"})
+            raw = _mark_skeleton(fallback_director(strategy, locked))
     repairs = 0
     last_valid_plan = None
+    real_candidates = []
+    skeleton_logged = False
+
+    def remember(plan, review=None):
+        if not isinstance(plan, dict) or is_placeholder_plan(plan):
+            return
+        stamped = deepcopy(plan)
+        score_review = None
+        if review is not None:
+            score_review = review.model_dump() if hasattr(review, "model_dump") else deepcopy(review)
+            # A rejected review can quote model text. Keep it for scoring only.
+            if isinstance(score_review, dict) and score_review.get("ready") is True:
+                stamped["plan_review"] = score_review
+            else:
+                stamped.pop("plan_review", None)
+        real_candidates.append({
+            "plan": stamped,
+            "review": score_review if isinstance(score_review, dict) and score_review.get("checks") else stamped.get("plan_review"),
+        })
+
+    def best_real():
+        return choose_accepted_plan(real_candidates)
+
+    def log_skeleton():
+        nonlocal skeleton_logged
+        if skeleton_logged:
+            return
+        skeleton_logged = True
+        record_failure({"nonblocking": True,
+                        "message": "分镜阶段没有留下可用内容，占位稿不是完成的方案",
+                        "issues": ["fallback_skeleton"], "error_code": "fallback_skeleton"})
     previous_review = None
     previous_issues = None
     previous_capacity, previous_draft = None, None
@@ -1253,16 +1363,33 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
         # it already compiled, or seals the mapping, then continues the review.
         if not accept:
             raise RevisionKept from None
-        chosen = last_valid_plan
+        chosen = best_real()
+        if chosen is None and last_valid_plan is not None and not is_placeholder_plan(last_valid_plan):
+            chosen = last_valid_plan
         if chosen is None:
+            limit = profile.max_beat_characters
+            kept_lines = [line for line in (_draft_lines(draft) or list(locked)) if len(line) <= limit]
+            log_skeleton() if not kept_lines else record_failure({
+                "nonblocking": True, "message": "分镜没有返回，已沿用已有台词",
+                "issues": ["storyboard"], "error_code": "storyboard_kept_lines"})
             try:
                 chosen, _, _ = compile_director(
-                    fallback_director(strategy, locked), strategy, duration, generation_strategy,
+                    fallback_director(strategy, kept_lines or locked), strategy, duration, generation_strategy,
                     [asset["id"] for asset in assets], locked, cta_target)
             except (ValueError, KeyError, TypeError, ValidationError):
-                raise ProgressivePlanningError(message + "。已有方案和素材已保留，尚未开始新的图片或视频生成",
-                    issue_summary=list(issues.values()), repair_attempts=repairs,
-                    error_code=error_code) from None
+                if not kept_lines:
+                    raise ProgressivePlanningError(message + "。已有方案和素材已保留，尚未开始新的图片或视频生成",
+                        issue_summary=list(issues.values()), repair_attempts=repairs,
+                        error_code=error_code) from None
+                log_skeleton()
+                try:
+                    chosen, _, _ = compile_director(
+                        fallback_director(strategy, locked), strategy, duration, generation_strategy,
+                        [asset["id"] for asset in assets], locked, cta_target)
+                except (ValueError, KeyError, TypeError, ValidationError):
+                    raise ProgressivePlanningError(message + "。已有方案和素材已保留，尚未开始新的图片或视频生成",
+                        issue_summary=list(issues.values()), repair_attempts=repairs,
+                        error_code=error_code) from None
         raise _PlanAccepted(chosen)
 
     async def refine(before, scope, feedback, issues, *, plan=None, schedule=None, bound_review=None):
@@ -1414,6 +1541,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
 
     try:
         while True:
+            current_is_skeleton = isinstance(raw, dict) and bool(raw.pop("_fallback_skeleton", False))
             try:
                 plan, schedule, coordinated = compile_director(raw, strategy, duration, generation_strategy,
                                                                [a["id"] for a in assets], locked, cta_target)
@@ -1433,8 +1561,13 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                                 stage_call, director_system, data, assets, raw, strategy, duration, locked, progress)
                             continue
                         if not fallback_installed:
-                            record_failure(None)
-                            raw = fallback_director(strategy, locked)
+                            chosen = best_real()
+                            if chosen is not None:
+                                raise _PlanAccepted(chosen)
+                            log_skeleton()
+                            limit = profile.max_beat_characters
+                            kept_lines = [line for line in (_draft_lines(draft) or list(locked)) if len(line) <= limit]
+                            raw = _mark_skeleton(fallback_director(strategy, kept_lines or locked))
                             fallback_installed = True
                             continue
                     record_failure(None)
@@ -1511,7 +1644,14 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 except RevisionKept:
                     stop("自动调整后动作与台词容量仍未改善，已停止重复尝试", issues)
                 continue
-            last_valid_plan = plan
+            if current_is_skeleton:
+                chosen = best_real()
+                if chosen is not None:
+                    raise _PlanAccepted(chosen)
+                log_skeleton()
+            else:
+                remember(plan)
+                last_valid_plan = plan
             spoken = coordinated.get("ad_script") or {}
             # Per-line jargon stays independent of the strategy. Cross-line craft
             # still sees the ad type, without opening the product-reference check.
@@ -1622,12 +1762,18 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                         stop("本次方案的完整检查尚未完成，暂未采用", {("review",): "综合检查记录不完整或无效"},
                              error_code="planning_review_incomplete")
                     raw_review = corrected_review
+            remember(plan, review)
             if review.ready:
                 from .shot_craft import with_shot_suggestions
                 from .line_quality import with_line_focus_suggestions
                 review = with_shot_suggestions(review, plan, strategy)
                 review = with_line_focus_suggestions(review, plan, strategy, locked)
                 plan["plan_review"] = review.model_dump()
+                remember(plan, review)
+                if is_placeholder_plan(plan):
+                    chosen = best_real()
+                    if chosen is not None and not is_placeholder_plan(chosen):
+                        return chosen
                 return plan
             record_failure(plan)
             feedback = review.model_dump(exclude={"reviewed_plan_sha256", "reviewed_reference_asset_ids"})
@@ -1671,6 +1817,6 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 raw = await refine(coordinated, repair_scope(feedback, coordinated, plan), feedback, issues,
                                    plan=plan, schedule=schedule, bound_review=review)
             except RevisionKept:
-                return plan
+                return best_real() or plan
     except _PlanAccepted as accepted:
         return accepted.plan

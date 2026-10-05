@@ -663,7 +663,7 @@ def apply_shot_rewrite(director: dict, raw, issues: list[dict], *, facts_text: s
     return revised
 
 
-SHOT_REWRITE_SYSTEM = """你只改列出的镜头文字，只输出 schema 的 shots，每项只有 shot_id、description、camera_move。
+SHOT_REWRITE_SYSTEM = """你只改列出的镜头文字，只输出 JSON 对象，对象里只有 schema 的 shots，每项只有 shot_id、description、camera_move。
 description 写能拍到的主体、动作、光线、产品是否在画面里、环境。不写如同、仿佛、好像、像什么一样、高级感、氛围感、象征。
 camera_move 同时写景别和运动，例如“微距特写，镜头缓慢推进”。
 needs_hold 为 true 时，在这一镜写明最后约 2 秒机位停住，产品留在画面里，不写字幕、Logo 或字卡。不要改时长。
@@ -692,6 +692,9 @@ async def rewrite_shots_if_needed(stage_call, director: dict, plan, strategy):
     if not issues:
         return False, None
     payload, facts_text = _rewrite_payload(director, issues, strategy)
-    raw = await stage_call(SHOT_REWRITE_SYSTEM, payload, [], 1200)
+    try:
+        raw = await stage_call(SHOT_REWRITE_SYSTEM, payload, [], 1200)
+    except Exception:
+        return True, None
     revised = apply_shot_rewrite(director, raw, issues, facts_text=facts_text)
     return True, revised

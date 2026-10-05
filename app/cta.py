@@ -39,6 +39,35 @@ _LINES = {
     "message": "想问的话，私信我。",
     "store": "欢迎到店看看。",
 }
+# Spoken in each ad's own voice. The fixed sentence above is only the fallback.
+_TYPED = {
+    "presenter_pitch": {
+        "link": "你想要的话，点下面链接看看这款。",
+        "brand": "你想了解的话，去产品详情看看这款。",
+        "message": "你想问的话，私信我。",
+        "store": "你想来的话，到店看看这款。",
+    },
+    "brand_tvc": {
+        "link": "点下面链接，看看这款。",
+        "brand": "去产品详情，看看这款。",
+        "message": "想问，就私信。",
+        "store": "到店看看，这款在。",
+    },
+}
+_SCENE = {
+    "character": {
+        "link": "你要的话，点下面链接看看。",
+        "brand": "想看的话，去产品详情看看。",
+        "message": "想问就私信我。",
+        "store": "有空来店里看看。",
+    },
+    "vo": {
+        "link": "想要这只，点下面链接看看。",
+        "brand": "想了解，去产品详情看看。",
+        "message": "想问的话，私信就行。",
+        "store": "欢迎到店，看看这只。",
+    },
+}
 _MARKS = {
     "link": re.compile(r"点下面|下方链接|链接|小黄车"),
     "brand": re.compile(r"品牌页|产品详情|详情"),
@@ -201,6 +230,43 @@ def cta_line(target):
     return text[:40]
 
 
+def _spoken_blob(script):
+    data = script.model_dump() if hasattr(script, "model_dump") else script
+    if not isinstance(data, dict):
+        return ""
+    return "".join((beat.get("narration") or "") for beat in data.get("beats") or [] if isinstance(beat, dict))
+
+
+def _scene_voice(script):
+    """The planner's own lines decide: a character speaking, or a closing voice-over."""
+    text = _spoken_blob(script)
+    character = text.count("我") + text.count("你")
+    narrator = text.count("她") + text.count("他")
+    return "character" if character > narrator else "vo"
+
+
+def spoken_cta_line(target, form=None, script=None):
+    """Guide to the chosen place in this ad type's voice. Failure uses the fixed line."""
+    generic = cta_line(target)
+    try:
+        if target in _LINES:
+            if form == "scene_story":
+                return _SCENE[_scene_voice(script)][target]
+            table = _TYPED.get(form or "")
+            if table and target in table:
+                return table[target]
+            return generic
+        if not generic:
+            return ""
+        if form == "presenter_pitch" and not re.search(r"我|你|这款|它", generic):
+            return f"你看，{generic}"[:40]
+        if form == "scene_story" and _scene_voice(script) == "character" and "你" not in generic and "我" not in generic:
+            return f"你听，{generic}"[:40]
+        return generic
+    except Exception:
+        return generic
+
+
 def _grounded(token, source):
     compact = re.sub(r"\s+", "", token)
     if compact and compact in source:
@@ -317,6 +383,17 @@ def apply_spoken_policy(script, strategy, cta_target, locked=()):
         if not (last.get("narration") or "").strip():
             last["narration"] = _CLOSES.get(form, "看这里。")
     elif is_explicit_cta(cta_target):
-        if not any(_matches(beat.get("narration"), cta_target) for beat in beats if isinstance(beat, dict)):
-            spoken[-1]["narration"] = cta_line(cta_target)
+        generic = cta_line(cta_target)
+        try:
+            desired = spoken_cta_line(cta_target, form, data)
+        except Exception:
+            desired = generic
+        desired = scrub_ungrounded_prices(desired or "", source) or generic
+
+        def _already(text):
+            spoken_text = text or ""
+            return _matches(spoken_text, cta_target) and spoken_text.strip() != (generic or "").strip()
+
+        if not any(_already(beat.get("narration")) for beat in beats if isinstance(beat, dict)):
+            spoken[-1]["narration"] = desired or generic
     return AdScript.model_validate(data) if hasattr(script, "model_dump") else data

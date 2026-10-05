@@ -396,6 +396,7 @@ class Store:
         a duplicate click must never replay an earlier checkpoint over a worker's
         already-running request or a completed result.
         """
+        from .planner_recovery import merchant_stop
         from .planning_session import (allow_manual_planning_retry, completed_storyboard_checkpoint,
                                        drop_storyboard_checkpoint, reopen_rejected_stage)
 
@@ -411,6 +412,11 @@ class Store:
             progress = job.get("progress") or {}
             payload = dict(job.get("payload") or {})
             checkpoint = payload.get("planning_checkpoint")
+            # Older jobs stored retryable=false for system failures. Recompute from
+            # the current classification; only a genuine merchant stop stays blocked.
+            if merchant_stop(progress.get("error_code"), job.get("error"),
+                             progress.get("issue_summary"), progress.get("retry_action")):
+                raise StaleRevision("本次方案需要调整，请通过输入框说明修改要求；已有成果仍保留")
             structure_resume = any(token in str(job.get("error") or "")
                                     for token in ("结构不完整", "未能满足已确认要求", "容量仍未改善"))
             if structure_resume:
@@ -427,10 +433,6 @@ class Store:
                     and not payload.get("plan_structure_replayed")
                     and completed_storyboard_checkpoint(checkpoint)):
                 payload = {**payload, "plan_structure_replayed": True}
-            elif not structure_resume and (progress.get("retry_action") != "retry_planning" or not progress.get("retryable")):
-                if progress.get("error_code") in ("planning_review_incomplete", "planning_invalid_response", "planning_request_limit"):
-                    raise StaleRevision("这次策划已停止，不能直接重提同一步骤；已有内容仍保留，可继续对话")
-                raise StaleRevision("本次方案需要调整，请通过输入框说明修改要求；已有成果仍保留")
             elif not isinstance(checkpoint, dict) or checkpoint.get("version") != 1:
                 # The card already offered another attempt. Start this job again
                 # from the saved brief instead of refusing before any event.

@@ -648,7 +648,7 @@ def apply_line_rewrite(script: dict, raw, *, limits: dict, locked_lines=(), fact
     return revised
 
 
-LINE_REWRITE_SYSTEM = """你只重写列出的中文广告台词，只输出 schema 的 lines。
+LINE_REWRITE_SYSTEM = """你只重写列出的中文广告台词，只输出 JSON 对象，对象里只有 schema 的 lines。
 这些句子现在像策划说明。按 line_style 改成能说出口的话：产品展示短、有感官；剧情是人物的来回；人物讲解对着镜头，钩子在第一句，带一个具体好处。
 开场句要单独听得懂：说出商品叫法或用当下动作指着它。
 承接 big_idea 和 hook 的意思，不要照抄策划词。只使用该句和 facts 里已经有的商品信息，不新增功效、数字、体验或比较。
@@ -709,6 +709,14 @@ def _rewrite_payload(script, offenses, strategy, duration, locked_lines):
     }, {item["beat_id"]: item["max_characters"] for item in lines}, "".join(fact["text"] for fact in facts)
 
 
+async def _optional_model_call(stage_call, system, payload):
+    """Polish is optional. Any failure keeps the original and never stops the job."""
+    try:
+        return await stage_call(system, payload, [], 1200)
+    except Exception:
+        return None
+
+
 async def rewrite_script_if_needed(stage_call, script, strategy, duration_seconds, locked_lines=()):
     """Return (called, script). Clean scripts do not call the model."""
     data = script.model_dump() if hasattr(script, "model_dump") else deepcopy(script)
@@ -716,7 +724,9 @@ async def rewrite_script_if_needed(stage_call, script, strategy, duration_second
     if not offenses:
         return False, script
     payload, limits, facts_text = _rewrite_payload(data, offenses, strategy, duration_seconds, locked_lines)
-    raw = await stage_call(LINE_REWRITE_SYSTEM, payload, [], 1200)
+    raw = await _optional_model_call(stage_call, LINE_REWRITE_SYSTEM, payload)
+    if raw is None:
+        return True, script
     revised = apply_line_rewrite(data, raw, limits=limits, locked_lines=locked_lines, facts_text=facts_text,
                                  duration_seconds=duration_seconds, strategy=strategy)
     return True, revised if revised is not None else script
@@ -731,7 +741,9 @@ async def rewrite_director_if_needed(stage_call, director: dict, strategy, durat
         return False, None
     payload, limits, facts_text = _rewrite_payload(
         director["ad_script"], offenses, strategy, duration_seconds, locked_lines)
-    raw = await stage_call(LINE_REWRITE_SYSTEM, payload, [], 1200)
+    raw = await _optional_model_call(stage_call, LINE_REWRITE_SYSTEM, payload)
+    if raw is None:
+        return True, None
     revised = apply_line_rewrite(director["ad_script"], raw, limits=limits, locked_lines=locked_lines,
                                  facts_text=facts_text, duration_seconds=duration_seconds, strategy=strategy)
     if revised is None:

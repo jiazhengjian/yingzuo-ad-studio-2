@@ -275,13 +275,18 @@ async def replan_offline(*, job_id, db_path, stage_call, gateway=None, skip_revi
         skip_review=skip_review,
         cta_target=cta_mode,
     )
+    from app.progressive_planning import is_placeholder_plan
     prompt, notes = _compiled_prompt(result, saved["assets"])
     review = result.get("plan_review") or {}
+    placeholder = is_placeholder_plan(result)
+    if placeholder:
+        notes = ["占位稿不是完成的方案。模型没有留下可用分镜，诊断里已记下。", *notes]
     return {
         "job_id": job_id,
         "direction_id": strategy.selected_direction_id,
         "lines": _script_lines(result, strategy),
         "shots": _shots(result),
+        "placeholder": placeholder,
         "review": {
             "ready": review.get("ready"),
             "skipped": bool(skip_review),
@@ -307,7 +312,9 @@ def _print_report(report):
         if shot["camera_move"]:
             print(f"    运镜：{shot['camera_move']}")
     review = report["review"]
-    if review["skipped"]:
+    if report.get("placeholder"):
+        print("占位稿不是完成的方案。模型没有留下可用分镜，诊断里已记下。")
+    elif review["skipped"]:
         print("审核：这次跳过了。")
     else:
         print("审核：" + ("可以通过" if review["ready"] else "还有问题"))

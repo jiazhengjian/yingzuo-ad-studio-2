@@ -77,18 +77,81 @@ RECOVERY_PATHS = (
      "where": "方向审核多了字段或没通过",
      "handling": "丢掉多余字段；仍不通过就沿用策略阶段已经收下的方向"},
     {"path": "transport", "klass": "b",
-     "where": "策划请求 4xx/5xx 或连接中断",
+     "where": "策划请求 5xx、超时或连接中断",
      "handling": "写下请求摘要和响应摘录，同一模型再试一次，有备用模型再用一次"},
+    {"path": "deterministic_rejection", "klass": "b",
+     "where": "策划请求 HTTP 400，同一份请求再发也不会被接受",
+     "handling": "不重发同一份请求；提示里缺 JSON 就补上一句，有备用模型再用一次，然后继续"},
+    {"path": "optional_polish", "klass": "b",
+     "where": "台词润色或镜头润色失败",
+     "handling": "留下原稿，继续到参考图确认，不因此停住"},
+    {"path": "fallback_skeleton", "klass": "b",
+     "where": "分镜阶段没有留下任何可用稿",
+     "handling": "先再请求一次完整分镜；仍没有就记下占位稿，不把它当成完成的方案，也不用它替换已有稿"},
 )
 
 
-def needs_merchant(message, issues=()):
-    text = str(message or "")
+def _issue_text(issues):
     if isinstance(issues, dict):
-        text += "".join(str(value) for value in issues.values())
-    else:
-        text += "".join(str(value) for value in issues or ())
+        return "".join(str(value) for value in issues.values())
+    if isinstance(issues, (list, tuple)):
+        return "".join(str(value) for value in issues)
+    return str(issues or "")
+
+
+def needs_merchant(message, issues=()):
+    text = str(message or "") + _issue_text(issues)
     return any(marker in text for marker in MERCHANT_MARKERS)
+
+
+# Stored retryable flags from older runs are not consulted. Resume is refused
+# only for these four merchant stops.
+_CREDENTIAL_CODES = frozenset({"planning_configuration_failed"})
+_IMAGE_MARKERS = ("没有商品原图", "无商品原图", "请先上传商品原图", "请先上传真实商品图")
+
+
+def merchant_stop(error_code, message="", issues=(), retry_action=None):
+    """Return the merchant-stop id when resume must wait, else None."""
+    if error_code in _CREDENTIAL_CODES or retry_action == "check_connection":
+        return "planner_credentials"
+    text = str(message or "") + _issue_text(issues)
+    if "用户明确固定的台词" in text or "用户固定台词" in text:
+        return "fixed_speech"
+    if "已选无人声方向不能增加台词" in text or "无人声方向" in text:
+        return "silent_direction"
+    if error_code == "missing_product_image" or any(marker in text for marker in _IMAGE_MARKERS):
+        return "missing_product_image"
+    return None
+
+
+JSON_OUTPUT_LINE = "请只输出 JSON 对象。"
+
+
+def _flatten_text(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "\n".join(_flatten_text(item) for item in value)
+    if isinstance(value, dict):
+        parts = []
+        for key in ("text", "content"):
+            if key in value:
+                parts.append(_flatten_text(value[key]))
+        return "\n".join(parts)
+    return ""
+
+
+def text_mentions_json(*parts):
+    blob = "\n".join(_flatten_text(part) for part in parts)
+    return re.search(r"json", blob, re.IGNORECASE) is not None
+
+
+def ensure_json_prompt(system, *rest):
+    """DeepSeek rejects json_object mode unless the prompt itself says json."""
+    if text_mentions_json(system, *rest):
+        return system if isinstance(system, str) else ""
+    base = system if isinstance(system, str) else ""
+    return base.rstrip() + "\n" + JSON_OUTPUT_LINE
 
 
 def _delete_path(data, loc):

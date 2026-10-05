@@ -130,7 +130,9 @@ def test_retry_rechecks_current_state_without_mutating_on_rejection(failed_plan,
     elif change == "busy":
         store.create_job(pid, "plan", job["revision"])
     elif change == "content_failure":
-        store.update_job(job["id"], progress={"retryable": False, "retry_action": "edit_plan"})
+        store.update_job(job["id"], error="用户固定台词未完整保留",
+            progress={"error_code": "planning_content_failed", "retryable": False,
+                      "retry_action": "edit_plan", "issue_summary": ["用户固定台词未完整保留"]})
     before = store.project_detail(pid)
     with pytest.raises(StaleRevision):
         store.retry_planning_job(pid, job["id"])
@@ -168,6 +170,22 @@ def test_missing_checkpoint_still_requeues_the_same_job(failed_plan):
     retried = store.retry_planning_job(pid, job["id"])
     assert retried["status"] == "queued"
     assert "planning_checkpoint" not in retried["payload"]
+    assert any(event["label"] == "策划已重新排队，将继续未完成的步骤"
+               for event in store.project_detail(pid)["events"])
+
+
+def test_legacy_nonretryable_flag_still_resumes_a_system_failure(failed_plan):
+    """Round-3 jobs stored retryable false for errors the current ladder recovers."""
+    store, pid, job = failed_plan
+    store.update_job(job["id"],
+        error="策划服务未接受本次请求；已有成果仍保留。",
+        phase="writing_script",
+        progress={"error_code": "planning_content_failed", "retryable": False,
+                  "retry_action": "edit_plan",
+                  "issue_summary": ["方案结构、商品依据或已确认内容需要调整"]})
+    retried = store.retry_planning_job(pid, job["id"])
+    assert retried["status"] == "queued"
+    assert retried["phase"] == "queued"
     assert any(event["label"] == "策划已重新排队，将继续未完成的步骤"
                for event in store.project_detail(pid)["events"])
 
