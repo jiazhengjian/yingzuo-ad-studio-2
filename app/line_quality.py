@@ -58,7 +58,7 @@ _OPENING_DEICTIC = re.compile(r"^(?:就这|这么|这|那|它|转)")
 _CLAIM_WORDS = ("根治", "治愈", "美白", "减肥", "抗衰", "医用", "治疗")
 _LINE_STYLES = {
     "brand_tvc": "产品展示：画面和产品声音先承担意思，句子仍要有感官。大约15秒整条只围绕一个主好处，旁白、节拍和画面都说这一件。大约30秒可以在主好处之后加一个配角好处，分清主次。45秒以上可以再展开，仍然不要并列清单，不要文案腔。不描述镜头，不编画面上没有的人，不用痛点问句开头。多出来的卖点留空。口播不受这条限制。",
-    "scene_story": "剧情：人物的短对白，要有来有回。意图、反应、对照或包袱，每句大约4到10字。不念画面上的动作，不讲口播卖点。好处最多一句，是看见结果后的反应。指定去向时用定格上的短旁白，人物不转头推销。",
+    "scene_story": "剧情：人物的短对白，要有来有回。意图、反应、对照或包袱，每句大约4到10字。不念画面上的动作，也不把这一镜已经看见的事再说一遍。抱怨、态度或一句提醒可以，口播卖点不行。好处最多一句，是看见结果后的反应。指定去向时用定格上的短旁白，人物不转头推销。",
     "presenter_pitch": "人物讲解：对着镜头，第一句就是钩子。每一句卖点都要有主语，用这款、它，或我用它。卖点之间用而且、还、另外、所以或关键是接上。资料短时可以补具体场合。",
 }
 _TARGET_LENGTH = {
@@ -415,6 +415,11 @@ _STORY_PRODUCT = re.compile(
 _STORY_RESULT = re.compile(r"顺了|不毛躁|终于不|安静了|听得见了|听清了")
 _SCENE_NARRATION = re.compile(r"室友|同事|旁边|她在|他在|正在|拿着|拿起|对着|还在睡|还没醒|她拿|他拿")
 _SCENE_PITCH = re.compile(r"负离子|吹得快|吹完是顺|声音不吵|高速马达|三分钟")
+# A visible sleeper, retold as "don't wake her / I don't dare switch it on".
+_SLEEP_SHOWN = re.compile(r"睡|没醒|闭眼|闭着|侧躺")
+_SLEEP_TOLD = re.compile(r"吵醒|怕吵|别吵|叫醒|弄醒|还在睡|还没醒|不敢开|不敢按")
+_SCENE_FREEZE_CTA = re.compile(r"私信|到店|门店|产品详情|详情页")
+_RESTATE_DROP = re.compile(r"[她他我你这那]")
 _BRAND_OFFSCREEN = re.compile(r"旁边|还在睡|还没醒|室友|同事|家人|赶时间|上班|出门")
 _BRAND_OPENING = re.compile(r"早上|赶时间|头发厚|头发多|多久")
 # Poetic triples and spec-sheet lines. A short spoken benefit stays clean.
@@ -462,6 +467,71 @@ def _shot_blurbs(plan, beat_id):
                 if isinstance(description, str) and description.strip():
                     found.append(description)
     return found
+
+
+def _visual_texts_for_beat(script, plan, beat, index):
+    """Picture text for this beat: its visual role, plus the shot that covers it."""
+    texts = []
+    if isinstance(beat, dict):
+        role = beat.get("visual_role")
+        if isinstance(role, str) and role.strip():
+            texts.append(role)
+    shots = _iter_shots(plan) if isinstance(plan, dict) else []
+    beat_id = beat.get("id") if isinstance(beat, dict) else None
+    matched = []
+    for shot in shots:
+        if beat_id and beat_id in _shot_beat_ids(shot):
+            matched.append(shot)
+    if not matched and shots and len(shots) == len(_beats(script)) and 0 <= index < len(shots):
+        matched = [shots[index]]
+    for shot in matched:
+        for field in ("description", "start_state", "end_state"):
+            value = shot.get(field)
+            if isinstance(value, str) and value.strip():
+                texts.append(value)
+    return texts
+
+
+def _picture_minus_line(texts, line):
+    """Drop a shot sentence that only quotes the line, so the picture can still count."""
+    core = _spoken_core(line)
+    pieces = []
+    for text in texts:
+        spoken = _spoken_core(text)
+        if core and core in spoken:
+            spoken = spoken.replace(core, "", 1)
+        if spoken:
+            pieces.append(spoken)
+    return "".join(pieces)
+
+
+def _bigram_restates(line, picture):
+    if _STORY_RESULT.search(line or ""):
+        return False
+    core = _spoken_core(line)
+    if len(core) < 6 or len(picture) < 6:
+        return False
+    grams = [core[i:i + 2] for i in range(len(core) - 1)]
+    if len(grams) < 4:
+        return False
+    hit = sum(1 for gram in grams if gram in picture)
+    return hit / len(grams) >= 0.75
+
+
+def _restates_visible_situation(line, picture):
+    """True when character dialogue mostly retells what this shot already shows.
+
+    A muttered complaint or a tip the picture cannot carry stays. A freeze
+    call-to-action is not character dialogue and is left alone.
+    """
+    if not picture or _CTA_LINE.search(line) or _SCENE_FREEZE_CTA.search(line):
+        return False
+    if _SLEEP_SHOWN.search(picture) and _SLEEP_TOLD.search(line):
+        leftover = _RESTATE_DROP.sub("", _spoken_core(_SLEEP_TOLD.sub("", line)))
+        core = _spoken_core(line)
+        if len(core) >= 4 and len(leftover) <= max(2, len(core) // 3):
+            return True
+    return _bigram_restates(line, picture)
 
 
 def _shares_a_long_stretch(line, description):
@@ -725,9 +795,11 @@ def _script_line_offenses(script, strategy, locked_lines, plan=None, duration_se
     if form == "scene_story" and spoken:
         for beat in spoken:
             text = beat["narration"]
-            if _CTA_LINE.search(text):
+            if _CTA_LINE.search(text) or _SCENE_FREEZE_CTA.search(text):
                 continue
-            if _SCENE_NARRATION.search(text):
+            picture = _picture_minus_line(
+                _visual_texts_for_beat(script, plan, beat, indexes.get(id(beat), 0)), text)
+            if _SCENE_NARRATION.search(text) or _restates_visible_situation(text, picture):
                 add(beat, indexes.get(id(beat), 0), "在念画面")
             if _SCENE_PITCH.search(text):
                 add(beat, indexes.get(id(beat), 0), "口播腔")
@@ -1316,6 +1388,11 @@ def rewrite_schema(lines: list[dict], beat_cap: int) -> dict:
             one["properties"]["narration"]["description"] = (
                 "这句把时长说满了，或又报了另一个卖点。留空，表示这一拍不说话。"
                 "若还在说同一个好处，写成一句口语，不要加长。")
+        elif "在念画面" in offenses:
+            one["properties"]["narration"]["minLength"] = 1
+            one["properties"]["narration"]["description"] = (
+                "这句在复述镜头里已经看见的事。改成反应、态度，或画面带不走的一句提醒。"
+                "不要再讲画面上的人和动作，也不要改成口播卖点。定格上的去向旁白不要改。")
         else:
             one["properties"]["narration"]["minLength"] = 1
             one["properties"]["narration"]["description"] = f"只重写这一句，含标点最多{one['properties']['narration']['maxLength']}字"
@@ -1393,12 +1470,12 @@ LINE_REWRITE_SYSTEM = """你只重写列出的中文广告台词，只输出 JSO
 产品展示大约15秒整条只围绕一个主好处，像跟人说话。大约30秒可以在这一个主好处之后再留一个配角好处，分清主次。45秒以上可以再展开一句，仍然不要并列清单。不要文案腔，不要「是它的脸」「先到了」「肩线这一圈」，也不要「十万转高速马达」「一亿负离子」这种参数清单。短的口语好处不要改长，也不要补主语。例如「吹完是顺的。」「这风不吵。」「几下就干。」不要描述镜头里的光和动作，不要用痛点问句或场景交代开场。旁白太密，或超过本片时长还能说的卖点，那些句子 narration 留空。至少留一拍只有产品的声音。不编价格。口播不受这条限制，卖点之间仍用而且接上。
 人物讲解的每一句卖点都要有主语：这款、它，或「我用它」。不要用「风大」「带负离子」这种没有主语的开头。卖点之间用而且、还、另外、所以或关键是接上。
 产品片不必每句点名。直接、短地说画面证明不了的好处。不要描述镜头里的光、银线或发丝飘起。
-剧情对白是意图、反应、对照或包袱，每句大约4到10字。不要念室友在睡、她拿吹风机这种画面，也不要改成「带负离子，吹完是顺的」这种口播。好处最多一句，写成人物看见结果后的反应。指定了去向时用定格上的短旁白，人物不要转头对着镜头推销。数字和功效只在 facts 里已经有时才能写。
+剧情对白是意图、反应、对照或包袱，每句大约4到10字。不要把这一镜已经看见的事再说一遍。画面是室友在睡、她没按开关时，不要说「不敢开，怕吵醒她。」改成画面带不走的反应或提醒，例如「声音也太大了。」或「风口转开一点。」不要念室友在睡、她拿吹风机，也不要改成「带负离子，吹完是顺的」这种口播。好处最多一句，写成人物看见结果后的反应。指定了去向时用定格上的短旁白，人物不要转头对着镜头推销，这句不要改。数字和功效只在 facts 里已经有时才能写。若某句带了 picture，那就是这一镜已经拍到的内容。
 tagline_policy.enabled 为 false 时不加独立口号字卡。为 true 时只有收束句可以是不超过10字的口播，仍然不写购买、下单、抢购。
 不输出其他字段，不解释。"""
 
 
-def _rewrite_payload(script, offenses, strategy, duration, locked_lines):
+def _rewrite_payload(script, offenses, strategy, duration, locked_lines, plan=None):
     strategy = _strategy(strategy)
     profile = speech_profile_for_strategy(strategy)
     form = script_form(strategy)
@@ -1416,13 +1493,18 @@ def _rewrite_payload(script, offenses, strategy, duration, locked_lines):
         remaining = duration * profile.characters_per_tenth // 10 - sum(
             len(other.get("narration") or "") for other in _beats(script)
             if other.get("id") != item["beat_id"])
-        lines.append({
+        row = {
             "beat_id": item["beat_id"],
             "role": roles.get(item["beat_id"], "line"),
             "narration": item["narration"],
             "offenses": item["offenses"],
             "max_characters": max(1, min(profile.max_beat_characters, remaining)),
-        })
+        }
+        picture = _picture_minus_line(
+            _visual_texts_for_beat(script, plan, beat, item.get("index") or 0), item["narration"])
+        if picture:
+            row["picture"] = picture[:80]
+        lines.append(row)
     facts = [{"id": fact.id, "text": fact.text} for fact in strategy.brief.facts if fact.id in fact_ids]
     payload = {
         "stage": "ad_script",
@@ -1512,14 +1594,15 @@ async def rewrite_director_if_needed(stage_call, director: dict, strategy, durat
     if brand:
         folded, changed = _fold_brand_director(director, locked_lines, duration_seconds)
     working = (folded.get("ad_script") or {}) if brand else script
+    shot_source = plan if isinstance(plan, dict) and _iter_shots(plan) else director
     offenses = offending_lines(working, locked_lines=locked_lines, strategy=strategy,
-                               plan=plan, duration_seconds=duration_seconds)
+                               plan=shot_source, duration_seconds=duration_seconds)
     if not offenses and not changed:
         return False, None
     revised = None
     if offenses:
         payload, limits, facts_text = _rewrite_payload(
-            working, offenses, strategy, duration_seconds, locked_lines)
+            working, offenses, strategy, duration_seconds, locked_lines, shot_source)
         raw = await _optional_model_call(stage_call, LINE_REWRITE_SYSTEM, payload)
         if raw is not None:
             revised = apply_line_rewrite(working, raw, limits=limits, locked_lines=locked_lines,

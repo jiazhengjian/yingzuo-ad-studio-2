@@ -400,6 +400,60 @@ def test_scene_lines_follow_the_character_and_mention_the_product_once():
     assert "在念画面" not in _focus(_lines("太吵了。", "终于不毛躁了。"), "scene_story")
 
 
+def test_scene_dialogue_does_not_restate_the_shot():
+    """A line that only retells the sleeper already on screen is rewritten once.
+
+    A complaint, a tip, and the freeze call-to-action stay. If the rewrite
+    fails, the original line stays and the job is not blocked.
+    """
+    from pathlib import Path
+
+    opening = "不敢开，怕吵醒她。"
+    script = _lines(opening, "声音也太大了。", "终于不毛躁了。", "想带走，就点下面链接。")
+    shot = "夜里，室友侧躺在床上睡着。她站在镜前，手指停在开关上。"
+    plan = {"segments": [{"shots": [
+        {"beat_id": "b0", "description": shot},
+        {"beat_id": "b1", "description": "风声起来，她皱了一下眉。"},
+        {"beat_id": "b2", "description": "发尾被吹开，她看了一眼。"},
+        {"beat_id": "b3", "description": "产品停在台面上定格。"},
+    ]}]}
+    flags = _focus(script, "scene_story", plan=plan)
+    assert flags.count("在念画面") == 1
+    assert "在念画面" not in _focus(script, "scene_story")
+    assert "在念画面" not in _focus(script, "presenter_pitch", plan=plan)
+    quoted = {"segments": [{"shots": [
+        {"beat_id": "b0", "description": shot + "她说不敢开，怕吵醒她。"},
+    ]}]}
+    assert "在念画面" in _focus(_lines(opening), "scene_story", plan=quoted)
+    scene_book = Path("app/skills/shared/ad-form-playbooks/scene-story.md").read_text()
+    assert "不敢开，怕吵醒她" in scene_book
+    assert "定格" in scene_book
+
+    strategy = typed("scene_story")
+    director = {"ad_script": script}
+
+    async def rewrite(system, data, originals, max_tokens):
+        assert [item["narration"] for item in data["lines"]] == [opening]
+        assert "在念画面" in data["lines"][0]["offenses"]
+        assert "睡" in data["lines"][0]["picture"]
+        return {"lines": [{"beat_id": "b0", "narration": "太响了。"}]}
+
+    called, replacement = asyncio.run(rewrite_director_if_needed(
+        rewrite, director, strategy, 20, plan=plan))
+    assert called is True and replacement is not None
+    assert [beat["narration"] for beat in replacement["ad_script"]["beats"]] == [
+        "太响了。", "声音也太大了。", "终于不毛躁了。", "想带走，就点下面链接。",
+    ]
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("rewrite down")
+
+    called, kept = asyncio.run(rewrite_director_if_needed(
+        boom, director, strategy, 20, plan=plan))
+    assert called is True and kept is None
+    assert director["ad_script"]["beats"][0]["narration"] == opening
+
+
 def test_brand_voiceover_stays_thin_and_does_not_invent_a_scene():
     five = _lines("几下就干。", "发尾是顺的。", "就这点。", "再看一眼。", "停在这儿。")
     assert "旁白太密" in _focus(five, "brand_tvc")
