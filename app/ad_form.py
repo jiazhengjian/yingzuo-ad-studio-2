@@ -268,6 +268,58 @@ def bind_brief_ad_form(brief, project):
     return brief
 
 
+_CONFLICT_AXIS = re.compile(r"不敢按|不敢开|合租|怕吵醒|别吵醒|吵醒|冲突|争执")
+_EFFICACY_LECTURE = re.compile(r"第三人称|旁白讲|画外讲|讲功效|讲.{0,8}(?:快|顺|静|干|负离子|护发)")
+_LIFE_PAIN = re.compile(r"痛点|赶时间|赶出门|头发厚")
+_ON_CAMERA = re.compile(r"出镜|真人出镜|有人出镜")
+_PRESENTER_TALK = re.compile(r"对观众|对着观众|口播|讲解给")
+_AXIS_FIELDS = ("brief", "consumer_insight", "scenario", "product_expression", "hook", "payoff")
+
+
+def _axis_blob(card):
+    parts = []
+    for key in _AXIS_FIELDS:
+        value = card.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value)
+    return "\n".join(parts)
+
+
+def classify_narrative_axis(card):
+    """Pick the ad form from the narrative spine, not from a person or a bed.
+
+    A selling point the picture proves is a product film, even when the setup
+    is a daily pain and the voice is third-person. A conflict or relationship,
+    with the benefit only as a side result, is a story. An explicit merchant
+    choice wins. Presenter detection stays on the existing keyword path.
+    """
+    if not isinstance(card, dict):
+        return None
+    explicit = card.get("explicit_form")
+    if explicit is None and card.get("ad_form") in ("brand_tvc", "scene_story", "presenter_pitch"):
+        explicit = card.get("ad_form")
+    if explicit in ("brand_tvc", "scene_story", "presenter_pitch"):
+        return explicit
+    brief = card.get("brief") if isinstance(card.get("brief"), str) else ""
+    named = explicit_ad_form(brief) or infer_ad_form(brief)
+    if named == "presenter_pitch":
+        return "presenter_pitch"
+    blob = _axis_blob(card)
+    speech = card.get("speech_mode")
+    expression = card.get("product_expression") if isinstance(card.get("product_expression"), str) else ""
+    if speech == "character_dialogue" and _PRESENTER_TALK.search(blob) and not _CONFLICT_AXIS.search(blob):
+        return "presenter_pitch"
+    lecture = bool(_EFFICACY_LECTURE.search(expression) or (
+        speech == "voiceover" and _EFFICACY_LECTURE.search(blob)))
+    conflict = bool(_CONFLICT_AXIS.search(blob))
+    if conflict and not lecture:
+        return "scene_story"
+    if lecture or (speech == "voiceover" and _LIFE_PAIN.search(blob)) or (
+            _ON_CAMERA.search(blob) and not conflict):
+        return "brand_tvc"
+    return None
+
+
 def strip_ad_form_declarations(text):
     """Keep raw conversation, but don't cite recognized preferences as facts."""
     parts = re.split(r"([，,。！!；;\n\r])", str(text))

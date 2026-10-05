@@ -92,6 +92,19 @@ def test_brand_tvc_can_mix_breakdown_and_intercut(env):
     assert {item.film_concept.structure for item in decision.directions} == {"product_visual", "world_intercut"}
 
 
+def test_brand_auto_keeps_a_lifestyle_path_when_the_merchant_did_not_ban_people(env):
+    raw = fresh(candidates_for(env))
+    raw["brief"]["ad_form"] = "brand_tvc"
+    raw["brief"]["creative_intent"]["structure_preference"] = "auto"
+    for direction, skeleton in zip(raw["directions"], ("product_visual", "world_intercut", "lifestyle")):
+        direction["film_concept"]["structure"] = skeleton
+        direction["film_concept"]["visual_skeleton"] = skeleton
+    decision = StrategyDecision.model_validate(raw)
+    assert {item.film_concept.structure for item in decision.directions} == {
+        "product_visual", "world_intercut", "lifestyle",
+    }
+
+
 def test_locked_product_visual_can_share_structure_when_the_motif_differs(env):
     raw = fresh(candidates_for(env))
     raw["brief"]["ad_form"] = "brand_tvc"

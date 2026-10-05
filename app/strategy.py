@@ -120,7 +120,9 @@ ProductFilmStructure = Literal["product_visual", "world_intercut", "lifestyle"]
 FilmStructure = Literal["product_visual", "world_intercut", "lifestyle", "scene_action", "presenter_explanation"]
 VisualSkeleton = ProductFilmStructure
 _VISUAL_SKELETONS = {"product_visual", "world_intercut", "lifestyle"}
-_BRAND_AUTO_SKELETONS = {"product_visual", "world_intercut"}
+# Auto may include the lifestyle path: life problem, product world, real result.
+# 不出镜 is a carrier lock, not a reason to delete that path from the set.
+_BRAND_AUTO_SKELETONS = {"product_visual", "world_intercut", "lifestyle"}
 _SIDE_PROOF_SPEC = re.compile(r"\d|[０-９]|价格|价钱|折扣|规格|参数")
 
 
@@ -356,7 +358,7 @@ def _require_visual_contract(directions: list[CreativeDirection], brief: Product
             raise ValueError("产品片的画面骨架要和这条的结构一致")
         if preference == "auto":
             if any(concept.structure not in _BRAND_AUTO_SKELETONS for concept in concepts):
-                raise ValueError("产品片没有锁定结构时，用拆解或穿梭来讲")
+                raise ValueError("产品片没有锁定结构时，用拆解、穿梭或生活来讲")
             if len({concept.structure for concept in concepts}) < 2:
                 raise ValueError("产品片的三个方向不能用同一种画面结构")
     elif form == "scene_story":
