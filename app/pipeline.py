@@ -17,13 +17,42 @@ from .schemas import AgentDecision, Plan, Segment, segment_durations
 from .video_prompt import expected_grouped_speech
 from .generation_policy import validate_generation_durations
 from .directing import direction_context
-from .production import required_designs, validate_design_assets
+from .production import required_designs, saved_character_sheet_is_stale, validate_design_assets
+
+
+def _segment_closes_film(plan, segment) -> bool:
+    """True when this request is the film's last segment, or the plan has no segment list."""
+    segments = plan.get("segments") if isinstance(plan, dict) else None
+    if not isinstance(segments, list) or not segments or not isinstance(segment, dict):
+        return True
+    last = segments[-1]
+    if not isinstance(last, dict):
+        return True
+    segment_id = segment.get("id")
+    last_id = last.get("id")
+    if isinstance(segment_id, str) and segment_id and isinstance(last_id, str) and last_id:
+        return segment_id == last_id
+    return True
 
 
 def video_submission_spec(plan, segment, assets=None):
     """Freeze the same confirmed visual contract for every provider group."""
     spec = {**segment, "audio_strategy": plan["audio_strategy"],
-            "generation_strategy": plan.get("generation_strategy", "legacy_10s")}
+            "generation_strategy": plan.get("generation_strategy", "legacy_10s"),
+            "closes_film": _segment_closes_film(plan, segment)}
+    from .ad_form_playbook import LEGACY_TENTH, speech_profile_for_strategy
+    strategy = plan.get("strategy") if isinstance(plan, dict) else getattr(plan, "strategy", None)
+    tenth = speech_profile_for_strategy(strategy).characters_per_tenth
+    if tenth != LEGACY_TENTH:
+        spec["speech_characters_per_tenth"] = tenth
+    brief = strategy.get("brief") if isinstance(strategy, dict) else getattr(strategy, "brief", None)
+    form = brief.get("ad_form") if isinstance(brief, dict) else getattr(brief, "ad_form", None)
+    # Story prompts avoid telling the character to look at the camera.
+    # Presenter and product films use it to keep the voice track on the right person.
+    # A presenter plan with no production must stay unmarked: the compiler
+    # refuses a presenter request that never named its speaker.
+    if form == "scene_story" or (form in ("presenter_pitch", "brand_tvc") and plan.get("production")):
+        spec["ad_form"] = form
     director = direction_context(plan)
     if director is not None:
         spec["director_context"] = director
@@ -31,12 +60,31 @@ def video_submission_spec(plan, segment, assets=None):
         spec["production"] = copy.deepcopy(plan["production"])
     if assets is not None:
         spec["reference_asset_ids"] = [asset["id"] for asset in assets]
-        spec["reference_roles"] = [
-            {"index": index, "role": asset["kind"],
-             **({"character_id": asset["metadata"]["character_id"],
-                 "name": asset["metadata"].get("character_name", asset["name"])} if asset["kind"] == "character" else {})}
-            for index, asset in enumerate(assets, 1) if asset["kind"] in ("product", "scene", "character")]
+        visible = [asset for asset in assets if asset["kind"] in ("product", "scene", "character")]
+        spec["reference_roles"] = []
+        for index, asset in enumerate(visible, 1):
+            role = {"index": index, "role": asset["kind"]}
+            if asset["kind"] == "character":
+                role["character_id"] = asset["metadata"]["character_id"]
+                role["name"] = asset["metadata"].get("character_name", asset["name"])
+                layout = asset["metadata"].get("sheet_layout")
+                if layout in ("horizontal_16x9", "grid_2x2"):
+                    role["sheet_layout"] = layout
+            spec["reference_roles"].append(role)
     return spec
+
+
+_PLANNER_STREAM_LABELS = {
+    "strategy": "正在接收需求判断",
+    "direction_review": "正在接收方向检查",
+    "ad_script": "正在接收广告内容",
+    "script_review": "正在接收内容检查",
+    "storyboard": "正在接收画面安排",
+    "storyboard_repair": "正在接收画面校正",
+    "alignment_review": "正在接收声画检查",
+    "plan_review": "正在接收方案检查",
+    "plan_refinement": "正在接收方案调整",
+}
 
 
 class SubmissionUnknown(RuntimeError):
@@ -48,7 +96,243 @@ class VoiceTooLong(ValueError):
     retryable = False
 
 
-def validate_plan(plan, duration_seconds=None):
+class PlanStructureError(ValueError):
+    """A segment/plan shape the merchant should not have to edit by hand."""
+
+    error_code = "planning_invalid_response"
+    retryable = True
+    retry_action = "retry_planning"
+
+    def __init__(self, message, details):
+        super().__init__(message)
+        self.validation_errors = details
+
+
+# Segment validators the server can correct without another model call.
+_SEGMENT_FIXABLE = {
+    "镜头时段必须从0连续排列，且不超过片段时长",
+    "镜头计划须覆盖完整片段",
+    "镜头内容节拍须非空且不重复，beat_id须保留为beat_ids首项",
+    "旁白时段须在片段内按顺序排列且不重叠，完整句不能跨生成段",
+    "旁白及锚点时段须由对应镜头覆盖",
+    "旁白及锚点时段须与每个引用镜头的时段重叠",
+    "旁白及锚点只能引用本段存在且不重复的镜头ID",
+    "旁白及锚点引用的镜头须按顺序连续排列",
+    "旁白及锚点只能跨同一内容节拍的镜头",
+    "台词锚点只能引用其旁白时段对应的镜头",
+}
+
+
+def _validation_details(error, prefix=()):
+    details = []
+    for item in error.errors(include_url=False, include_context=False, include_input=False):
+        details.append({"loc": tuple(prefix) + tuple(item.get("loc") or ()),
+                        "type": item.get("type", "validation_error"), "msg": item.get("msg", "")})
+    return details
+
+
+def _detail_messages(details):
+    return [str(item.get("msg", "")).removeprefix("Value error, ") for item in details]
+
+
+def _record_plan_validation(settings, details):
+    if settings is None:
+        return
+    from .providers.gateway import save_failed_planner_output
+    save_failed_planner_output(settings, {"stage": "plan_validation",
+        "raw_output": {"check": "segment"}, "validation_errors": details})
+
+
+def _fail_plan_structure(settings, message, details):
+    _record_plan_validation(settings, details)
+    raise PlanStructureError(message, details) from None
+
+
+def _segment_validation_errors(plan):
+    """Validate each segment at the plan's own speech rate, not the historical 2.9 cap."""
+    from .ad_form_playbook import bind_plan_speech_tenth, reset_plan_speech_tenth
+    token = bind_plan_speech_tenth(plan.get("strategy"))
+    try:
+        for index, segment in enumerate(plan["segments"]):
+            try:
+                Segment.model_validate(segment)
+            except ValidationError as error:
+                return _validation_details(error, ("segments", index))
+    finally:
+        reset_plan_speech_tenth(token)
+    return []
+
+
+def _finite(value):
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def _covers(shots, duration):
+    previous = 0.0
+    for shot in shots:
+        start, end = shot.get("start"), shot.get("end")
+        if not _finite(start) or not _finite(end):
+            return False
+        if abs(start - previous) > 0.05 or end <= start or end > duration + 1e-6:
+            return False
+        previous = end
+    return abs(previous - duration) <= 0.05
+
+
+def _shift_window(item, origin):
+    for key in ("start", "end"):
+        value = item.get(key)
+        if _finite(value):
+            item[key] = round(value - origin, 6)
+
+
+def _rebase_segment_clock(segment):
+    """Turn a whole-film clock into this segment's 0..duration clock."""
+    shots = segment.get("shots")
+    if not isinstance(shots, list) or not shots or not isinstance(shots[0], dict):
+        return
+    origin = shots[0].get("start")
+    if not _finite(origin) or origin <= 0.05:
+        return
+    for shot in shots:
+        if isinstance(shot, dict):
+            _shift_window(shot, origin)
+    for span in segment.get("speech_spans") or []:
+        if not isinstance(span, dict) or not _finite(span.get("start")) or span["start"] + 1e-6 < origin:
+            continue
+        _shift_window(span, origin)
+        for anchor in span.get("anchors") or []:
+            if isinstance(anchor, dict):
+                _shift_window(anchor, origin)
+
+
+def _snap_shot_coverage(shots, duration):
+    """Pin the first frame to 0, close gaps, and make the last frame end at duration."""
+    if not shots:
+        return False
+    if not _covers(shots, duration):
+        previous = 0.0
+        for shot in shots:
+            start, end = shot.get("start"), shot.get("end")
+            if not _finite(start) or not _finite(end):
+                return False
+            if abs(start - previous) > 0.05:
+                start = previous
+            end = min(float(duration), max(float(end), start))
+            if end <= start:
+                end = min(float(duration), start + 0.1)
+            shot["start"], shot["end"] = start, end
+            previous = end
+        shots[0]["start"] = 0.0
+        if shots[0]["end"] <= shots[0]["start"]:
+            shots[0]["end"] = min(float(duration), 0.1)
+        if abs(shots[-1]["end"] - duration) > 0.05:
+            shots[-1]["end"] = float(duration)
+        if shots[-1]["end"] <= shots[-1]["start"]:
+            shots[-1]["start"] = max(0.0, float(duration) - 0.1)
+            shots[-1]["end"] = float(duration)
+    if _covers(shots, duration):
+        return True
+    weights = [max(float(shot["end"]) - float(shot["start"]), 0.1) for shot in shots]
+    total = sum(weights)
+    cursor = 0.0
+    for index, shot in enumerate(shots):
+        shot["start"] = cursor
+        if index == len(shots) - 1:
+            shot["end"] = float(duration)
+        else:
+            room = float(duration) - 0.05 * (len(shots) - index - 1)
+            cursor = min(room, max(cursor + 0.05, round(cursor + duration * weights[index] / total, 4)))
+            shot["end"] = cursor
+    return _covers(shots, duration)
+
+
+def _fix_beat_membership(shot):
+    ids = shot.get("beat_ids")
+    if not isinstance(ids, list):
+        return
+    cleaned = []
+    for beat in ids:
+        if not isinstance(beat, str):
+            continue
+        beat = beat.strip()
+        if beat and len(beat) <= 80 and beat not in cleaned:
+            cleaned.append(beat)
+    if not cleaned:
+        return
+    shot["beat_ids"] = cleaned
+    shot["beat_id"] = cleaned[0]
+
+
+def _overlapping_shot_ids(shots, start, end, beat_id=None):
+    matched = []
+    for shot in shots:
+        if not isinstance(shot, dict) or not isinstance(shot.get("id"), str) or not shot["id"].strip():
+            continue
+        if not _finite(shot.get("start")) or not _finite(shot.get("end")):
+            continue
+        if min(shot["end"], end) - max(shot["start"], start) <= 1e-7:
+            continue
+        if beat_id and beat_id not in (shot.get("beat_ids") or [shot.get("beat_id", "")]):
+            continue
+        if shot["id"] not in matched:
+            matched.append(shot["id"])
+    return matched
+
+
+def _retarget_speech(segment):
+    shots = segment.get("shots")
+    spans = segment.get("speech_spans")
+    duration = segment.get("duration_seconds")
+    if not isinstance(shots, list) or not isinstance(spans, list) or type(duration) is not int:
+        return
+    for span in spans:
+        if not isinstance(span, dict) or not _finite(span.get("start")) or not _finite(span.get("end")):
+            continue
+        span["start"] = min(max(float(span["start"]), 0.0), duration)
+        span["end"] = min(max(float(span["end"]), 0.0), duration)
+        if span["end"] <= span["start"]:
+            continue
+        overlapping = _overlapping_shot_ids(shots, span["start"], span["end"], span.get("beat_id"))
+        if overlapping:
+            span["shot_ids"] = overlapping
+        allowed = set(span.get("shot_ids") or [])
+        for anchor in span.get("anchors") or []:
+            if not isinstance(anchor, dict):
+                continue
+            ids = [shot_id for shot_id in anchor.get("shot_ids") or [] if shot_id in allowed]
+            if not ids and span.get("shot_ids"):
+                ids = list(span["shot_ids"])
+            if ids:
+                anchor["shot_ids"] = ids
+
+
+def normalize_plan_structure(plan, *, retarget_speech=False):
+    """Rebase, snap and repair beat membership. Returns a copy, or None if nothing changed."""
+    if not isinstance(plan, dict) or not isinstance(plan.get("segments"), list):
+        return None
+    result = copy.deepcopy(plan)
+    for segment in result["segments"]:
+        if not isinstance(segment, dict):
+            return None
+        shots = segment.get("shots")
+        duration = segment.get("duration_seconds")
+        if not isinstance(shots, list) or not shots or type(duration) is not int:
+            return None
+        _rebase_segment_clock(segment)
+        if not _snap_shot_coverage(shots, duration):
+            return None
+        for shot in shots:
+            if isinstance(shot, dict):
+                _fix_beat_membership(shot)
+        if retarget_speech:
+            _retarget_speech(segment)
+    if result == plan:
+        return None
+    return result
+
+
+def validate_plan(plan, duration_seconds=None, *, settings=None):
     if not isinstance(plan, dict) or plan.get("language") != "zh-CN" or plan.get("aspect_ratio") != "9:16":
         raise ValueError("P0方案必须使用中文与9:16画幅")
     if not str(plan.get("script", "")).strip() and (plan.get("production") or {}).get("speech_mode") != "none":
@@ -73,26 +357,67 @@ def validate_plan(plan, duration_seconds=None):
             raise ValueError("视频生成段缺少完整提示词")
         if not isinstance(segment.get("reference_asset_ids"), list) or not segment["reference_asset_ids"]:
             raise ValueError("每段视频都必须绑定真实商品参考")
-        try:
-            Segment.model_validate(segment)
-        except ValidationError:
-            raise ValueError("视频段镜头时轴或素材结构无效") from None
-    durations = [s["duration_seconds"] for s in segments]
+    details = _segment_validation_errors(plan)
+    if details:
+        messages = _detail_messages(details)
+        if all(message in _SEGMENT_FIXABLE for message in messages):
+            retarget = any(token in message for message in messages for token in ("旁白", "锚点", "台词"))
+            repaired = normalize_plan_structure(plan, retarget_speech=retarget)
+            if repaired is not None:
+                repaired_details = _segment_validation_errors(repaired)
+                if not repaired_details:
+                    plan = repaired
+                    details = []
+                else:
+                    details = repaired_details
+        if details:
+            _fail_plan_structure(settings, "视频段镜头时轴或素材结构无效", details)
+    durations = [s["duration_seconds"] for s in plan["segments"]]
     validate_generation_durations(durations, strategy)
     requested = duration_seconds if duration_seconds is not None else sum(durations)
     segment_durations(requested)  # Validates the product's 10–60 second selection.
     if (strategy == "legacy_10s" and durations != segment_durations(requested)) or sum(durations) != requested:
-        raise ValueError("方案分段与项目所选时长不一致，请重新策划；没有自动改时长")
+        raise ValueError("方案与所选时长不一致，已有内容仍保留。请重新选择时长后再制作。")
     if plan.get("audio_strategy") not in ("voiceover", "native"):
         raise ValueError("不支持的音频策略")
-    if plan.get("production") is not None or any(segment.get("speech_spans") is not None for segment in segments):
+    if plan.get("production") is not None or any(segment.get("speech_spans") is not None for segment in plan["segments"]):
         try:
             Plan.model_validate(plan)
-        except ValidationError:
-            raise ValueError("独立旁白方案的声音策略、内容或跨段对应无效，请重新策划") from None
+        except ValidationError as error:
+            _fail_plan_structure(settings, "独立旁白方案的声音策略、内容或跨段对应无效",
+                                 _validation_details(error))
     result = copy.deepcopy(plan)
     result.pop("cta", None)
+    from .ad_form_playbook import stamp_plan_speech_rate
+    stamp_plan_speech_rate(result)
     return result
+
+
+def merchant_facing_error(exc):
+    """Merchants see one plain Chinese sentence. Technical text stays in diagnostics."""
+    from .merchant_cards import present_exception
+    return present_exception(exc)
+
+
+def _submission_failure_result(exc, gateway=None, code=None):
+    """Status and a redacted excerpt for the step row. Never the merchant card."""
+    result = {}
+    if isinstance(code, str) and code:
+        result["error_code"] = code
+    status = getattr(exc, "status_code", None)
+    if type(status) is int:
+        result["provider_status"] = status
+    excerpt = getattr(exc, "excerpt", None)
+    if isinstance(excerpt, str) and excerpt:
+        result["provider_excerpt"] = excerpt[:180]
+    refusals = getattr(gateway, "_submission_refusals", None) if gateway is not None else None
+    if isinstance(refusals, list) and refusals:
+        result["submission_refusals"] = list(refusals)
+    return result or None
+
+
+def _review_binding_drift(exc: PlanStructureError) -> bool:
+    return any("综合审核记录必须对应" in str(item.get("msg", "")) for item in exc.validation_errors or [])
 
 
 class Pipeline:
@@ -163,20 +488,36 @@ class Pipeline:
             self.store.update_job(job_id, status="submitted_unknown" if unresolved else "queued", lease_until=0)
             raise
         except Exception as exc:
-            # Keep public errors actionable but never include a raw provider response/configuration.
-            message = str(exc) if isinstance(exc, (ValueError, media.MediaError)) or getattr(exc, "safe_to_display", False) else "制作步骤失败，可恢复已知任务；不会自动重新提交视频。"
+            # Keep public errors actionable but never include a raw provider response or pydantic text.
+            if isinstance(exc, ValidationError):
+                from .providers.gateway import save_failed_planner_output
+                save_failed_planner_output(self.settings, {
+                    "stage": "generate_validation" if job["kind"] == "generate" else "validation",
+                    "raw_output": {"check": "model"}, "validation_errors": _validation_details(exc)})
+            message = merchant_facing_error(exc)
             changes = {"status": "failed", "error": message[:500], "lease_until": 0}
+            held_submission = getattr(exc, "error_code", None) in (
+                "provider_balance", "provider_auth", "provider_request_rejected")
             if job["kind"] == "plan":
                 progress = dict(self.store.get_job(job_id).get("progress") or {})
+                retryable = bool(getattr(exc, "retryable", False))
+                retry_action = getattr(exc, "retry_action", "edit_plan")
+                # One replay of a saved storyboard is enough. A second identical
+                # structure failure starts again from the brief instead of looping.
+                if isinstance(exc, PlanStructureError) and (job.get("payload") or {}).get("plan_structure_replayed"):
+                    retryable, retry_action = False, "continue_conversation"
                 progress.update(error_code=getattr(exc, "error_code", "planning_invalid_response"),
-                    retryable=bool(getattr(exc, "retryable", False)),
-                    retry_action=getattr(exc, "retry_action", "edit_plan"))
+                    retryable=retryable, retry_action=retry_action)
                 # Only our bounded planning errors provide these owned summaries.
                 if getattr(exc, "error_code", None) in ("planning_content_failed", "planning_review_incomplete"):
                     progress.update(issue_summary=getattr(exc, "issue_summary", [])[:8],
                         repair_attempts=getattr(exc, "repair_attempts", 0))
                 changes["progress"] = progress
-            if job["kind"] == "generate":
+            if job["kind"] == "generate" and held_submission:
+                progress = dict(self.store.get_job(job_id).get("progress") or {})
+                progress.update(error_code=exc.error_code, retryable=False, retry_action=None)
+                changes["progress"] = progress
+            elif job["kind"] == "generate":
                 recovery = self.store.video_retry_state(job_id)
                 if recovery["failed_segment_ids"]:
                     progress = dict(self.store.get_job(job_id).get("progress") or {})
@@ -215,7 +556,22 @@ class Pipeline:
                 ("已载入共用参考 " if trace.get("execution_kind") == "shared_reference" else "已载入阶段指令 ")
                 + str(trace.get("display_name", {"product-evidence": "商品事实规则", "ad-form-contract": "广告表达规则"}.get(trace.get("id"), trace.get("id", "Ads Video"))))[:100]
                 + " · " + str(trace.get("version", ""))[:40])
-        callbacks = {"on_progress": planning_progress} if getattr(self.gateway, "supports_strategy_planning", False) else {}
+        planning_gateway = getattr(self.gateway, "supports_strategy_planning", False)
+        callbacks = {"on_progress": planning_progress} if planning_gateway else {}
+        stream_callbacks = {}
+        if planning_gateway:
+            def note_planner_stream(stage):
+                label = _PLANNER_STREAM_LABELS.get(stage)
+                if not label:
+                    return
+                self._guard(job["id"], require_current=True)
+                self.store.add_event(job["project_id"], job["id"], "step", label, "running")
+            stream_callbacks["on_planner_stream"] = note_planner_stream
+            payload = job["payload"]
+            cache = payload.get("stage_result_cache")
+            selected_id = (payload.get("selected_strategy") or {}).get("selected_direction_id")
+            if isinstance(cache, dict) and payload.get("stage_result_cache_direction_id") == selected_id:
+                stream_callbacks["stage_result_cache"] = cache
         if (not job["payload"].get("conversation") and getattr(self.gateway, "supports_direction_selection", False)
                 and getattr(self.settings, "direction_selection_enabled", False)):
             detail = self.store.project_detail(job["project_id"])
@@ -242,18 +598,23 @@ class Pipeline:
                 callbacks.update(planning_checkpoint=job["payload"].get("planning_checkpoint"),
                     on_checkpoint=save_checkpoint)
             raw = await self.gateway.decide(frozen["project"], frozen["assets"], frozen["messages"],
-                                            frozen["gates"], frozen["project"].get("plan"), **callbacks)
+                                            frozen["gates"], frozen["project"].get("plan"),
+                                            **callbacks, **stream_callbacks)
             self._guard(job["id"], require_current=True)
             try:
                 decision = AgentDecision.model_validate(raw).model_dump()
             except ValidationError:
                 raise ValueError("策划回复未通过对话结构校验；没有自动创建问题或开始制作") from None
             if decision["kind"] == "plan":
-                decision["plan"] = validate_plan(decision["plan"], frozen["project"].get("duration_seconds", 20))
+                decision["plan"] = validate_plan(decision["plan"], frozen["project"].get("duration_seconds", 20),
+                                                  settings=self.settings)
                 self._references(job["project_id"], decision["plan"])
                 for option in decision["creative_options"]:
                     self._references(job["project_id"], {"segments": [option["segment"]]})
             self.store.finish_decision(job["id"], decision)
+            if decision["kind"] == "directions" and getattr(self.settings, "planner_speculate_recommended", False):
+                from app.speculative_plan import schedule_speculation
+                schedule_speculation(self.store, self.gateway, self.settings, job["id"])
             return
         self._phase(job["id"], "planning")
         self.store.set_project_status(job["project_id"], job["revision"], "planning")
@@ -262,7 +623,7 @@ class Pipeline:
             raise ValueError("请先上传至少一张真实商品图")
         legacy_callbacks = {**callbacks, "gates": detail["gates"]} if callbacks else {}
         plan = validate_plan(await self.gateway.plan(detail["project"], detail["assets"], detail["messages"], **legacy_callbacks),
-                             detail["project"].get("duration_seconds", 20))
+                             detail["project"].get("duration_seconds", 20), settings=self.settings)
         self._guard(job["id"], require_current=True)
         self._references(job["project_id"], plan)
         self.store.assert_job_current(job["id"])
@@ -336,12 +697,36 @@ class Pipeline:
         return asset
 
     def _creative_options(self, job, plan):
+        from .ad_form_playbook import stamp_plan_speech_rate
+        stamp_plan_speech_rate(plan)
         first = plan["segments"][0]
         return [{"id": "current", "label": "图片没问题，生成视频", "description": "使用已确认的商品原图与参考图片制作当前方案", "segment": copy.deepcopy(first)}]
 
+    async def _generation_plan(self, job, project):
+        """Accept a saved plan. Server-only stamps do not force another planning round."""
+        raw = copy.deepcopy(job["payload"]["plan"])
+        duration = project.get("duration_seconds", 20)
+        try:
+            plan = validate_plan(raw, duration, settings=self.settings)
+        except PlanStructureError as exc:
+            if not _review_binding_drift(exc) or (job.get("payload") or {}).get("plan_review_rechecked"):
+                raise
+            self.store.add_event(job["project_id"], job["id"], "step", "已自动校正，继续制作中")
+            self._payload(job["id"], plan_review_rechecked=True)
+            refresh = getattr(self.gateway, "review_saved_plan", None)
+            if refresh is None:
+                raise
+            plan = validate_plan(await refresh(raw), duration, settings=self.settings)
+        else:
+            previous = (raw.get("plan_review") or {}).get("reviewed_plan_sha256")
+            current = (plan.get("plan_review") or {}).get("reviewed_plan_sha256")
+            if previous and current and previous != current:
+                self.store.add_event(job["project_id"], job["id"], "step", "已自动校正，继续制作中")
+        return plan
+
     async def _generate(self, job):
         project = self.store.get_project(job["project_id"])
-        plan = validate_plan(job["payload"]["plan"], project.get("duration_seconds", 20))
+        plan = await self._generation_plan(job, project)
         if project["route"] == "presenter" and not getattr(self.settings, "presenter_verified", False):
             raise ValueError("中文出镜口播能力尚未验证，目前不能生成口播路线")
         budget = self._submission_budget(job)
@@ -490,15 +875,31 @@ class Pipeline:
             if payload.get("creative_confirmed"):
                 raise
             complete = []
+        replace_keys = None
         if complete:
-            saved_ids = [asset["id"] for asset in complete]
-            resumed = copy.deepcopy(plan)
-            for segment in resumed["segments"]:
-                segment["reference_asset_ids"] = list(dict.fromkeys([*segment["reference_asset_ids"], *saved_ids]))
-            self._payload(job["id"], plan=resumed, design_asset_ids=saved_ids)
-            progress = dict(self.store.get_job(job["id"]).get("progress") or {})
-            self.store.update_job(job["id"], progress={**progress, "design_asset_ids": saved_ids})
-            return resumed
+            current_job = self.store.get_job(job["id"])
+            video_submitted = bool(current_job.get("submission_count")) or bool(
+                payload.get("frozen_video_requests") or payload.get("frozen_video_specs"))
+            stale = [asset for asset in complete if asset["kind"] == "character"
+                     and saved_character_sheet_is_stale(asset.get("metadata"))]
+            # A merchant who already confirmed the pictures, or a job that already
+            # paid for video, keeps the saved sheet. Only an unconfirmed, unsubmitted
+            # job replaces a sheet from before the horizontal Chinese-default template.
+            if not stale or payload.get("creative_confirmed") or video_submitted:
+                saved_ids = [asset["id"] for asset in complete]
+                resumed = copy.deepcopy(plan)
+                from app.planner_recovery import append_reference_ids
+                for segment in resumed["segments"]:
+                    segment["reference_asset_ids"] = append_reference_ids(segment["reference_asset_ids"], saved_ids)
+                self._payload(job["id"], plan=resumed, design_asset_ids=saved_ids)
+                progress = dict(self.store.get_job(job["id"]).get("progress") or {})
+                self.store.update_job(job["id"], progress={**progress, "design_asset_ids": saved_ids})
+                return resumed
+            stale_ids = {asset["id"] for asset in stale}
+            saved = [asset for asset in saved if asset["id"] not in stale_ids]
+            replace_keys = ["character_" + asset["metadata"]["character_id"] for asset in stale]
+            for segment in plan["segments"]:
+                segment["reference_asset_ids"] = [aid for aid in segment.get("reference_asset_ids", []) if aid not in stale_ids]
         if payload.get("creative_confirmed") and plan.get("production") is not None:
             raise ValueError("已确认的场景图与角色图不完整，不能重新出图或提交视频")
         if not callable(create):
@@ -560,6 +961,10 @@ class Pipeline:
         callback = {"on_skill": used_media_skill} if "on_skill" in inspect.signature(create).parameters else {}
         if "on_asset" in inspect.signature(create).parameters:
             callback["on_asset"] = save_design
+        if replace_keys and "replace_keys" in inspect.signature(create).parameters:
+            callback["replace_keys"] = replace_keys
+        self.gateway._submission_busy_notice = lambda: self.store.add_event(
+            job["project_id"], job["id"], "step", "图片平台繁忙，正在自动重新提交")
         try:
             results = await create(project, assets, plan, folder,
                                    cancelled=lambda: self.store.is_cancelled(job["id"]) or
@@ -571,6 +976,8 @@ class Pipeline:
             if getattr(exc, "safe_to_display", False):
                 raise
             raise ValueError("视觉设计图生成失败，方案已保留；重试会优先恢复已记录的图片任务") from exc
+        finally:
+            self.gateway._submission_busy_notice = None
         self._guard(job["id"], require_current=True)
         if not results:
             raise ValueError("图片服务没有返回真实场景图；不能用商品上传图冒充")
@@ -585,11 +992,18 @@ class Pipeline:
         design_ids = [asset["id"] for asset in validate_design_assets(plan, [self.store.get_asset(aid) for aid in design_ids])]
         plan = copy.deepcopy(plan)
         for segment in plan["segments"]:
-            segment["reference_asset_ids"] = list(dict.fromkeys([*segment["reference_asset_ids"], *design_ids]))
+            from app.planner_recovery import append_reference_ids
+            segment["reference_asset_ids"] = append_reference_ids(segment["reference_asset_ids"], design_ids)
         self._payload(job["id"], design_asset_ids=design_ids, plan=plan)
         progress = dict(self.store.get_job(job["id"]).get("progress") or {})
         self.store.update_job(job["id"], progress={**progress, "design_asset_ids": design_ids})
-        self.store.add_event(job["project_id"], job["id"], "artifact", "场景与角色参考图已保存，商品继续使用原图" if expected_characters else "场景图已保存，商品继续使用原图")
+        if replace_keys:
+            saved_note = "角色参考已按当前横版模板重新生成，场景图仍用已保存的"
+        elif expected_characters:
+            saved_note = "场景与角色参考图已保存，商品继续使用原图"
+        else:
+            saved_note = "场景图已保存，商品继续使用原图"
+        self.store.add_event(job["project_id"], job["id"], "artifact", saved_note)
         if not payload.get("pause_for_creative"):
             self.store.add_message(job["project_id"], "assistant", "真实视觉设计图已生成，商品外观仍需核对；正在制作视频。", job_id=job["id"])
         return plan
@@ -599,7 +1013,7 @@ class Pipeline:
                    job.get("payload", {}).get("video_submission_budget", 6))
 
     async def _submit_video(self, job, spec, assets):
-        """Reserve once, POST once, then persist receipt; never poll or download here."""
+        """Reserve once, then POST the frozen request. Only a definite unpaid 4xx may be posted again."""
         jid, key = job["id"], f"video:{spec['id']}"
         self._guard(jid, require_current=True)
         frozen_spec = job.get("payload", {}).get("frozen_video_specs", {}).get(spec["id"])
@@ -636,6 +1050,8 @@ class Pipeline:
             if not self.store.reserve_submission(jid, key, snapshot, self._submission_budget(job)):
                 raise SubmissionUnknown()
             self._phase(jid, "submitting_video", segment_id=spec["id"])
+            self.gateway._submission_busy_notice = lambda: self.store.add_event(
+                job["project_id"], jid, "step", "视频平台繁忙，正在自动重新提交")
             try:
                 kwargs = {"prepared_request": snapshot["video_request"]} if "video_request" in snapshot else {}
                 receipt = await self.gateway.submit_video(spec, assets, snapshot["idempotency_key"], **kwargs)
@@ -643,22 +1059,37 @@ class Pipeline:
                 if not task_id:
                     raise SubmissionUnknown()
                 # The durable receipt precedes polling, cancellation handling, and downloads.
-                self.store.update_step(jid, key, state="submitted", task_id=str(task_id),
-                                       result={"provider": str(receipt.get("provider", "unknown")),
-                                           **{k: receipt[k] for k in ("skill_trace", "prompt_sha256") if k in receipt}})
+                result = {"provider": str(receipt.get("provider", "unknown")),
+                          **{k: receipt[k] for k in ("skill_trace", "prompt_sha256") if k in receipt}}
+                refusals = receipt.get("submission_refusals")
+                if not isinstance(refusals, list):
+                    refusals = getattr(self.gateway, "_submission_refusals", None)
+                if isinstance(refusals, list) and refusals:
+                    result["submission_refusals"] = refusals
+                self.store.update_step(jid, key, state="submitted", task_id=str(task_id), result=result)
                 self.store.add_event(job["project_id"], jid, "step", "视频任务已受理，回执已保存")
             except BaseException as exc:
                 if isinstance(exc, (asyncio.CancelledError, SubmissionUnknown)) or getattr(exc, "uncertain", True):
-                    self.store.update_step(jid, key, state="submitted_unknown", error="供应商受理结果未知")
+                    self.store.update_step(jid, key, state="submitted_unknown", error="供应商受理结果未知",
+                                           result=_submission_failure_result(exc))
                     if isinstance(exc, asyncio.CancelledError):
                         raise
                     raise SubmissionUnknown() from exc
-                code = "reference_image_unreadable" if getattr(exc, "error_code", None) == "reference_image_unreadable" else "provider_video_rejected"
-                message = "参考图片检查未通过，视频尚未提交" if code == "reference_image_unreadable" else "视频请求未获受理"
-                self.store.update_step(jid, key, state="rejected", error=message, result={"error_code": code})
+                code = getattr(exc, "error_code", None)
+                if code == "reference_image_unreadable":
+                    message = "参考图片检查未通过，视频尚未提交"
+                elif code in ("provider_balance", "provider_auth", "provider_request_rejected"):
+                    message = str(exc)
+                else:
+                    code = "provider_video_rejected"
+                    message = "视频请求未获受理"
+                self.store.update_step(jid, key, state="rejected", error=message,
+                                       result=_submission_failure_result(exc, self.gateway, code))
                 if getattr(exc, "safe_to_display", False):
                     raise
                 raise ValueError("供应商拒绝了视频请求；已保留提交记录，不自动重发") from exc
+            finally:
+                self.gateway._submission_busy_notice = None
             step = self.store.get_step(jid, key)
         if not step["task_id"]:
             raise SubmissionUnknown()

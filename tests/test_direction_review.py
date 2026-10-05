@@ -14,7 +14,7 @@ from app.pipeline import Pipeline
 from app.providers.gateway import Gateway
 from app.strategy import DirectionCandidates, select_rules
 from test_conversation_api import env, post_turn
-from test_direction_selection import (approved_direction_review, candidates_for,
+from test_direction_selection import (approved_direction_review, candidates_for, concept_pool_for,
                                       isolated_skill_loader, offer)
 from test_providers import chat_output, request_context, assert_skill_wire_matches_source
 
@@ -122,7 +122,9 @@ def test_historical_candidate_dump_does_not_add_review_and_new_schema_closes_fie
     schema = direction_review_schema(6)
     assert schema["additionalProperties"] is False
     assert "brief" not in schema["properties"]
-    assert {"story_summary", "attraction_mechanism", "production"} <= set(schema["$defs"]["CreativeDirection"]["required"])
+    assert {"production", "film_concept", "hook", "payoff"} <= set(schema["$defs"]["CreativeDirection"]["required"])
+    assert "story_summary" not in schema["$defs"]["CreativeDirection"]["properties"]
+    assert "memory_anchor" not in schema["$defs"]["FilmConcept"]["properties"]
     assert schema["$defs"]["ProductionPlan"]["properties"]["characters"]["maxItems"] == 6
 
 
@@ -140,8 +142,8 @@ def test_review_transport_uses_same_model_high_budget_original_image_and_persist
     service_contexts, expected_traces = {}, []
     load = runtime_skills.stage_skill_context
 
-    def capture(stage, mode=None):
-        loaded = load(stage, mode)
+    def capture(stage, mode=None, **kwargs):
+        loaded = load(stage, mode, **kwargs)
         service_contexts[stage] = deepcopy(loaded)
         return loaded
 
@@ -153,8 +155,9 @@ def test_review_transport_uses_same_model_high_budget_original_image_and_persist
         calls.append(stage)
         assert "ad_expression_skill" not in context
         shared = context["stage_skills"]["shared_references"]
-        assert {item["id"] for item in shared} == {"product-evidence", "ad-form-contract"}
-        assert len(shared) == 2
+        assert {item["id"] for item in shared} == {"product-evidence", "ad-form-contract", "ad-form-playbook-index"}
+        assert len(shared) == 3
+        assert not any(item["id"].startswith("ad-form-playbook-") and item["id"] != "ad-form-playbook-index" for item in shared)
         if stage == "strategy":
             assert context["orchestrator_skills"]["shared_references"] == []
         loaded_stages = ["orchestrator", stage] if stage == "strategy" else [stage]
@@ -166,7 +169,8 @@ def test_review_transport_uses_same_model_high_budget_original_image_and_persist
         assert payload["model"] == app.state.settings.planner_model
         if stage == "strategy":
             return chat_output({"kind": "directions", "message": "初稿", "brief": candidate.brief.model_dump(),
-                "directions": [d.model_dump() for d in candidate.directions]})
+                "directions": [d.model_dump() for d in candidate.directions],
+                "concept_pool": concept_pool_for(candidate.directions)})
         assert stage == "direction_review"
         assert payload["thinking"] == {"type": "enabled"}
         assert payload["reasoning_effort"] == "high"
@@ -178,7 +182,7 @@ def test_review_transport_uses_same_model_high_budget_original_image_and_persist
         assert len(payload["messages"][1]["content"]) == 2
         assert payload["messages"][1]["content"][1]["type"] == "image_url"
         raw = approved_direction_review(context["directions"])
-        raw["directions"][0]["label"] = "审后保留的观看方向"
+        raw["directions"][0]["story_summary"] = "窗光先勾出一条线，再看清整只瓶子，最后停在完整外观。"
         raw["summary"] = "保留事实与原场景，三个实际展开不同；未添加商品份量或功能承诺。"
         return chat_output(raw)
     monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: real_client(*args, transport=httpx.MockTransport(handle), **kwargs))
@@ -187,7 +191,9 @@ def test_review_transport_uses_same_model_high_budget_original_image_and_persist
         on_progress=progresses.append, on_skill_trace=traces.append))
     assert calls == ["strategy", "direction_review"]
     assert progresses == ["reviewing_directions"]
-    assert result["direction_candidates"]["directions"][0]["label"] == "审后保留的观看方向"
+    assert result["direction_candidates"]["directions"][0]["story_summary"] == "窗光先勾出一条线，再看清整只瓶子，最后停在完整外观。"
+    assert result["direction_candidates"]["directions"][0]["label"] == candidate.directions[0].label
+    assert result["direction_candidates"]["directions"][0]["big_idea"] == candidate.directions[0].big_idea
     assert result["direction_candidates"]["direction_review"]["ready"]
     assert any(trace["stage"] == "direction_review" for trace in traces)
     assert traces == expected_traces
@@ -195,8 +201,8 @@ def test_review_transport_uses_same_model_high_budget_original_image_and_persist
     shared_traces = [trace for trace in traces if trace.get("execution_kind") == "shared_reference"]
     assert {(trace["stage"], trace["id"]) for trace in shared_traces} == {
         (stage, identifier) for stage in ("strategy", "direction_review")
-        for identifier in ("product-evidence", "ad-form-contract")}
-    assert len(shared_traces) == 4
+        for identifier in ("product-evidence", "ad-form-contract", "ad-form-playbook-index")}
+    assert len(shared_traces) == 6
     assert "plan" not in result or result["plan"] is None
     # Persistence revalidates rule provenance without discarding the audit.
     job = post_turn(env, client_turn_id="store-reviewed", content="策划广告").json()["job"]
@@ -204,7 +210,8 @@ def test_review_transport_uses_same_model_high_budget_original_image_and_persist
     app.state.store.finish_decision(job["id"], result)
     saved = app.state.store.get_job(job["id"])["payload"]["direction_candidates"]
     assert saved == result["direction_candidates"]
-    assert app.state.store.pending_gate(pid)["options"][0]["label"] == "审后保留的观看方向"
+    assert app.state.store.pending_gate(pid)["options"][0]["story_summary"] == "窗光先勾出一条线，再看清整只瓶子，最后停在完整外观。"
+    assert app.state.store.pending_gate(pid)["options"][0]["label"] == candidate.directions[0].label
 
 
 def test_failed_review_stops_once_preserves_existing_assets_and_does_not_offer_unreviewed_prose(env, monkeypatch, isolated_skill_loader):
@@ -218,7 +225,8 @@ def test_failed_review_stops_once_preserves_existing_assets_and_does_not_offer_u
         calls.append(context["stage"])
         if context["stage"] == "strategy":
             return {"kind": "directions", "message": "未审初稿", "brief": candidate.brief.model_dump(),
-                "directions": [d.model_dump() for d in candidate.directions]}
+                "directions": [d.model_dump() for d in candidate.directions],
+                "concept_pool": concept_pool_for(candidate.directions)}
         assert context["stage"] == "direction_review"
         raw = approved_direction_review(context["directions"])
         raw["ready"] = False
@@ -228,15 +236,18 @@ def test_failed_review_stops_once_preserves_existing_assets_and_does_not_offer_u
     monkeypatch.setattr(Gateway, "_planner_json", planned)
     job = post_turn(env, client_turn_id="rejected-review", content="重新给我三个创意方向").json()["job"]
     result = asyncio.run(Pipeline(app.state.store, Gateway(app.state.settings), app.state.settings).execute(job["id"]))
-    assert result["status"] == "failed"
-    assert "创意方向尚未通过内容检查" in result["error"]
+    assert result["status"] == "awaiting_input"
     assert calls == ["strategy", "direction_review"]
+    assert result["payload"]["direction_candidates"]["directions"]
     detail = app.state.store.project_detail(pid)
     assert [a["id"] for a in detail["assets"]] == [asset["id"]]
     assert detail["project"]["plan"] is None
-    assert len(detail["gates"]) == 1 and detail["gates"][0]["options"] == gate["options"]
+    pending = app.state.store.pending_gate(pid)
+    assert pending["id"] != gate["id"]
+    assert pending["options"]
+    assert "动作后的商品数量" not in json.dumps(pending, ensure_ascii=False)
     assert app.state.store.get_job(source["id"])["payload"]["direction_candidates"] == before_source
-    assert "direction_candidates" not in app.state.store.get_job(job["id"])["payload"]
+    assert app.state.store.get_job(job["id"])["payload"]["direction_candidates"]["directions"]
     diagnostics = list((app.state.settings.data_root / "diagnostics").glob("*.json"))
     assert len(diagnostics) == 1
     assert json.loads(diagnostics[0].read_text())["stage"] == "direction_review"
@@ -251,7 +262,8 @@ def test_cancellation_callback_prevents_second_request(env, monkeypatch, isolate
     async def planned(self, system, context, originals, max_tokens=7000):
         calls.append(context["stage"])
         return {"kind": "directions", "message": "初稿", "brief": candidate.brief.model_dump(),
-            "directions": [d.model_dump() for d in candidate.directions]}
+            "directions": [d.model_dump() for d in candidate.directions],
+            "concept_pool": concept_pool_for(candidate.directions)}
     def canceled(phase):
         assert phase == "reviewing_directions"
         raise StaleRevision()

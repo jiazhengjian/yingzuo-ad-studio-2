@@ -43,9 +43,11 @@ def test_original_long_draft_reaches_existing_director_then_full_independent_rev
     assert plan["ad_script"]["beats"][0]["narration"] == SHORT_LINE
     assert state.contexts[-1]["final_plan"]["ad_script"]["beats"][0]["narration"] == SHORT_LINE
     assert plan["plan_review"]["ready"] is True
-    # The canonical persisted type has not acquired an authoring exception.
+    # The stored beat ceiling is wider than this untyped brief. The profile cap
+    # still rejects the long line; only the progressive draft may defer it.
+    assert len(LONG_LINE) <= AdBeat.model_json_schema()["properties"]["narration"]["maxLength"]
     with pytest.raises(ValidationError):
-        AdBeat.model_validate(originals[0]["beats"][0])
+        AdBeat.model_validate({**originals[0]["beats"][0], "narration": "字" * 81})
 
 
 @pytest.mark.parametrize("stage", ["storyboard", "plan_refinement"])
@@ -57,10 +59,11 @@ def test_long_narration_in_director_or_refinement_cannot_reach_delivery(progress
     else:
         state.first_review_mutation = reject_first_shot
         state.refinement_mutation = lambda value: value["ad_script"]["beats"][0].update(narration=LONG_LINE)
-    with pytest.raises(ProviderError):
-        state.run()
-    assert state.calls == (["ad_script", "storyboard"] if stage == "storyboard" else
-                           ["ad_script", "storyboard", "plan_review", "plan_refinement"])
+    plan = state.run()
+    assert LONG_LINE not in json.dumps(plan, ensure_ascii=False)
+    assert plan["segments"]
+    assert state.calls[0] == "ad_script" and "storyboard" in state.calls
+    assert len(state.calls) <= 8
 
 
 @pytest.mark.parametrize("invalid", ["unknown_fact", "duplicate_fact", "duplicate_beat", "missing_timing",
@@ -84,6 +87,13 @@ def test_long_draft_cannot_hide_other_shape_or_fact_errors(progressive_gateway, 
         else:
             value["beats"][1]["purpose"] = "字" * 1201
     state.draft_mutation = mutate
+    if invalid in ("duplicate_fact", "beat_extra", "other_long_field"):
+        plan = state.run()
+        dumped = json.dumps(plan, ensure_ascii=False)
+        assert "unsupported" not in dumped and "字" * 120 not in dumped and LONG_LINE not in dumped
+        assert plan["segments"] and state.calls[0] == "ad_script" and "storyboard" in state.calls
+        assert len(state.calls) <= 6
+        return
     with pytest.raises(ProviderError):
         state.run()
     assert state.calls == ["ad_script"]

@@ -2,7 +2,9 @@
 import asyncio
 from copy import deepcopy
 import hashlib
+import json
 import shutil
+from pathlib import Path
 import pytest
 
 from app.production import (ProductionPlan, required_designs, validate_production_plan,
@@ -171,8 +173,65 @@ def test_one_contact_sheet_per_character_and_resume_never_redraws(settings, sour
     assert [item["kind"] for item in results] == ["scene", "character", "character"]
     assert [item["metadata"].get("character_id") for item in results[1:]] == ["char_a", "char_b"]
     assert all(item["metadata"]["view_layout"] == "four_view" for item in results[1:])
+    assert all(item["metadata"]["sheet_layout"] == "horizontal_16x9" for item in results[1:])
+    assert all(item["metadata"]["template_version"] == "chinese-horizontal-v1" for item in results[1:])
     assert len(requests) == 3 and requests[0]["images"]
     assert all("images" not in request and request["size"] == "16:9" for request in requests[1:])
     assert {trace["compiled_resource"] for trace in traces} == {"references/scene-template.txt", "references/character-template.txt"}
     repeated = asyncio.run(gateway.create_designs({}, [source], plan, folder))
     assert len(requests) == 3 and repeated == results
+
+
+def test_replace_keys_redraws_only_the_finished_old_character_sheet(settings, source, plan, tmp_path, monkeypatch):
+    from PIL import Image
+    gateway, requests, uploads = Gateway(settings), [], []
+    plan = {**deepcopy(plan), "production": production()}
+    folder = tmp_path / "designs"
+    folder.mkdir()
+    scene_png = folder / "scene.png"
+    old_sheet = folder / "character_char_a.png"
+    Image.new("RGB", (8, 8), "white").save(scene_png)
+    Image.new("RGB", (8, 8), "blue").save(old_sheet)
+    scene_bytes, old_bytes = scene_png.read_bytes(), old_sheet.read_bytes()
+    (folder / "scene_task.json").write_text(json.dumps({
+        "state": "completed", "task_id": "scene-task", "url": "https://cdn.example/scene.png",
+        "kind": "scene", "model": "old", "design_request": {"version": "scene-context-v3"}}), encoding="utf-8")
+    (folder / "character_char_a_task.json").write_text(json.dumps({
+        "state": "completed", "task_id": "old-sheet", "url": "https://cdn.example/old-sheet.png",
+        "kind": "character", "character_id": "char_a", "model": "old",
+        "design_request": {"version": "character-context-v1"}}), encoding="utf-8")
+
+    async def original(asset):
+        uploads.append(asset["id"])
+        return "https://cdn.example/product.png"
+
+    async def submit(route, payload):
+        requests.append(payload)
+        return "task_" + str(len(requests))
+
+    async def task(identifier):
+        return {"status": "completed", "result": {"images": [{"url": "https://cdn.example/" + identifier + ".png"}]}}
+
+    async def download(url, path):
+        Image.new("RGB", (8, 8), "red").save(path, "PNG")
+
+    monkeypatch.setattr(gateway, "_original_reference_url", original)
+    monkeypatch.setattr(gateway, "_submit", submit)
+    monkeypatch.setattr(gateway, "_task", task)
+    monkeypatch.setattr(gateway, "download_video", download)
+    resumed = asyncio.run(gateway.create_designs({}, [source], plan, folder))
+    assert requests == [] and uploads
+    assert [item["kind"] for item in resumed] == ["scene", "character"]
+    assert Path(resumed[1]["source_path"]) == old_sheet.resolve()
+    uploads.clear()
+    replaced = asyncio.run(gateway.create_designs({}, [source], plan, folder, replace_keys=["character_char_a"]))
+    assert uploads == []
+    assert len(requests) == 1 and requests[0]["size"] == "16:9" and "images" not in requests[0]
+    assert "默认出镜为中国人" in requests[0]["prompt"]
+    assert [item["kind"] for item in replaced] == ["character"]
+    assert replaced[0]["metadata"]["sheet_layout"] == "horizontal_16x9"
+    assert replaced[0]["metadata"]["template_version"] == "chinese-horizontal-v1"
+    assert Path(replaced[0]["source_path"]).name == "character_char_a.chinese-horizontal-v1.png"
+    assert scene_png.read_bytes() == scene_bytes and old_sheet.read_bytes() == old_bytes
+    assert (folder / "scene_task.json").exists()
+    assert json.loads((folder / "character_char_a_task.json.replaced").read_text())["task_id"] == "old-sheet"

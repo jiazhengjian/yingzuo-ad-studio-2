@@ -2,6 +2,7 @@
 import asyncio
 from copy import deepcopy
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,9 +11,10 @@ import pytest
 
 from app.db import Store
 from app.pipeline import Pipeline
+from app.providers import gateway as gateway_module
 from app.providers.gateway import Gateway, ProviderError
 from test_conversation_api import env, post_turn
-from test_direction_selection import candidates_for, approved_direction_review, isolated_skill_loader
+from test_direction_selection import candidates_for, approved_direction_review, concept_pool_for, isolated_skill_loader
 from test_providers import chat_output, request_context
 
 
@@ -34,6 +36,8 @@ def repair_case(env, monkeypatch, isolated_skill_loader):
     settings.planner_retry_delay_seconds = 0
     # A new project and the same generated eight-pixel fixture, never user data.
     pid = client.post("/api/projects", json={"brief": "我想为吹风机做一条商品广告", "ad_form": "auto"}).json()["id"]
+    with app.state.store._connection(True) as connection:
+        connection.execute("UPDATE projects SET cta_target='ai_decide' WHERE id=?", (pid,))
     source_path = app.state.store.get_asset(original["id"])["path"]
     asset = client.post(f"/api/projects/{pid}/assets", files={
         "file": ("test-appliance.png", Path(source_path).read_bytes(), "image/png")}).json()
@@ -41,19 +45,26 @@ def repair_case(env, monkeypatch, isolated_skill_loader):
     candidate = candidates_for(local_env)
     valid = {"kind": "directions", "message": "请比较三个外观故事", "brief": candidate.brief.model_dump(),
         "directions": [direction.model_dump() for direction in candidate.directions],
+        "concept_pool": concept_pool_for(candidate.directions),
         "recommended_direction_id": candidate.recommended_direction_id}
     valid = json.loads(json.dumps(valid, ensure_ascii=False).replace("瓶身", "机身").replace("瓶子", "吹风机"))
     valid["brief"]["category"] = "appliance"
     bad = deepcopy(valid)
-    bad["directions"][2].update(rule_id="sensory_detail", label="UNSHOWN_INVALID_DIRECTION")
+    # sensory_detail is not an appliance rule. Every sketch is then unusable,
+    # so the offer still fails after invalid sketches are dropped.
+    for sketch in bad["concept_pool"]:
+        sketch["rule_id"] = "sensory_detail"
+    bad["directions"][2]["label"] = "UNSHOWN_INVALID_DIRECTION"
     state = SimpleNamespace(client=client, app=app, pid=pid, asset=asset, store=app.state.store,
         settings=settings, valid=valid, first=bad, corrected=deepcopy(valid), contexts=[], bodies=[],
-        interrupt_stage=None, interrupt_always=False, interrupted=False, stop_before_repair=None)
+        urls=[], reads=[], interrupt_stage=None, interrupt_always=False, interrupted=False,
+        stop_before_repair=None)
     job = post_turn(local_env, content="仅按可见外观策划，受众和情境允许保守设定，不猜测功能。").json()["job"]
     state.job = job
     state.before = state.store.project_detail(pid)
 
     def respond(request):
+        state.urls.append(str(request.url))
         _, context = request_context(request)
         state.contexts.append(deepcopy(context))
         state.bodies.append(json.loads(request.content))
@@ -74,8 +85,13 @@ def repair_case(env, monkeypatch, isolated_skill_loader):
         return chat_output(approved_direction_review(context["directions"]))
 
     original_client = httpx.AsyncClient
-    monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs:
-        original_client(*args, transport=httpx.MockTransport(respond), **kwargs))
+
+    def client_factory(*args, **kwargs):
+        timeout = kwargs.get("timeout")
+        state.reads.append(timeout.as_dict()["read"] if hasattr(timeout, "as_dict") else None)
+        return original_client(*args, transport=httpx.MockTransport(respond), **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client_factory)
     state.execute = lambda store=None: asyncio.run(
         Pipeline(store or state.store, Gateway(settings), settings).execute(job["id"]))
     state.stages = lambda: [context["stage"] for context in state.contexts]
@@ -92,6 +108,72 @@ def assert_no_plan_or_media(case, result):
     assert "UNSHOWN_INVALID_DIRECTION" not in case.client.get(f"/api/projects/{case.pid}").text
 
 
+def planner_recoveries(caplog):
+    found = []
+    for record in caplog.records:
+        message = record.getMessage()
+        if message.startswith("Planner request metrics:"):
+            found.append(json.loads(message.split(": ", 1)[1]).get("recovery"))
+    return found
+
+
+def test_unusable_strategy_offer_is_retried_once_inside_the_same_budget(repair_case, caplog):
+    case = repair_case
+    with caplog.at_level(logging.INFO, logger="uvicorn.error.planner"):
+        result = case.execute()
+    assert result["status"] == "awaiting_input", result.get("error")
+    assert case.stages() == ["strategy", "strategy", "direction_review"]
+    assert case.contexts[1]["task_kind"] == "strategy_response_repair"
+    assert case.contexts[1]["previous_response"] == case.first
+    assert case.contexts[1]["validation_feedback"]
+    assert planner_recoveries(caplog).count("strategy_retry") == 1
+    # The extra call stays inside the original wait; the review is not capped.
+    assert case.reads[0] == 300
+    assert case.reads[1] < case.reads[0]
+    assert case.reads[2] == 300
+    assert_no_plan_or_media(case, result)
+
+
+def test_short_remainder_sends_the_single_retry_to_the_fallback_model(repair_case, monkeypatch, caplog):
+    monkeypatch.setattr(gateway_module, "_NONSTREAM_RETRY_FLOOR_SECONDS", 10**9)
+    case = repair_case
+    case.settings.planner_provider = "tudou"
+    case.settings.planner_model = "gpt-6-sol"
+    case.settings.planner_request_deadline_seconds = 45
+    case.settings.planner_fallback_provider = "deepseek"
+    case.settings.planner_fallback_model = "deepseek-flash"
+    case.settings.planner_fallback_on = ("timeout",)
+    with caplog.at_level(logging.INFO, logger="uvicorn.error.planner"):
+        result = case.execute()
+    assert result["status"] == "awaiting_input", result.get("error")
+    assert case.stages() == ["strategy", "strategy", "direction_review"]
+    assert "ai-tudou.net" in case.urls[0] and "api.deepseek.com" in case.urls[1]
+    assert sum("api.deepseek.com" in url for url in case.urls) == 1
+    assert case.bodies[1]["model"] == "deepseek-flash"
+    assert case.contexts[1]["task_kind"] == "strategy_response_repair"
+    assert case.contexts[1]["previous_response"] == case.first
+    assert case.contexts[1]["validation_feedback"]
+    assert planner_recoveries(caplog).count("fallback") == 1
+    assert case.reads[0] == 45 and case.reads[1] < case.reads[0]
+    assert_no_plan_or_media(case, result)
+
+
+def test_exhausted_budget_without_fallback_stops_after_the_first_strategy_call(repair_case, monkeypatch):
+    monkeypatch.setattr(gateway_module, "_NONSTREAM_RETRY_FLOOR_SECONDS", 10**9)
+    case = repair_case
+    case.settings.planner_request_deadline_seconds = 45
+    result = case.execute()
+    assert result["status"] == "failed"
+    assert case.stages() == ["strategy"]
+    assert len(case.urls) == 1
+    assert result["progress"]["retryable"] is True
+    assert result["progress"]["retry_action"] == "retry_planning"
+    assert "重新尝试" not in (result.get("error") or "")
+    detail = case.store.project_detail(case.pid)
+    assert any("外观" in message["content"] for message in detail["messages"])
+    assert_no_plan_or_media(case, result)
+
+
 def parsed_request(body):
     # The checkpoint canonicalizes object keys, so its replay may serialize the
     # previous response in a different key order without changing any input.
@@ -106,6 +188,17 @@ def test_invalid_appliance_response_can_be_corrected_but_still_requires_directio
     if first_error == "schema":
         case.first = deepcopy(case.valid)
         case.first["directions"][2]["unexpected_field"] = "not part of direction schema"
+        result = case.execute()
+        assert result["status"] == "awaiting_input", result.get("error")
+        assert case.stages() == ["strategy", "direction_review"]
+        assert all(context.get("task_kind") != "strategy_response_repair" for context in case.contexts)
+        saved = result["payload"]["direction_candidates"]
+        assert "unexpected_field" not in json.dumps(saved["directions"], ensure_ascii=False)
+        assert saved["direction_review"]["ready"] is True
+        assert saved["brief"]["category"] == "appliance"
+        assert case.store.pending_gate(case.pid)["kind"] == "direction"
+        assert_no_plan_or_media(case, result)
+        return
     result = case.execute()
     assert result["status"] == "awaiting_input", result.get("error")
     assert case.stages() == ["strategy", "strategy", "direction_review"]
@@ -167,6 +260,9 @@ def test_second_invalid_response_stops_without_saving_offer_and_revalidates_sour
         case.corrected["brief"]["facts"][0]["source_id"] = "foreign-image-not-uploaded"
     else:
         case.corrected["directions"][2]["rule_id"] = "operation_walkthrough"
+        for sketch in case.corrected["concept_pool"]:
+            if sketch["id"] == case.corrected["directions"][2]["id"]:
+                sketch["rule_id"] = "operation_walkthrough"
     result = case.execute()
     assert result["status"] == "failed"
     assert case.stages() == ["strategy", "strategy"]

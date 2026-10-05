@@ -72,18 +72,27 @@ def test_execution_return_leaves_no_extra_final_av_revision(capacity_gateway, fa
     assert "refining_storyboard" not in capacity_gateway.phases
 
 
-@pytest.mark.parametrize("invalid", ["unknown_fact", "missing_selected", "missing_timing", "root_identity"])
+@pytest.mark.parametrize("invalid", ["unknown_fact", "missing_selected", "missing_timing"])
 def test_execution_failure_cannot_bypass_script_authority_guards(capacity_gateway, invalid):
     def mutate(script):
         if invalid == "unknown_fact": script["beats"][0]["evidence_ids"] = ["invented"]
         elif invalid == "missing_selected":
             for beat in script["beats"]: beat["evidence_ids"] = []
-        elif invalid == "missing_timing": script["beats"][0].pop("timing")
-        else: script["production"] = {"speech_mode": "none"}
+        else: script["beats"][0].pop("timing")
     capacity_gateway.first_review_mutation = mutate
     capacity_gateway.first_review_result_mutation = fail_action_capacity
     with pytest.raises(ProviderError): capacity_gateway.run()
     assert capacity_gateway.calls == ["ad_script", "script_review"]
+
+
+def test_extra_production_does_not_skip_an_action_capacity_failure(capacity_gateway):
+    capacity_gateway.first_review_mutation = lambda script: script.update(production={"speech_mode": "none"})
+    capacity_gateway.first_review_result_mutation = fail_action_capacity
+    result = capacity_gateway.run()
+    assert capacity_gateway.calls.count("script_review") == 2
+    selected = next(d for d in capacity_gateway.strategy.directions
+                    if d.id == capacity_gateway.strategy.selected_direction_id)
+    assert result["production"] == selected.production.model_dump()
 
 
 @pytest.mark.parametrize("invalid", ["state_failed", "content_failed", "fake_bool", "inconsistent_ready", "missing_execution"])

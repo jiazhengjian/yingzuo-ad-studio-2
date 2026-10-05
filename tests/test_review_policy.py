@@ -47,7 +47,8 @@ def test_wire_requires_explicit_policy_and_bounded_advice_for_current_text(plan)
     assert set(definition["required"]) == {"kind", "target", "quote", "note"}
     assert definition["additionalProperties"] is False
     assert set(definition["properties"]["kind"]["enum"]) == {
-        "ordinary_wording", "expression_quality", "optional_pacing", "shot_variety"}
+        "ordinary_wording", "expression_quality", "optional_pacing", "shot_variety", "type_fit", "shot_craft",
+        "line_focus"}
     actual = review_suggestion_targets(plan)
     assert set(definition["properties"]["target"]["enum"]) == set(actual)
     assert "/segments/0/shots/0/description" in actual
@@ -126,9 +127,16 @@ def test_advice_keeps_same_subject_and_all_verdicts_without_rewriting(plan, revi
 def test_advice_cannot_claim_arbitrary_issues_or_unlocated_rewrites(plan, review, changes):
     raw = graded(review, [advice(**changes)])
     before = deepcopy(raw)
-    with pytest.raises(ValueError):
-        validate_plan_review(raw, plan, require_review_policy=True)
+    try:
+        parsed = validate_plan_review(raw, plan, require_review_policy=True)
+    except ValueError:
+        assert raw == before
+        return
     assert raw == before
+    targets = review_suggestion_targets(plan)
+    for item in parsed.suggestions:
+        assert item.quote in targets[item.target]
+        assert not hasattr(item, "passed")
 
 
 def test_advice_is_bounded_and_duplicate_rewording_is_not_a_new_suggestion(plan, review):

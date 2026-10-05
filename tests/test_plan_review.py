@@ -210,6 +210,17 @@ def test_partial_binding_is_rejected_instead_of_derived_from_the_current_plan(pl
         validate_plan_review(bound, plan)
 
 
+def test_incomplete_review_is_dropped_and_a_real_mismatch_still_raises(plan, review):
+    value = plan.model_dump()
+    value["plan_review"] = {"ready": True}
+    assert Plan.model_validate(value).plan_review is None
+    value.pop("plan_review")
+    value["plan_review"] = validate_plan_review(review, value).model_dump()
+    value["segments"][0]["shots"][0]["description"] = "只拍商品底部，没有原计划的按键操作。"
+    with pytest.raises(ValueError, match="当前最终方案"):
+        Plan.model_validate(value)
+
+
 def test_reference_additions_do_not_exempt_changed_content_from_reapproval(plan, review):
     value = plan.model_dump()
     value["plan_review"] = validate_plan_review(review, value).model_dump()
@@ -393,6 +404,52 @@ def test_false_verdict_with_all_children_passing_is_rejected_never_upgraded(plan
     assert lowered["ready"] is False
     with pytest.raises(ValueError):
         validate_plan_review(lowered, plan)
+
+
+def test_server_stamps_do_not_invalidate_a_saved_review(plan, review):
+    from test_plan_segment_normalization import _presenter_plan, _ready_review
+    value = _presenter_plan()
+    for segment in value["segments"]:
+        segment.pop("speech_characters_per_tenth", None)
+    bound = validate_plan_review(_ready_review(value), value).model_dump()
+    value["plan_review"] = deepcopy(bound)
+    value["segments"][0]["speech_characters_per_tenth"] = 48
+    value["segments"][0]["reference_roles"] = [{"asset_id": "photo", "role": "product"}]
+    parsed = Plan.model_validate(value)
+    assert parsed.plan_review["reviewed_plan_sha256"] == bound["reviewed_plan_sha256"]
+    assert parsed.segments[0].speech_characters_per_tenth == 48
+    assert plan.segments and review["ready"]
+
+
+def test_legacy_fingerprint_that_included_the_speech_rate_is_rebound(plan, review):
+    from app.plan_review import _fingerprint_validated_plan, _validated_review_subject
+    from test_plan_segment_normalization import _presenter_plan, _ready_review
+    value = _presenter_plan()
+    bound = validate_plan_review(_ready_review(value), value).model_dump()
+    subject = _validated_review_subject(value)
+    legacy = _fingerprint_validated_plan(subject, bound["reviewed_reference_asset_ids"], include_server_fields=True)
+    assert legacy != bound["reviewed_plan_sha256"]
+    bound["reviewed_plan_sha256"] = legacy
+    value["plan_review"] = bound
+    parsed = Plan.model_validate(value)
+    assert parsed.plan_review["reviewed_plan_sha256"] != legacy
+    assert parsed.plan_review["reviewed_plan_sha256"] == validate_plan_review(
+        _ready_review(value), value).reviewed_plan_sha256
+    assert plan.segments and review["ready"]
+
+
+def test_a_script_change_still_rejects_a_review_when_the_speech_rate_is_stamped(plan, review):
+    value = plan.model_dump()
+    value["segments"][0]["speech_characters_per_tenth"] = 48
+    bound = validate_plan_review(review, value).model_dump()
+    words = "三档风速按需选。"
+    value["script"] = words + value["segments"][1]["narration"]
+    segment = value["segments"][0]
+    segment["narration"] = segment["speech_spans"][0]["text"] = words
+    segment["speech_spans"][0]["anchors"][0]["text"] = words
+    value["plan_review"] = bound
+    with pytest.raises(ValueError, match="当前最终方案"):
+        Plan.model_validate(value)
 
 
 def test_pydantic_instances_are_revalidated_after_mutation(plan, review):

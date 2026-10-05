@@ -56,7 +56,8 @@ def _allocated_durations(groups, needs, total):
     return durations
 
 
-def generation_groups(script, duration_seconds, generation_strategy=CONTINUITY_GENERATION):
+def generation_groups(script, duration_seconds, generation_strategy=CONTINUITY_GENERATION,
+                      characters_per_tenth=29):
     """Choose whole-beat groups, prefer few submissions and semantic boundaries.
 
     A continuous action or explicit shared group cannot be split. For longer
@@ -71,7 +72,7 @@ def generation_groups(script, duration_seconds, generation_strategy=CONTINUITY_G
     beats = script["beats"] if isinstance(script, dict) else script.beats
     if not beats:
         raise ValueError("连续性分组需要完整的广告内容节拍")
-    needs = [beat_minimum_ticks(beat) for beat in beats]
+    needs = [beat_minimum_ticks(beat, characters_per_tenth) for beat in beats]
     if duration_seconds <= 30:
         if sum(needs) > duration_seconds * 10 or len(beats) > 12:
             raise ValueError("完整台词无法为对应画面留出时间，请减少内容节拍或重新策划")

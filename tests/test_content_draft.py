@@ -48,7 +48,8 @@ def test_content_draft_keeps_authored_data_without_invented_rationale_or_timing(
     checked = validate_content_draft(raw, strategy)
     assert checked.model_dump() == before == raw
     schema = content_draft_schema(strategy)
-    assert set(schema["properties"]) == {"beats"}
+    assert set(schema["properties"]) == {"beats", "key_line_options"}
+    assert schema["required"] == ["beats"]
     beat = schema["$defs"]["ContentBeat"]
     assert set(beat["required"]) == {"id", "narration", "visual_role", "evidence_ids"}
     assert beat["properties"]["narration"]["maxLength"] == 29
@@ -93,7 +94,8 @@ def test_enabled_content_draft_is_only_a_first_stage_before_complete_plan_review
     assert state.calls == ["ad_script", "storyboard", "plan_review"]
     content, director, review = state.contexts
     assert content["draft_format"] == director["draft_format"] == "content_only"
-    assert set(content["schema"]["properties"]) == {"beats"}
+    assert set(content["schema"]["properties"]) == {"beats", "key_line_options"}
+    assert content["schema"]["required"] == ["beats"]
     assert not {"runtime_skill", "creative_strategy", "ad_expression_skill", "generation_strategy"}.intersection(content)
     assert not {"draft_capacity", "draft_capacity_basis"}.intersection(director)
     assert ContentDraft.model_validate(director["draft_script"]).model_dump() == director["draft_script"]
@@ -184,6 +186,14 @@ def test_lean_draft_cannot_bypass_final_director_guards(content_gateway, source,
             for shot in data["shots"]:
                 shot["evidence_ids"] = []
         state.first_director_mutation = remove_evidence
+    if guard == "selected_evidence":
+        plan = state.run()
+        used = {fact_id for beat in plan["ad_script"]["beats"] for fact_id in beat["evidence_ids"]}
+        assert "appearance" in used
+        assert plan["segments"]
+        assert state.calls[0:2] == ["ad_script", "storyboard"]
+        assert len(state.calls) <= 6
+        return
     with pytest.raises(ProviderError):
         state.run()
     assert state.calls == ["ad_script", "storyboard"]

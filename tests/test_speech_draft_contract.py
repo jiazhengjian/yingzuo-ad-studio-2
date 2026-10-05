@@ -35,8 +35,10 @@ def test_copy_brief_preserves_sources_and_complete_director_handoff(source):
     assert locked[0] in context["task"]
     selected = next(d for d in strategy.directions if d.id == strategy.selected_direction_id)
     assert selected.film_concept.sound_role in context["task"]
-    assert set(context["schema"]["properties"]) == {"narration"}
-    assert context["schema"]["properties"]["narration"]["maxLength"] == 58
+    assert set(context["schema"]["properties"]) == {"narration", "hook_options", "closing_options"}
+    assert context["schema"]["required"] == ["narration"]
+    assert context["schema"]["properties"]["narration"]["maxLength"] == 60
+    assert context["schema"]["properties"]["hook_options"]["maxItems"] == 2
     assert "beats" not in context and "draft_capacity" not in context
     context["source_context"]["conversation"][0]["content"] = "mutated output"
     assert conversation == before

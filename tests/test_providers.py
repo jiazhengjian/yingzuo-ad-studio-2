@@ -28,7 +28,8 @@ SECRET = "TEST_ONLY_SECRET_DO_NOT_EXPOSE"
 def settings():
     return SimpleNamespace(tudou_api_key=SECRET, deepseek_api_key=SECRET,
                            planner_model="deepseek-flash", image_model="gpt-image-2-all", video_model="wan3.0",
-                           poll_seconds=0, provider_timeout_seconds=2, tts_voice="Tingting", ffmpeg_path="not-called")
+                           poll_seconds=0, provider_timeout_seconds=2, tts_voice="Tingting", ffmpeg_path="not-called",
+                           submission_retry_delays=())
 
 
 @pytest.fixture
@@ -215,6 +216,21 @@ def test_transport_failure_is_classified_and_exception_chain_redacted(settings, 
         asyncio.run(Gateway(settings)._submit("/v1/videos/generations", {}))
     assert exc.value.uncertain is uncertain
     assert_redacted(exc.value)
+
+
+def test_deterministic_400_is_not_sent_again(settings, install_transport):
+    from app.providers.gateway import PlannerInvalidResponse
+    seen = []
+
+    def handle(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(400, json={"error": {"message": "prompt must contain json"}})
+
+    install_transport(handle)
+    with pytest.raises(PlannerInvalidResponse, match="未接受本次请求"):
+        asyncio.run(Gateway(settings)._planner_json("请只输出 JSON 对象。", {"stage": "ad_script"}, []))
+    assert len(seen) == 1
+    assert seen[0]["response_format"] == {"type": "json_object"}
 
 
 def test_visual_json_plan_uses_stage_specific_reasoning(settings, install_transport, source, plan, strategy_stage):
@@ -580,8 +596,8 @@ def test_wan_uses_two_ordered_elements_and_complete_shots(settings, install_tran
         assert re.search(r'0(?:\.0)?–4(?:\.0)?秒：画面：商品全景；该时段唯一台词："看看商品细节。"', data["prompt"])
         assert re.search(r"4(?:\.0)?–10(?:\.0)?秒：画面：细节特写；该时段唯一台词：不说话", data["prompt"])
         assert "不要朗读秒数、镜头说明、运镜" in data["prompt"] and "不另行重复朗读" in data["prompt"]
-        assert "自然亲切的成年女性普通话画外音" in data["prompt"] and "不得吞字、增改台词" in data["prompt"]
-        assert "看看商品细节。" in data["prompt"] and "成片将使用统一中文画外音" not in data["prompt"]
+        assert "自然亲切的成年女性普通话画外旁白" in data["prompt"] and "不得吞字、增改台词" in data["prompt"]
+        assert "看看商品细节。" in data["prompt"] and "本版使用统一中文画外旁白" not in data["prompt"]
         assert not {"generate_audio", "audio", "multi_shot"} & data.keys()
         return httpx.Response(200, json={"data": {"task_id": "task_video"}})
     install_transport(handle)
@@ -733,7 +749,8 @@ def test_ad_script_review_failure_stops_before_storyboard_with_bounded_transport
     def handle(request):
         _, context = request_context(request)
         calls.append(context["stage"])
-        assert context["stage"] != "storyboard"
+        if failure != "extra_fields":
+            assert context["stage"] != "storyboard"
         if context["stage"] != "script_review":
             return chat_output(outputs[context["stage"]])
         if failure == "transport":
@@ -750,10 +767,18 @@ def test_ad_script_review_failure_stops_before_storyboard_with_bounded_transport
         if failure == "failed_check": review["checks"][0]["passed"] = False
         return chat_output(review)
     install_transport(handle)
+    if failure == "extra_fields":
+        result = asyncio.run(Gateway(settings).decide({"brief": "蓝瓶商品"}, [source], [], [], None))
+        assert result["kind"] == "plan"
+        assert SECRET not in json.dumps(result, ensure_ascii=False)
+        assert calls == ["strategy", "ad_script", "script_review", "storyboard", "alignment_review"]
+        assert plan == before
+        return
     with pytest.raises(ProviderError) as exc:
         asyncio.run(Gateway(settings).decide({"brief": "蓝瓶商品"}, [source], [], [], None))
     assert_redacted(exc.value)
-    assert plan == before and calls == ["strategy", "ad_script"] + ["script_review"] * (3 if failure in ("transport", "http") else 1)
+    review_calls = 3 if failure in ("transport", "http") else 2 if failure == "invalid_json" else 1
+    assert plan == before and calls == ["strategy", "ad_script"] + ["script_review"] * review_calls
 
 
 @pytest.mark.parametrize("failure", ["expression_rejected", "span_rejected", "missing_span", "unknown_span", "inconsistent_verdict"])
@@ -938,7 +963,7 @@ def test_short_tail_submits_supported_ten_seconds_with_hold_instruction(settings
         assert payload["duration"] == 10
         assert "前5秒完成本段全部主体动作与内容" in payload["prompt"]
         assert "第5–10秒保持结尾画面" in payload["prompt"] and "合成只使用前5秒" in payload["prompt"]
-        assert "不生成屏幕文字、字幕、标价、CTA" in payload["prompt"]
+        assert "不生成屏幕文字、字幕、标价、文字按钮" in payload["prompt"]
         return httpx.Response(200, json={"data": {"id": "short_tail"}})
     install_transport(handle)
     assert asyncio.run(Gateway(settings).submit_video(segment, assets, "offline"))["task_id"] == "short_tail"
@@ -964,7 +989,8 @@ def test_schema_failure_has_safe_public_message_without_rewriting(settings, inst
     message = str(exc.value)
     assert "未通过结构校验" in message
     assert exc.value.error_code == "planning_invalid_response"
-    assert exc.value.retryable is False
+    assert exc.value.retryable is True
+    assert exc.value.retry_action == "retry_planning"
     assert "string_too_long" not in message and "segments.0" not in message
     assert "input" not in message and "ctx" not in message
     assert_redacted(exc.value)

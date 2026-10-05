@@ -211,14 +211,15 @@ def test_actual_request_and_checkpoint_share_medium_profile_without_replaying_hi
     checkpoint = deepcopy(checkpoints[-1])
     prior_signatures = deepcopy(signatures)
     monkeypatch.setattr("app.providers.gateway.transport_options", transport_options)
+    count = len(expected_stages)
     if initial_profile == "historical_high":
-        with pytest.raises(ProviderError, match="变化"):
-            run(checkpoint)
+        resumed = run(checkpoint)
+        assert resumed["kind"] == "plan" and resumed["plan"]["plan_review"]["ready"] is True
+        assert [stage for stage, _ in requests[count:]][0] == target_stage
     else:
         assert run(checkpoint) == result
+        assert len(requests) == count
     # Every unchanged earlier stage replays, including an earlier rejected review.
-    count = len(expected_stages)
-    assert len(requests) == count
     assert signatures[count:count + target_index] == prior_signatures[:target_index]
     replayed_target = signatures[count + target_index]
     assert replayed_target[0] == target_stage
@@ -285,12 +286,13 @@ def test_storyboard_effort_matches_wire_and_replay_identity(
     # The draft can replay across a board-only effort change. The board must
     # reject the old response before sending any new paid request.
     signatures.clear()
-    with pytest.raises(ProviderError, match="变化"):
-        run("medium" if effort == "high" else "high", checkpoint)
-    assert [stage for stage, _ in signatures] == ["ad_script", "storyboard"]
+    before = len(requests)
+    resumed = run("medium" if effort == "high" else "high", checkpoint)
+    assert resumed["kind"] == "plan" and resumed["plan"]["plan_review"]["ready"] is True
+    assert [stage for stage, _ in signatures] == ["ad_script", "storyboard", "plan_review"]
     assert fingerprint(signatures[0][1]) == checkpoint["entries"][0]["input_hash"]
     assert fingerprint(signatures[1][1]) != checkpoint["entries"][1]["input_hash"]
-    assert len(requests) == 3
+    assert [context["stage"] for context, _ in requests[before:]] == ["storyboard", "plan_review"]
 
 
 def test_storyboard_effort_does_not_change_legacy_wire_profile(settings, transport):
@@ -376,7 +378,10 @@ def isolated_environment(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "ROOT", tmp_path)
     for key in ("PLANNER_PROVIDER", "PLANNER_MODEL", "DEEPSEEK_MODEL", "DEEPSEEK_API_KEY",
                 "TUDOU_API_KEY", "AD_DATA_ROOT", "TTS_VOICE", "JOINT_PLANNING_ENABLED",
-                "PLANNER_STORYBOARD_EFFORT"):
+                "PLANNER_STORYBOARD_EFFORT", "PLANNER_DIRECTION_REVIEW_EFFORT", "PLANNER_STAGE_ROUTES",
+                "PLANNER_FALLBACK_PROVIDER", "PLANNER_FALLBACK_MODEL", "PLANNER_FALLBACK_ON",
+                "PLANNER_STREAM", "PLANNER_REQUEST_DEADLINE_SECONDS", "PLANNER_MAX_REFINEMENTS",
+                "PLANNER_REFINEMENT_FORMAT", "PLANNER_SPECULATE_RECOMMENDED"):
         monkeypatch.delenv(key, raising=False)
     return tmp_path
 
@@ -490,8 +495,8 @@ def test_provider_change_rejects_completed_checkpoint_even_with_same_model(
     replay = asyncio.run(Gateway(initial).decide(project, [], messages, [], None,
         planning_checkpoint=checkpoint))
     assert replay == result and len(calls) == 1
-    with pytest.raises(ProviderError, match="变化") as error:
-        asyncio.run(Gateway(replace(initial, planner_provider=next_provider)).decide(
-            project, [], messages, [], None, planning_checkpoint=checkpoint))
-    assert getattr(error.value, "retryable", None) is False
-    assert len(calls) == 1 and checkpoint == checkpoints[-1]
+    changed = asyncio.run(Gateway(replace(initial, planner_provider=next_provider)).decide(
+        project, [], messages, [], None, planning_checkpoint=checkpoint,
+        on_checkpoint=lambda value: checkpoints.append(deepcopy(value))))
+    assert changed["kind"] == "reply" and len(calls) == 2
+    assert checkpoints[-1]["entries"][0]["input_hash"] != checkpoint["entries"][0]["input_hash"]

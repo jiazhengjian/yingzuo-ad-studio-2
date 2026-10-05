@@ -1,0 +1,461 @@
+{
+  "job_id": "job_3b8e954d475c47a3b91360006973a95c",
+  "stage": "direction_review",
+  "model": "deepseek-flash",
+  "validation_reasons": [
+    "jargon"
+  ],
+  "raw_output": {
+    "ready": true,
+    "distinct_directions_passed": true,
+    "summary": "三个方向都以剧情／场景方式让巧克力蛋糕切片参与生日送礼处境：开场前摆盘、切前停手仪式、拍照与开吃的分歧，创意机制、开场钩子编号（awkward_moment／arresting_line／situational_conflict）与品牌世界路径（identity／sensory／functional）互不重复。事实引用只限已有商家原话与图片观察，未发现需删改的无依据商品主张，也未虚构整只蛋糕、份量或未确认功效；仅修正 d3 商品约束中分食前后形态的表述。硬项通过，直接准备就绪。",
+    "checks": [
+      {
+        "direction_id": "d1_everyday",
+        "physical_plausibility_passed": true,
+        "product_role_passed": true,
+        "attraction_passed": true,
+        "claim_support_passed": true,
+        "expression_form_passed": true,
+        "film_concept_passed": true,
+        "note": "生日开场前摆盘：用 f_image 的切片形态与顶层樱桃、巧克力酱做摆盘动作，商品是这场安排的关键；丝滑由当场角色对白说出（f_silky），受众意义对应年轻女生生日送礼（f_audience）。形式为剧情／场景，单一说话人可见开口，无未确认功效。",
+        "creative_tension": "medium",
+        "hook_strength": "medium"
+      },
+      {
+        "direction_id": "d2_ritual",
+        "physical_plausibility_passed": true,
+        "product_role_passed": true,
+        "attraction_passed": true,
+        "claim_support_passed": true,
+        "expression_form_passed": true,
+        "film_concept_passed": true,
+        "note": "切前停手的仪式：开场一句压住动作，展开用 f_image 的巧克力滴落与分层，收在给寿星的第一块，产品形态始终为同一片切片。引用 f_image、f_silky、f_audience，仪式感由创作设定承担，不把观看体验写成口感或成分证据。",
+        "creative_tension": "medium",
+        "hook_strength": "high"
+      },
+      {
+        "direction_id": "d3_humor",
+        "physical_plausibility_passed": true,
+        "product_role_passed": true,
+        "attraction_passed": true,
+        "claim_support_passed": true,
+        "expression_form_passed": true,
+        "film_concept_passed": true,
+        "note": "拍照与开吃的当场分歧：笑点来自处境，产品始终停在两人分歧中间，引用 f_image、f_audience、f_silky。形式为剧情／场景，对白只给已确认说话人。已把商品约束中易自相矛盾的“分食前后形态一致”改为片内不被吃掉、拍摄前后分层与顶饰一致。",
+        "creative_tension": "medium",
+        "hook_strength": "medium"
+      }
+    ],
+    "image_observation_corrections": [],
+    "directions": [
+      {
+        "id": "d1_everyday",
+        "rule_id": "everyday_context",
+        "label": "生日会开场前，先把蛋糕摆上桌",
+        "audience": "准备给年轻女生过生日、要在开场前把蛋糕摆上桌的人",
+        "scenario": "生日会开场前十分钟，客厅餐桌旁",
+        "big_idea": "手忙脚乱的生日，蛋糕一摆上桌就开场。",
+        "hook_type": "awkward_moment",
+        "brand_world": "identity",
+        "hook": "蜡烛都插好了，蛋糕还没从盒子里出来。",
+        "payoff": "碟子摆正，樱桃朝着寿星，大家围过来。",
+        "evidence_ids": [
+          "f_image",
+          "f_silky",
+          "f_audience",
+          "f_intent"
+        ],
+        "reason": "生日送礼最真实的一段就在开场前那几分钟；作品把一块巧克力蛋糕切片放进摆盘动作里，丝滑口感由人物当场说出口，不靠画面自证。",
+        "production_notes": [
+          "开场双手在盒中扶正切片，动作不一次完成，保留手忙的真实感。",
+          "中段给切片特写一次：巧克力酱的滴落与分层切面。",
+          "结尾约两秒定格在摆正的碟子上，产品占画面约一半。",
+          "台词按每秒约3.8字上限精简，只保留两三轮短句。"
+        ],
+        "production": {
+          "version": "1.0.0",
+          "product_constraints": [
+            {
+              "text": "商品原图是一块单独摆放的巧克力蛋糕切片：顶层淋着巧克力酱并有滴落，表面撒有巧克力碎，配一朵白色奶油和两颗带梗深红樱桃；切面为深色蛋糕坯与巧克力慕斯交替分层。",
+              "evidence_ids": [
+                "f_image"
+              ]
+            },
+            {
+              "text": "广告中蛋糕以切片形态出现，不还原成整只；樱桃、奶油与巧克力碎随切片一起移动，不单独漂浮或凭空增减。",
+              "evidence_ids": [
+                "f_image"
+              ]
+            }
+          ],
+          "characters": [
+            {
+              "id": "char_host",
+              "name": "小满",
+              "description": "创作设定：二十出头的年轻女生，齐肩黑发一侧别小夹子，穿米白色针织开衫，动作利落但有点急。",
+              "appearance": "face_visible"
+            }
+          ],
+          "speech_mode": "character_dialogue",
+          "speech_delivery": "visible_only",
+          "speaker_id": "char_host",
+          "voice_description": "普通话，二十出头女生的自然说话声，对身边的朋友说，语速偏快、带一点着急，句末放松。"
+        },
+        "film_concept": {
+          "structure": "scene_action",
+          "key_visual": "女生一手扶盒一手托住切片，把它稳稳摆进碟子。"
+        }
+      },
+      {
+        "id": "d2_ritual",
+        "rule_id": "ritual_sensory",
+        "label": "先别切，等这勺巧克力落下来",
+        "audience": "生日当天等着切第一刀的年轻女生和陪她过生日的朋友",
+        "scenario": "生日餐桌旁，蜡烛刚吹灭、切第一块之前",
+        "big_idea": "先别切，等一勺巧克力慢慢落下来。",
+        "hook_type": "arresting_line",
+        "brand_world": "sensory",
+        "hook": "先别切——让我多看它一会儿。",
+        "payoff": "第一块切给寿星，樱桃留在最上面。",
+        "evidence_ids": [
+          "f_image",
+          "f_silky",
+          "f_audience"
+        ],
+        "reason": "把切蛋糕前的小动作写成一次仪式：开场一句话压住动作，展开落在巧克力滴落与分层上，收束仍回到同一块切片。",
+        "production_notes": [
+          "开场近景对准顶层巧克力酱，人物先在画面边缘出声再入画。",
+          "中段叉子沿慕斯层缓慢划过一次，动作完整、不拆半句。",
+          "同一人物声音可延续到切片特写，但至少保留一段本人可见开口。",
+          "结尾约两秒回到碟中切片的固定画面。"
+        ],
+        "production": {
+          "version": "1.0.0",
+          "product_constraints": [
+            {
+              "text": "商品原图是一块单独摆放的巧克力蛋糕切片：顶层淋着巧克力酱并有滴落，表面撒有巧克力碎，配一朵白色奶油和两颗带梗深红樱桃；切面为深色蛋糕坯与巧克力慕斯交替分层。",
+              "evidence_ids": [
+                "f_image"
+              ]
+            },
+            {
+              "text": "切下的一块仍来自同一片切片，切面层次与顶层装饰保持原图关系，樱桃不因分切而消失或再生。",
+              "evidence_ids": [
+                "f_image"
+              ]
+            }
+          ],
+          "characters": [
+            {
+              "id": "char_birthday_girl",
+              "name": "阿梨",
+              "description": "创作设定：二十出头的年轻女生，长发披肩戴细发箍，穿浅粉色连衣裙，坐姿安静，一只手扶着蛋糕碟。",
+              "appearance": "face_visible"
+            }
+          ],
+          "speech_mode": "character_dialogue",
+          "speech_delivery": "on_and_off_screen",
+          "speaker_id": "char_birthday_girl",
+          "voice_description": "普通话，二十出头女生的轻声，像对同桌的朋友说话，语速慢，句间有停顿，尾音收得轻。"
+        },
+        "film_concept": {
+          "structure": "scene_action",
+          "key_visual": "叉子沿巧克力层划过，酱缓慢滴落，樱桃还在顶端。"
+        }
+      },
+      {
+        "id": "d3_humor",
+        "rule_id": "contrast_humor",
+        "label": "拍照的人和开吃的人，先为这块蛋糕商量一下",
+        "audience": "生日会上负责拍照和分蛋糕的年轻朋友",
+        "scenario": "生日餐桌旁，切蛋糕前的一分钟",
+        "big_idea": "一块蛋糕前，拍照的和开吃的先较上劲。",
+        "hook_type": "situational_conflict",
+        "brand_world": "functional",
+        "hook": "你先拍，还是我先吃？",
+        "payoff": "照片拍完，碟子往前一推，叉子落下去。",
+        "evidence_ids": [
+          "f_image",
+          "f_audience",
+          "f_silky"
+        ],
+        "reason": "把生日餐桌上常见的两种动作写成一个小冲突，笑点来自处境：一个要摆正樱桃，一个已经举着叉子，产品始终在两人的分歧中间。",
+        "production_notes": [
+          "开场一人举手机俯拍、一人举叉子等，两个动作竖屏上下分层同框。",
+          "中段叉子停住又收回，作为冲突松手的落点。",
+          "结尾约两秒定格在碟中切片，人物只留手在画面边缘。",
+          "对白只给已确认的说话人一人，另一位只保留动作与反应。"
+        ],
+        "production": {
+          "version": "1.0.0",
+          "product_constraints": [
+            {
+              "text": "商品原图是一块单独摆放的巧克力蛋糕切片：顶层淋着巧克力酱并有滴落，表面撒有巧克力碎，配一朵白色奶油和两颗带梗深红樱桃；切面为深色蛋糕坯与巧克力慕斯交替分层。",
+              "evidence_ids": [
+                "f_image"
+              ]
+            },
+            {
+              "text": "全片只出现这一片切片，且片内不被吃掉；拍摄前后切片的分层、顶饰与樱桃位置保持一致。",
+              "evidence_ids": [
+                "f_image"
+              ]
+            }
+          ],
+          "characters": [
+            {
+              "id": "char_photographer",
+              "name": "小禾",
+              "description": "创作设定：二十出头的年轻女生，齐耳短发，穿黑色短袖T恤，动作快、爱摆拍。",
+              "appearance": "face_visible"
+            },
+            {
+              "id": "char_fork_friend",
+              "name": "圆圆",
+              "description": "创作设定：二十出头的年轻女生，卷发扎低马尾，穿浅蓝色衬衫，一手拿叉子等在桌边。",
+              "appearance": "face_visible"
+            }
+          ],
+          "speech_mode": "character_dialogue",
+          "speech_delivery": "visible_only",
+          "speaker_id": "char_photographer",
+          "voice_description": "普通话，二十出头女生的自然说话声，对桌边的朋友说，带一点玩笑和催促，语速中等。"
+        },
+        "film_concept": {
+          "structure": "scene_action",
+          "key_visual": "手机举在切片上方对焦，叉子停在盘边，樱桃正对镜头。"
+        }
+      }
+    ]
+  },
+  "strategy": {
+    "brief": {
+      "ad_form": "scene_story",
+      "assumptions": [
+        "出镜人物、生日场景与人物反应均为创作设定，不是真实顾客经历或试吃证言",
+        "礼物场合与人物关系为创意假设，不代表已核实的受众调研"
+      ],
+      "audience": "年轻女生，生日送礼",
+      "category": "food",
+      "creative_intent": {
+        "reference_intent": "",
+        "setting_requirement": "",
+        "structure_preference": "auto",
+        "use_context": "生日送礼，送给年轻女生"
+      },
+      "facts": [
+        {
+          "id": "f_intent",
+          "source_id": "brief",
+          "source_kind": "merchant",
+          "text": "我想做一个蛋糕广告"
+        },
+        {
+          "id": "f_silky",
+          "source_id": "message_9f315040acd946cd8886b42cdf7430d4",
+          "source_kind": "merchant",
+          "text": "巧克力口感丝滑"
+        },
+        {
+          "id": "f_audience",
+          "source_id": "message_9f315040acd946cd8886b42cdf7430d4",
+          "source_kind": "merchant",
+          "text": "年轻女生，生日送礼"
+        },
+        {
+          "id": "f_image",
+          "source_id": "asset_6ec39a1f390d4be2a6142a79a53a054b",
+          "source_kind": "image",
+          "text": "画面是一块单独摆放的巧克力蛋糕切片：顶层淋着巧克力酱并有滴落，表面撒有巧克力碎，旁边有一朵白色奶油和两颗带梗深红樱桃；切面可见深色蛋糕坯与巧克力慕斯交替分层，背景为纯黑色。"
+        }
+      ],
+      "product_name": "巧克力蛋糕",
+      "scenario": "生日送礼",
+      "unknowns": [
+        "蛋糕的品牌、门店名称或自有称呼",
+        "除巧克力外的配方、尺寸与份量",
+        "是否有樱桃、奶油之外的其他装饰或口味版本",
+        "是否为主推节点或限定款式"
+      ]
+    },
+    "directions": [
+      {
+        "audience": "准备给年轻女生过生日、要在开场前把蛋糕摆上桌的人",
+        "big_idea": "手忙脚乱的生日，蛋糕一摆上桌就开场。",
+        "brand_world": "identity",
+        "evidence_ids": [
+          "f_image",
+          "f_silky",
+          "f_audience",
+          "f_intent"
+        ],
+        "film_concept": {
+          "key_visual": "女生一手扶盒一手托住切片，把它稳稳摆进碟子。",
+          "structure": "scene_action"
+        },
+        "hook": "蜡烛都插好了，蛋糕还没从盒子里出来。",
+        "hook_type": "awkward_moment",
+        "id": "d1_everyday",
+        "label": "生日会开场前，先把蛋糕摆上桌",
+        "payoff": "碟子摆正，樱桃朝着寿星，大家围过来。",
+        "production": {
+          "characters": [
+            {
+              "appearance": "face_visible",
+              "description": "创作设定：二十出头的年轻女生，齐肩黑发一侧别小夹子，穿米白色针织开衫，动作利落但有点急。",
+              "id": "char_host",
+              "name": "小满"
+            }
+          ],
+          "product_constraints": [
+            {
+              "evidence_ids": [
+                "f_image"
+              ],
+              "text": "商品原图是一块单独摆放的巧克力蛋糕切片：顶层淋着巧克力酱并有滴落，表面撒有巧克力碎，配一朵白色奶油和两颗带梗深红樱桃；切面为深色蛋糕坯与巧克力慕斯交替分层。"
+            },
+            {
+              "evidence_ids": [
+                "f_image"
+              ],
+              "text": "广告中蛋糕以切片形态出现，不还原成整只；樱桃、奶油与巧克力碎随切片一起移动，不单独漂浮或凭空增减。"
+            }
+          ],
+          "speaker_id": "char_host",
+          "speech_delivery": "visible_only",
+          "speech_mode": "character_dialogue",
+          "voice_description": "普通话，二十出头女生的自然说话声，对身边的朋友说，语速偏快、带一点着急，句末放松。"
+        },
+        "production_notes": [
+          "开场双手在盒中扶正切片，动作不一次完成，保留手忙的真实感。",
+          "中段给切片特写一次：巧克力酱的滴落与分层切面。",
+          "结尾约两秒定格在摆正的碟子上，产品占画面约一半。",
+          "台词按每秒约3.8字上限精简，只保留两三轮短句。"
+        ],
+        "reason": "生日送礼最真实的一段就在开场前那几分钟；作品把一块巧克力蛋糕切片放进摆盘动作里，丝滑口感由人物当场说出口，不靠画面自证。",
+        "rule_id": "everyday_context",
+        "scenario": "生日会开场前十分钟，客厅餐桌旁"
+      },
+      {
+        "audience": "生日当天等着切第一刀的年轻女生和陪她过生日的朋友",
+        "big_idea": "先别切，等一勺巧克力慢慢落下来。",
+        "brand_world": "sensory",
+        "evidence_ids": [
+          "f_image",
+          "f_silky",
+          "f_audience"
+        ],
+        "film_concept": {
+          "key_visual": "叉子沿巧克力层划过，酱缓慢滴落，樱桃还在顶端。",
+          "structure": "scene_action"
+        },
+        "hook": "先别切——让我多看它一会儿。",
+        "hook_type": "arresting_line",
+        "id": "d2_ritual",
+        "label": "先别切，等这勺巧克力落下来",
+        "payoff": "第一块切给寿星，樱桃留在最上面。",
+        "production": {
+          "characters": [
+            {
+              "appearance": "face_visible",
+              "description": "创作设定：二十出头的年轻女生，长发披肩戴细发箍，穿浅粉色连衣裙，坐姿安静，一只手扶着蛋糕碟。",
+              "id": "char_birthday_girl",
+              "name": "阿梨"
+            }
+          ],
+          "product_constraints": [
+            {
+              "evidence_ids": [
+                "f_image"
+              ],
+              "text": "商品原图是一块单独摆放的巧克力蛋糕切片：顶层淋着巧克力酱并有滴落，表面撒有巧克力碎，配一朵白色奶油和两颗带梗深红樱桃；切面为深色蛋糕坯与巧克力慕斯交替分层。"
+            },
+            {
+              "evidence_ids": [
+                "f_image"
+              ],
+              "text": "切下的一块仍来自同一片切片，切面层次与顶层装饰保持原图关系，樱桃不因分切而消失或再生。"
+            }
+          ],
+          "speaker_id": "char_birthday_girl",
+          "speech_delivery": "on_and_off_screen",
+          "speech_mode": "character_dialogue",
+          "voice_description": "普通话，二十出头女生的轻声，像对同桌的朋友说话，语速慢，句间有停顿，尾音收得轻。"
+        },
+        "production_notes": [
+          "开场近景对准顶层巧克力酱，人物先在画面边缘出声再入画。",
+          "中段叉子沿慕斯层缓慢划过一次，动作完整、不拆半句。",
+          "同一人物声音可延续到切片特写，但至少保留一段本人可见开口。",
+          "结尾约两秒回到碟中切片的固定画面。"
+        ],
+        "reason": "把切蛋糕前的小动作写成一次仪式：开场一句话压住动作，展开落在巧克力滴落与分层上，收束仍回到同一块切片。",
+        "rule_id": "ritual_sensory",
+        "scenario": "生日餐桌旁，蜡烛刚吹灭、切第一块之前"
+      },
+      {
+        "audience": "生日会上负责拍照和分蛋糕的年轻朋友",
+        "big_idea": "一块蛋糕前，拍照的和开吃的先较上劲。",
+        "brand_world": "functional",
+        "evidence_ids": [
+          "f_image",
+          "f_audience",
+          "f_silky"
+        ],
+        "film_concept": {
+          "key_visual": "手机举在切片上方对焦，叉子停在盘边，樱桃正对镜头。",
+          "structure": "scene_action"
+        },
+        "hook": "你先拍，还是我先吃？",
+        "hook_type": "situational_conflict",
+        "id": "d3_humor",
+        "label": "拍照的人和开吃的人，先为这块蛋糕商量一下",
+        "payoff": "照片拍完，碟子往前一推，叉子落下去。",
+        "production": {
+          "characters": [
+            {
+              "appearance": "face_visible",
+              "description": "创作设定：二十出头的年轻女生，齐耳短发，穿黑色短袖T恤，动作快、爱摆拍。",
+              "id": "char_photographer",
+              "name": "小禾"
+            },
+            {
+              "appearance": "face_visible",
+              "description": "创作设定：二十出头的年轻女生，卷发扎低马尾，穿浅蓝色衬衫，一手拿叉子等在桌边。",
+              "id": "char_fork_friend",
+              "name": "圆圆"
+            }
+          ],
+          "product_constraints": [
+            {
+              "evidence_ids": [
+                "f_image"
+              ],
+              "text": "商品原图是一块单独摆放的巧克力蛋糕切片：顶层淋着巧克力酱并有滴落，表面撒有巧克力碎，配一朵白色奶油和两颗带梗深红樱桃；切面为深色蛋糕坯与巧克力慕斯交替分层。"
+            },
+            {
+              "evidence_ids": [
+                "f_image"
+              ],
+              "text": "全片只有这一片切片，拍摄与分食前后形态一致，樱桃与奶油不位置错乱。"
+            }
+          ],
+          "speaker_id": "char_photographer",
+          "speech_delivery": "visible_only",
+          "speech_mode": "character_dialogue",
+          "voice_description": "普通话，二十出头女生的自然说话声，对桌边的朋友说，带一点玩笑和催促，语速中等。"
+        },
+        "production_notes": [
+          "开场一人举手机俯拍、一人举叉子等，两个动作竖屏上下分层同框。",
+          "中段叉子停住又收回，作为冲突松手的落点。",
+          "结尾约两秒定格在碟中切片，人物只留手在画面边缘。",
+          "对白只给已确认的说话人一人，另一位只保留动作与反应。"
+        ],
+        "reason": "把生日餐桌上常见的两种动作写成一个小冲突，笑点来自处境：一个要摆正樱桃，一个已经举着叉子，产品始终在两人的分歧中间。",
+        "rule_id": "contrast_humor",
+        "scenario": "生日餐桌旁，切蛋糕前的一分钟"
+      }
+    ],
+    "recommended_direction_id": "d2_ritual"
+  }
+}

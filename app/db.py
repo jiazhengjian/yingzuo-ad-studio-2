@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 ACTIVE = ("queued", "running", "cancel_requested")
-PHASE_LABELS = {"resuming_plan": "正在接续已保存的策划进度", "reviewing_plan": "正在综合检查商品表达、动作与声画计划", "refining_script": "正在精简动作并重排脚本时间", "refining_storyboard": "正在依据检查结果调整画面与动作", "retrying_planner": "策划服务未返回内容，正在重试当前步骤", "retrying_planner_request": "策划服务暂时中断，正在继续当前步骤", "reviewing_directions": "正在检查创意故事与商品关系", "writing_script": "正在策划广告内容", "reviewing_script": "正在检查商品表达与台词", "storyboarding": "正在安排画面和台词", "repairing_storyboard": "正在校正画面与旁白的时间对应", "checking_plan": "正在核对脚本与分镜时间", "checking_alignment": "正在检查画面与旁白是否对应", "queued": "任务已排队", "understanding": "正在读取需求与商品素材", "deciding": "正在判断是否需要补充信息", "planning": "正在准备广告方案", "plan_ready": "广告方案已准备好", "synthesizing_voice": "正在准备中文配音", "creating_designs": "正在生成参考图", "submitting_video": "正在提交视频任务", "waiting_provider": "正在等待供应商生成视频", "downloading_video": "正在取回视频", "segments_ready": "视频片段已取回", "composing": "正在合成广告视频", "complete": "成片已保存", "needs_reconcile": "提交结果需要核对"}
+PHASE_LABELS = {"resuming_plan": "正在接续已保存的策划进度", "reviewing_plan": "正在综合检查商品表达、动作与声画计划", "refining_script": "正在精简动作并重排脚本时间", "refining_storyboard": "正在依据检查结果调整画面与动作", "retrying_planner": "策划服务未返回内容，正在重试当前步骤", "retrying_planner_request": "策划服务暂时中断，正在继续当前步骤", "using_backup_planner": "改用备用策划服务，继续这一步", "recovering_strategy": "系统仍在处理这一步，需求已保留", "reviewing_directions": "正在检查创意故事与商品关系", "writing_script": "正在策划广告内容", "reviewing_script": "正在检查商品表达与台词", "storyboarding": "正在安排画面和台词", "repairing_storyboard": "正在校正画面与旁白的时间对应", "checking_plan": "正在核对脚本与分镜时间", "checking_alignment": "正在检查画面与旁白是否对应", "queued": "任务已排队", "understanding": "正在读取需求与商品素材", "deciding": "正在判断是否需要补充信息", "planning": "正在准备广告方案", "plan_ready": "广告方案已准备好", "synthesizing_voice": "正在准备中文配音", "creating_designs": "正在生成参考图", "submitting_video": "正在提交视频任务", "waiting_provider": "正在等待供应商生成视频", "downloading_video": "正在取回视频", "segments_ready": "视频片段已取回", "composing": "正在合成广告视频", "complete": "成片已保存", "needs_reconcile": "提交结果需要核对"}
 
 
 class StaleRevision(ValueError):
@@ -95,6 +95,7 @@ class Store:
                                                ("projects", "duration_seconds", "INTEGER NOT NULL DEFAULT 20"),
                                                ("projects", "ad_form", "TEXT"),
                                                ("projects", "ad_form_updated_context_version", "INTEGER NOT NULL DEFAULT 0"),
+                                               ("projects", "cta_target", "TEXT"),
                                                ("messages", "job_id", "TEXT"),
                                                ("jobs", "started_at", "REAL")):
                 columns = {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}
@@ -134,18 +135,19 @@ class Store:
     def create_project(self, brief, route, title=None, duration_seconds=20, ad_form=None):
         from .schemas import segment_durations
         segment_durations(duration_seconds)
-        from .ad_form import AD_FORM_LABELS, explicit_ad_form
+        from .ad_form import AD_FORM_LABELS, infer_ad_form
+        from .cta import stated_cta
         if ad_form is not None and ad_form not in AD_FORM_LABELS:
             raise ValueError("广告倾向无效")
-        ad_form = ad_form or explicit_ad_form(brief)
+        ad_form = ad_form or infer_ad_form(brief)
         if route not in ("product", "presenter"):
             raise ValueError("不支持的制作路线")
         if not str(brief).strip():
             raise ValueError("请填写商品或广告要求")
         pid, now = identifier("project"), time.time()
         with self._connection(True) as c:
-            c.execute("INSERT INTO projects(id,title,brief,route,status,revision,plan,current_render_id,created_at,updated_at,duration_seconds,ad_form) VALUES(?,?,?,?,?,0,NULL,NULL,?,?,?,?)",
-                      (pid, title or str(brief).strip()[:32], brief, route, "draft", now, now, duration_seconds, ad_form))
+            c.execute("INSERT INTO projects(id,title,brief,route,status,revision,plan,current_render_id,created_at,updated_at,duration_seconds,ad_form,cta_target) VALUES(?,?,?,?,?,0,NULL,NULL,?,?,?,?,?)",
+                      (pid, title or str(brief).strip()[:32], brief, route, "draft", now, now, duration_seconds, ad_form, stated_cta(brief)))
         return self.get_project(pid)
 
     def get_project(self, project_id):
@@ -196,14 +198,12 @@ class Store:
                 project["revision"] if revision is None else revision, encoded(data), time.time()))
             if kind == "product" and not data.get("generated"):
                 c.execute("UPDATE projects SET context_version=context_version+1,updated_at=? WHERE id=?", (time.time(), project_id))
-                pending = c.execute("SELECT * FROM gates WHERE project_id=? AND status='pending'", (project_id,)).fetchall()
-                for gate in pending:
-                    now = time.time()
-                    c.execute("UPDATE gates SET status='superseded',answered_at=? WHERE id=?", (now, gate["id"]))
-                    c.execute("UPDATE jobs SET status='canceled',cancel_requested=1,lease_until=0,updated_at=? WHERE id=? AND status='awaiting_input'", (now, gate["job_id"]))
-                    self._event(c, project_id, gate["job_id"], "gate", "新增商品图已替代这次选择，将重新读取素材", "canceled")
+                version = c.execute("SELECT context_version FROM projects WHERE id=?", (project_id,)).fetchone()["context_version"]
+                # A later product image is more material for the current step.
+                # Keep the open question or direction card, and keep its job answerable.
+                pending = self._sync_pending_context(c, project_id, version)
                 if pending:
-                    c.execute("UPDATE projects SET status=CASE WHEN plan IS NULL THEN 'draft' ELSE 'awaiting_generate' END,updated_at=? WHERE id=?", (time.time(), project_id))
+                    self._event(c, project_id, pending[0]["job_id"], "gate", "商品图已保存，当前确认和已选方向仍然有效", "done")
             else:
                 self._event(c, project_id, data.get("job_id"), "artifact", "已保存" + name, "done")
         return self.get_asset(aid)
@@ -348,7 +348,7 @@ class Store:
             for segment in source_plan["segments"]:
                 segment["reference_asset_ids"] = [aid for aid in segment["reference_asset_ids"] if aid not in scene_ids]
             if source_plan != original_plan:
-                raise StaleRevision("已完成任务与当前方案内容不同，请先重新策划")
+                raise StaleRevision("已完成任务与当前方案内容不同，已有内容仍保留。请在对话里说明要改的地方。")
             for segment in source["payload"]["plan"]["segments"]:
                 step = self._dict(c.execute("SELECT * FROM steps WHERE job_id=? AND step_key=?", (source_job_id, "video:" + segment["id"])).fetchone())
                 if not step or step["state"] != "downloaded" or not step["task_id"]:
@@ -368,7 +368,8 @@ class Store:
             revision, jid, now = accepted_revision + 1, identifier("job"), time.time()
             run_plan = copy.deepcopy(plan)
             for segment in run_plan["segments"]:
-                segment["reference_asset_ids"] = list(dict.fromkeys([*segment["reference_asset_ids"], *scene_ids]))
+                from app.planner_recovery import append_reference_ids
+                segment["reference_asset_ids"] = append_reference_ids(segment["reference_asset_ids"], scene_ids)
             payload = {"plan": run_plan, "source_job_id": source_job_id, "accepted_revision": accepted_revision,
                        "base_render_id": base["id"], "context_version": p["context_version"],
                        "duration_seconds": p["duration_seconds"], "video_submission_budget": len(plan["segments"]),
@@ -396,7 +397,9 @@ class Store:
         a duplicate click must never replay an earlier checkpoint over a worker's
         already-running request or a completed result.
         """
-        from .planning_session import allow_manual_planning_retry
+        from .planner_recovery import merchant_stop
+        from .planning_session import (allow_manual_planning_retry, completed_storyboard_checkpoint,
+                                       drop_storyboard_checkpoint, reopen_rejected_stage)
 
         with self._connection(True) as c:
             job = self._dict(c.execute("SELECT * FROM jobs WHERE id=? AND project_id=?",
@@ -408,18 +411,41 @@ class Store:
             self._guard_job(c, job_id)
             self._require_idle(c, project_id)
             progress = job.get("progress") or {}
-            if progress.get("retry_action") != "retry_planning" or not progress.get("retryable"):
-                if progress.get("error_code") in ("planning_review_incomplete", "planning_invalid_response", "planning_request_limit"):
-                    raise StaleRevision("这次策划已停止，不能直接重提同一步骤；已有内容仍保留，可继续对话")
+            payload = dict(job.get("payload") or {})
+            checkpoint = payload.get("planning_checkpoint")
+            # Older jobs stored retryable=false for system failures. Recompute from
+            # the current classification; only a genuine merchant stop stays blocked.
+            if merchant_stop(progress.get("error_code"), job.get("error"),
+                             progress.get("issue_summary"), progress.get("retry_action")):
                 raise StaleRevision("本次方案需要调整，请通过输入框说明修改要求；已有成果仍保留")
-            checkpoint = (job.get("payload") or {}).get("planning_checkpoint")
-            if not isinstance(checkpoint, dict) or checkpoint.get("version") != 1:
-                raise StaleRevision("缺少可接续的策划进度，请重新发送修改需求；已有成果仍保留")
-            try:
-                checkpoint = allow_manual_planning_retry(checkpoint)
-            except (KeyError, TypeError, ValueError):
-                raise StaleRevision("当前策划进度不能重新尝试，请通过输入框说明修改要求；已有成果仍保留") from None
-            payload = {**job["payload"], "planning_checkpoint": checkpoint}
+            structure_resume = any(token in str(job.get("error") or "")
+                                    for token in ("结构不完整", "未能满足已确认要求", "容量仍未改善"))
+            if structure_resume:
+                if isinstance(checkpoint, dict):
+                    resumed = drop_storyboard_checkpoint(checkpoint)
+                    payload = {**payload, "planning_checkpoint": resumed} if resumed is not None else {
+                        key: value for key, value in payload.items() if key != "planning_checkpoint"}
+                else:
+                    payload = {key: value for key, value in payload.items() if key != "planning_checkpoint"}
+            # The plan was rejected after storyboard and review had both been saved.
+            # Replay those results instead of opening a new job from the brief.
+            elif (progress.get("error_code") == "planning_invalid_response"
+                    and progress.get("retry_action") in ("edit_plan", "retry_planning")
+                    and not payload.get("plan_structure_replayed")
+                    and completed_storyboard_checkpoint(checkpoint)):
+                payload = {**payload, "plan_structure_replayed": True}
+            elif not isinstance(checkpoint, dict) or checkpoint.get("version") != 1:
+                # The card already offered another attempt. Start this job again
+                # from the saved brief instead of refusing before any event.
+                payload = {key: value for key, value in payload.items() if key != "planning_checkpoint"}
+            else:
+                try:
+                    checkpoint = allow_manual_planning_retry(checkpoint)
+                except (KeyError, TypeError, ValueError):
+                    checkpoint = reopen_rejected_stage(checkpoint)
+                    if checkpoint is None:
+                        raise StaleRevision("当前策划进度不能重新尝试，请通过输入框说明修改要求；已有成果仍保留") from None
+                payload = {**payload, "planning_checkpoint": checkpoint}
             progress = {key: value for key, value in progress.items()
                         if key not in ("error_code", "retryable", "retry_action", "issue_summary")}
             now = time.time()
@@ -428,6 +454,41 @@ class Store:
             c.execute("UPDATE projects SET status='queued',updated_at=? WHERE id=?", (now, project_id))
             self._event(c, project_id, job_id, "status", "策划已重新排队，将继续未完成的步骤", "waiting")
             return self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
+
+    def resume_saved_planning(self, project_id):
+        """Start one new text job from the saved brief and any chosen direction.
+
+        This is the last-resort control. It does not submit image or video work
+        and does not ask the merchant to type the same request again.
+        """
+        from .strategy import DirectionCandidates
+
+        with self._connection(True) as c:
+            self._require_idle(c, project_id)
+            p = self._project(c, project_id)
+            detail = self._detail(c, project_id)
+            extra = {"planning_requested": True}
+            for gate in reversed(detail["gates"]):
+                if gate.get("kind") != "direction" or gate.get("status") != "answered":
+                    continue
+                if not gate.get("selected_option_id"):
+                    continue
+                source = self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (gate["job_id"],)).fetchone())
+                raw = ((source or {}).get("payload") or {}).get("direction_candidates")
+                if not isinstance(raw, dict):
+                    break
+                try:
+                    strategy = DirectionCandidates.model_validate(raw).select(gate["selected_option_id"])
+                except (KeyError, TypeError, ValueError):
+                    break
+                extra["selected_strategy"] = strategy.model_dump()
+                trace = ((source.get("payload") or {}).get("decision") or {}).get("skill_trace")
+                if trace:
+                    extra["inherited_skill_trace"] = trace
+                break
+            jid = self._new_conversation_job(c, p, extra)
+            self._event(c, project_id, jid, "status", "按已保存的需求继续策划", "waiting")
+            return self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone())
 
     def create_failed_video_retry(self, project_id, source_job_id):
         """Allocate one explicit retry budget; never erase or recycle old receipts."""
@@ -553,12 +614,15 @@ class Store:
             c.execute("UPDATE jobs SET cancel_requested=1,status=CASE WHEN status IN ('queued','awaiting_input') THEN 'canceled' ELSE 'cancel_requested' END,updated_at=? WHERE project_id=? AND status IN ('queued','running','awaiting_input')", (time.time(), project_id))
             c.execute("UPDATE gates SET status='superseded',answered_at=? WHERE project_id=? AND status='pending'", (time.time(), project_id))
             for j in affected:
+                self._abandon_speculative_plan(c, self._dict(j))
                 self._event(c, project_id, j["id"], "terminal" if j["status"] != "running" else "status", "任务已停止" if j["status"] != "running" else "已请求停止后续工作", "canceled" if j["status"] != "running" else "waiting")
             row = c.execute("SELECT 1 FROM jobs j JOIN projects p ON p.id=j.project_id WHERE j.project_id=? AND j.revision=p.revision AND j.status='cancel_requested'", (project_id,)).fetchone()
             canceled = c.execute("SELECT 1 FROM jobs j JOIN projects p ON p.id=j.project_id WHERE j.project_id=? AND j.revision=p.revision AND j.status='canceled'", (project_id,)).fetchone()
             if row or canceled:
                 c.execute("UPDATE projects SET status=?,updated_at=? WHERE id=?",
                           ("cancel_requested" if row else "canceled", time.time(), project_id))
+        from app.speculative_plan import cancel_speculation
+        cancel_speculation(project_id)
 
     def is_cancelled(self, job_id):
         j = self.get_job(job_id)
@@ -768,6 +832,55 @@ class Store:
             self._project(c, project_id)
             return self._event(c, project_id, job_id, kind, label, state)
 
+    def merge_speculative_plan(self, job_id, updates):
+        """Update only the speculative text-plan record inside one write transaction.
+
+        A job that has already left direction selection, or whose record was
+        abandoned, is left unchanged so a late writer cannot replace the
+        continuation pointer or the chosen direction's cache.
+        """
+        allowed = {"direction_id", "status", "entries"}
+        if not isinstance(updates, dict) or not updates or not set(updates).issubset(allowed):
+            raise ValueError("预生成记录无效")
+        if "status" in updates and updates["status"] not in ("running", "ready", "failed"):
+            raise ValueError("预生成记录无效")
+        if "entries" in updates and not isinstance(updates["entries"], dict):
+            raise ValueError("预生成记录无效")
+        with self._connection(True) as c:
+            job = self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
+            if not job:
+                raise KeyError("任务不存在")
+            payload = dict(job.get("payload") or {})
+            spec = dict(payload.get("speculative_plan") or {})
+            if (job["status"] != "awaiting_input" or job["phase"] != "awaiting_direction"
+                    or spec.get("abandoned") is True):
+                return job
+            if (spec.get("direction_id") and updates.get("direction_id")
+                    and spec["direction_id"] != updates["direction_id"]):
+                return job
+            spec.update(updates)
+            payload["speculative_plan"] = spec
+            c.execute("UPDATE jobs SET payload=?,updated_at=? WHERE id=?", (encoded(payload), time.time(), job_id))
+            return self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
+
+    def jobs_awaiting_direction(self):
+        with self._connection() as c:
+            return [self._dict(row) for row in c.execute(
+                "SELECT * FROM jobs WHERE status='awaiting_input' AND phase='awaiting_direction' ORDER BY created_at")]
+
+    def _abandon_speculative_plan(self, c, job):
+        payload = dict(job.get("payload") or {})
+        if not isinstance(payload.get("speculative_plan"), dict):
+            return payload
+        spec = dict(payload["speculative_plan"])
+        if spec.get("abandoned") is True:
+            return payload
+        spec["abandoned"] = True
+        payload["speculative_plan"] = spec
+        c.execute("UPDATE jobs SET payload=?,updated_at=? WHERE id=?", (encoded(payload), time.time(), job["id"]))
+        job["payload"] = payload
+        return payload
+
     def events_after(self, project_id, after=0, limit=200):
         with self._connection() as c:
             self._project(c, project_id)
@@ -779,6 +892,19 @@ class Store:
         c.execute("INSERT INTO messages(id,project_id,role,content,created_at,job_id) VALUES(?,?,?,?,?,?)", (mid, project_id, role, content, now, job_id))
         self._event(c, project_id, job_id, "message", "需求已保存" if role == "user" else "收到助手回复", "done")
         return {"id": mid, "project_id": project_id, "role": role, "content": content, "created_at": now, "job_id": job_id}
+
+    def _sync_pending_context(self, c, project_id, context_version):
+        """Keep an open card on the new brief version without canceling its job."""
+        pending = c.execute("SELECT id,job_id FROM gates WHERE project_id=? AND status='pending'", (project_id,)).fetchall()
+        now = time.time()
+        for gate in pending:
+            c.execute("UPDATE gates SET context_version=? WHERE id=?", (context_version, gate["id"]))
+            job = c.execute("SELECT id,status,payload FROM jobs WHERE id=?", (gate["job_id"],)).fetchone()
+            if job and job["status"] == "awaiting_input" and job["payload"]:
+                payload = json.loads(job["payload"])
+                payload["context_version"] = context_version
+                c.execute("UPDATE jobs SET payload=?,updated_at=? WHERE id=?", (encoded(payload), now, job["id"]))
+        return pending
 
     def _pending_gate(self, c, project_id, kind=None):
         query, values = "SELECT * FROM gates WHERE project_id=? AND status='pending'", [project_id]
@@ -853,9 +979,13 @@ class Store:
 
     def create_turn(self, project_id, body_dict):
         from .schemas import TurnInput
-        from .ad_form import (AD_FORM_LABELS, answer_ad_form, explicit_ad_form,
+        from .ad_form import (AD_FORM_LABELS, answer_ad_form, explicit_ad_form, infer_ad_form,
                              rejects_current_ad_form, unresolved_ad_form_change)
+        from .cta import answer_cta, stated_cta
+        from .planning import keeps_selected_direction, product_images_are_new
         body = TurnInput.model_validate(body_dict).model_dump()
+        stop_speculation = False
+        retain_offer = False
         with self._connection(True) as c:
             prior = self._request_job(c, project_id, body["client_turn_id"], "turn")
             if prior:
@@ -873,6 +1003,8 @@ class Store:
                 names.append(a["name"])
             content = body["content"].strip()
             text_form = explicit_ad_form(content)
+            if text_form is None and p.get("ad_form") is None:
+                text_form = infer_ad_form(content) or infer_ad_form(p.get("brief") or "")
             if body.get("ad_form") and text_form and body["ad_form"] != text_form:
                 raise ValueError("广告倾向选择与本次文字要求不一致，请保留一个选择")
             chosen_form = body.get("ad_form") or text_form
@@ -888,6 +1020,7 @@ class Store:
                 pending_job = self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (pending["job_id"],)).fetchone())
                 pending_candidates = pending_job["payload"].get("direction_candidates")
             base_plan_current = bool(p["plan"] and p["plan_context_version"] == p["context_version"] and not pending)
+            chosen_cta = stated_cta(body.get("content") or "")
             if body["reply_to_gate_id"]:
                 gate = self._dict(c.execute("SELECT * FROM gates WHERE id=? AND project_id=?", (body["reply_to_gate_id"], project_id)).fetchone())
                 if not gate or gate["status"] != "pending" or gate["kind"] != "clarification" or gate["context_version"] != p["context_version"] or gate["revision"] != p["revision"]:
@@ -911,6 +1044,8 @@ class Store:
                         chosen_form = chosen_form or gate_form
                         if gate_form is None:
                             confirm_form = True
+                    if q["id"] == "cta_target":
+                        chosen_cta = answer_cta(a)
                     lines.append(q["prompt"] + "：" + (options[a["option_id"]] if a["option_id"] else a["text"] if a["text"] else "暂不确定，请使用谨慎表达"))
                 content = (content + "\n" if content else "") + "\n".join(lines)
                 c.execute("UPDATE gates SET status='answered',answers=?,answered_at=? WHERE id=?", (encoded(answers), time.time(), gate["id"]))
@@ -921,12 +1056,24 @@ class Store:
             elif pending:
                 if not content and chosen_form is None:
                     raise ValueError("请回答问题或补充你的需求")
-                c.execute("UPDATE gates SET status='superseded',answered_at=? WHERE id=?", (time.time(), pending["id"]))
-                c.execute("UPDATE jobs SET status='canceled',cancel_requested=1,lease_until=0,updated_at=? WHERE id=? AND status='awaiting_input'", (time.time(), pending["job_id"]))
-                self._event(c, project_id, pending["job_id"], "gate", "新的需求已替代这次选择", "canceled")
+                if pending["kind"] == "direction" and chosen_form is None and not confirm_form and not withdraw_form:
+                    rows = c.execute("SELECT * FROM assets WHERE project_id=?", (project_id,)).fetchall()
+                    brief = pending_candidates.get("brief") if isinstance(pending_candidates, dict) else None
+                    retain_offer = keeps_selected_direction(
+                        [{"role": "user", "content": content}],
+                        has_new_image=product_images_are_new([self._dict(row) for row in rows], brief=brief, since=pending.get("created_at")))
+                if not retain_offer:
+                    if pending["kind"] == "direction" and pending_job:
+                        self._abandon_speculative_plan(c, pending_job)
+                        stop_speculation = True
+                    c.execute("UPDATE gates SET status='superseded',answered_at=? WHERE id=?", (time.time(), pending["id"]))
+                    c.execute("UPDATE jobs SET status='canceled',cancel_requested=1,lease_until=0,updated_at=? WHERE id=? AND status='awaiting_input'", (time.time(), pending["job_id"]))
+                    self._event(c, project_id, pending["job_id"], "gate", "新的需求已替代这次选择", "canceled")
             if chosen_form is not None and rejects_current_ad_form(body["content"], chosen_form):
                 raise ValueError("广告倾向选择与撤回要求不一致，请保留一个选择")
             form_changed = (chosen_form is not None and chosen_form != p.get("ad_form")) or (withdraw_form and chosen_form is None)
+            if chosen_cta:
+                c.execute("UPDATE projects SET cta_target=? WHERE id=?", (chosen_cta, project_id))
             if form_changed:
                 c.execute("UPDATE projects SET ad_form=?,ad_form_updated_context_version=context_version+1 WHERE id=?", (chosen_form, project_id))
                 base_plan_current = False
@@ -940,14 +1087,28 @@ class Store:
             c.execute("UPDATE projects SET context_version=context_version+1,updated_at=? WHERE id=?", (time.time(), project_id))
             message = self._message(c, project_id, "user", content) if content else None
             p = self._project(c, project_id)
-            jid = self._new_conversation_job(c, p, {"reference_asset_ids": refs, "base_plan_current": base_plan_current,
-                **({"ad_form_confirmation_required": True} if confirm_form else {}),
-                **({"pending_direction_candidates": pending_candidates} if pending_candidates else {})})
-            if message:
-                c.execute("UPDATE messages SET job_id=? WHERE id=?", (jid, message["id"]))
-                c.execute("UPDATE events SET job_id=? WHERE project_id=? AND kind='message' AND job_id IS NULL AND created_at>=?", (jid, project_id, message["created_at"]))
+            if retain_offer:
+                # The direction card stays. Record the note on that same waiting job
+                # and do not start another strategy request.
+                self._sync_pending_context(c, project_id, p["context_version"])
+                jid = pending["job_id"]
+                if message:
+                    c.execute("UPDATE messages SET job_id=? WHERE id=?", (jid, message["id"]))
+                    c.execute("UPDATE events SET job_id=? WHERE project_id=? AND kind='message' AND job_id IS NULL AND created_at>=?", (jid, project_id, message["created_at"]))
+                self._event(c, project_id, jid, "gate", "商品信息已记下，请继续从当前方向里选择", "waiting")
+            else:
+                jid = self._new_conversation_job(c, p, {"reference_asset_ids": refs, "base_plan_current": base_plan_current,
+                    **({"ad_form_confirmation_required": True} if confirm_form else {}),
+                    **({"pending_direction_candidates": pending_candidates} if pending_candidates else {})})
+                if message:
+                    c.execute("UPDATE messages SET job_id=? WHERE id=?", (jid, message["id"]))
+                    c.execute("UPDATE events SET job_id=? WHERE project_id=? AND kind='message' AND job_id IS NULL AND created_at>=?", (jid, project_id, message["created_at"]))
             c.execute("INSERT INTO turn_requests VALUES(?,?,?,?)", (project_id, body["client_turn_id"], "turn", jid))
-            return self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone())
+            created = self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone())
+        if stop_speculation:
+            from app.speculative_plan import cancel_speculation
+            cancel_speculation(project_id)
+        return created
 
     def finish_decision(self, job_id, decision_dict):
         from .schemas import AgentDecision
@@ -1077,17 +1238,29 @@ class Store:
             c.execute("UPDATE gates SET status='answered',selected_option_id=?,answered_at=? WHERE id=?", (selected.id, now, gate["id"]))
             c.execute("UPDATE projects SET context_version=context_version+1,updated_at=? WHERE id=?", (now, project_id))
             self._event(c, project_id, source["id"], "gate", "创意方向已选择", "done")
-            self._message(c, project_id, "user", "选择创意方向：" + selected.label, source["id"])
+            from app.speculative_plan import direction_selection_text
+            self._message(c, project_id, "user", direction_selection_text(selected.label), source["id"])
             p = self._project(c, project_id)
             trace = source["payload"].get("decision", {}).get("skill_trace")
-            jid = self._new_conversation_job(c, p, {"selected_strategy": strategy.model_dump(),
-                "direction_gate_id": gate["id"], "direction_selection_request": body,
-                "inherited_skill_trace": trace or []})
             source_payload = source["payload"]
+            spec = source_payload.get("speculative_plan") if isinstance(source_payload.get("speculative_plan"), dict) else None
+            extra = {"selected_strategy": strategy.model_dump(),
+                "direction_gate_id": gate["id"], "direction_selection_request": body,
+                "inherited_skill_trace": trace or []}
+            if (spec and spec.get("abandoned") is not True and spec.get("direction_id") == selected.id
+                    and isinstance(spec.get("entries"), dict) and spec["entries"]):
+                extra["stage_result_cache"] = copy.deepcopy(spec["entries"])
+                extra["stage_result_cache_direction_id"] = selected.id
+            jid = self._new_conversation_job(c, p, extra)
             source_payload["direction_continuation_job_id"] = jid
+            if spec is not None:
+                source_payload["speculative_plan"] = {**spec, "abandoned": True}
             c.execute("UPDATE jobs SET status='ready',phase='direction_selected',payload=?,lease_until=0,updated_at=? WHERE id=?", (encoded(source_payload), now, source["id"]))
             c.execute("INSERT INTO turn_requests VALUES(?,?,?,?)", (project_id, body["client_turn_id"], "direction_select", jid))
-            return self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone())
+            created = self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone())
+        from app.speculative_plan import cancel_speculation
+        cancel_speculation(project_id)
+        return created
 
     def create_creative_gate(self, job_id, options, message):
         from .schemas import CreativeOption
@@ -1178,7 +1351,8 @@ class Store:
                 payload["design_asset_ids"] = scene_ids
                 if design_ids:
                     for segment in payload["plan"]["segments"]:
-                        segment["reference_asset_ids"] = list(dict.fromkeys(segment["reference_asset_ids"] + list(design_ids)))
+                        from app.planner_recovery import append_reference_ids
+                        segment["reference_asset_ids"] = append_reference_ids(segment["reference_asset_ids"], design_ids)
                 jid = job["id"]
                 c.execute("UPDATE jobs SET revision=?,payload=?,status='queued',phase='queued',error=NULL,lease_until=0,started_at=NULL,updated_at=? WHERE id=?", (revision, encoded(payload), now, jid))
                 self._event(c, project_id, jid, "status", "已确认，等待制作视频", "waiting")

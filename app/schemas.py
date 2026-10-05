@@ -17,12 +17,14 @@ def segment_durations(duration_seconds):
     return [10] * full + ([tail] if tail else [])
 
 
-def script_character_limit(duration_seconds):
-    return duration_seconds * 29 // 10
+def script_character_limit(duration_seconds, characters_per_tenth=29):
+    return duration_seconds * characters_per_tenth // 10
 
 
-def shot_character_limit(start, end):
-    return math.floor((end - start) * 2.9 + 1e-7)
+def shot_character_limit(start, end, characters_per_tenth=29):
+    if characters_per_tenth == 29:
+        return math.floor((end - start) * 2.9 + 1e-7)
+    return math.floor((end - start) * (characters_per_tenth / 10) + 1e-7)
 
 
 def is_custom_answer_option(label):
@@ -42,6 +44,13 @@ class Shot(BaseModel):
     beat_id: str = Field(default="", max_length=80, description="对应已审查广告脚本的内容节拍ID；同一节拍可有连续多个镜头，新方案完整台词由speech_spans独立编排")
     beat_ids: list[str] | None = Field(default=None, min_length=1, max_length=12, exclude_if=lambda value: value is None, description="本镜头实际覆盖的相邻内容节拍，按顺序列出；一镜可跨多个节拍，beat_id保留为首项；历史镜头可缺省")
     character_ids: list[str] = Field(default_factory=list, max_length=8, exclude_if=lambda value: not value, description="实际出现在本镜的已确定角色ID；无人画面为空")
+    product_visible: bool | None = Field(default=None, exclude_if=lambda value: value is None,
+        description="本镜商品是否在画面里；讲解时拿在手里或放在身前也算。历史镜头可缺省")
+    visual_motif: str = Field(default="", max_length=16, exclude_if=lambda value: not value,
+        description="本镜承接的一个贯穿元素。历史镜头可缺省")
+    match_cut: Literal["motion", "color", "scale"] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+        description="与上一镜的轻匹配：motion动作、color颜色、scale尺度。历史镜头可缺省")
 
     @model_validator(mode="after")
     def beat_membership(self):
@@ -108,7 +117,8 @@ class SpeechSpan(BaseModel):
             raise ValueError("旁白时段须包含非空ID、完整台词和有效时段；静音画面使用镜头表示")
         if re.search(r"[，,、：:；;]\s*[”’」』\"']*\s*$", self.text):
             raise ValueError("旁白时段须保留完整表达，不能以未完标点结束")
-        if len(self.text) > shot_character_limit(self.start, self.end):
+        from .ad_form_playbook import active_speech_tenth
+        if len(self.text) > shot_character_limit(self.start, self.end, active_speech_tenth()):
             raise ValueError("旁白台词超过对应朗读时段的长度，请精简或重新安排时段")
         if "".join(anchor.text for anchor in self.anchors) != self.text:
             raise ValueError("台词锚点须按顺序完整拼接旁白整句，不得遗漏、重复或改写")
@@ -148,6 +158,35 @@ class Segment(BaseModel):
     shots: list[Shot] = Field(min_length=1, max_length=18, description="使用当前生成段的局部0至duration_seconds秒时间轴，最大30秒；从0连续覆盖本段完整时长，不使用整条广告的累计时间；镜头切换不等于独立生成")
     speech_spans: list[SpeechSpan] | None = Field(default=None, max_length=12, description="独立于镜头切换的完整旁白时段；None保留历史镜头台词，空列表表示静音段")
     reference_asset_ids: list[str] = Field(min_length=1, max_length=10)
+    speech_characters_per_tenth: int | None = Field(default=None, exclude_if=lambda value: value is None,
+        description="服务端按方案广告类型写入的朗读容量。缺省时按历史2.9字/秒。不由分镜模型填写")
+
+    @field_validator("speech_characters_per_tenth", mode="before")
+    @classmethod
+    def server_speech_rate(cls, value):
+        if value is None:
+            return None
+        from .ad_form_playbook import LEGACY_TENTH, accepted_submission_tenth
+        tenth = accepted_submission_tenth(value)
+        return None if tenth == LEGACY_TENTH else tenth
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def bind_segment_speech_budget(cls, data, handler):
+        """Use the rate stored on this segment when no plan validator has bound one."""
+        from .ad_form_playbook import (
+            accepted_submission_tenth, bind_speech_tenth, reset_plan_speech_tenth, speech_rate_is_bound,
+        )
+        token = None
+        if not speech_rate_is_bound():
+            raw = data.get("speech_characters_per_tenth") if isinstance(data, dict) else getattr(data, "speech_characters_per_tenth", None)
+            if raw is not None:
+                token = bind_speech_tenth(accepted_submission_tenth(raw))
+        try:
+            return handler(data)
+        finally:
+            if token is not None:
+                reset_plan_speech_tenth(token)
 
     @model_validator(mode="after")
     def shot_order(self):
@@ -169,7 +208,8 @@ class Segment(BaseModel):
                 raise ValueError("每个内容节拍的完整台词只能有一个旁白时段")
             if self.narration != "".join(span.text for span in self.speech_spans):
                 raise ValueError("每段台词须由旁白时段的完整文字按顺序拼接")
-            if len(self.narration) > script_character_limit(self.duration_seconds):
+            from .ad_form_playbook import speech_ceiling_tenth
+            if len(self.narration) > script_character_limit(self.duration_seconds, speech_ceiling_tenth()):
                 raise ValueError("单段台词超过该段的朗读长度，请精简后确认")
             previous = 0
             for span in self.speech_spans:
@@ -187,6 +227,13 @@ class Segment(BaseModel):
 class Facts(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     claims: list[str] = Field(default_factory=list, max_length=12)
+
+
+def _bound_skill_trace(value):
+    from .planner_recovery import SKILL_TRACE_LIMIT, bound_server_list
+    if value is None or not isinstance(value, list):
+        return value
+    return bound_server_list(value, SKILL_TRACE_LIMIT)
 
 
 class Plan(BaseModel):
@@ -207,6 +254,25 @@ class Plan(BaseModel):
     strategy: StrategyRecord | None = None
     ad_script: AdScript | None = None
     script_review: ScriptReview | None = None
+    video_flow: str = Field(default="", max_length=400, exclude_if=lambda value: not value,
+        description="整条成片的观看顺序，供分镜对照；历史方案可缺省")
+
+    @field_validator("skill_trace", mode="before")
+    @classmethod
+    def cap_skill_trace(cls, value):
+        return _bound_skill_trace(value)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def bind_form_speech_budget(cls, data, handler):
+        """Let nested speech spans use this plan's rate, then restore the caller."""
+        from .ad_form_playbook import bind_plan_speech_tenth, reset_plan_speech_tenth
+        strategy = data.get("strategy") if isinstance(data, dict) else getattr(data, "strategy", None)
+        token = bind_plan_speech_tenth(strategy)
+        try:
+            return handler(data)
+        finally:
+            reset_plan_speech_tenth(token)
 
     @model_validator(mode="after")
     def unique_segments(self, info: ValidationInfo):
@@ -285,24 +351,29 @@ class Plan(BaseModel):
                 raise ValueError("方案商品事实必须与本轮策划依据一致")
         if len({s.id for s in self.segments}) != len(self.segments):
             raise ValueError("片段ID重复")
+        from .ad_form_playbook import LEGACY_TENTH, speech_profile_for_strategy
+        tenth = speech_profile_for_strategy(self.strategy).characters_per_tenth
+        for segment in self.segments:
+            segment.speech_characters_per_tenth = None if tenth == LEGACY_TENTH else tenth
         durations = [s.duration_seconds for s in self.segments]
         validate_generation_durations(durations, self.generation_strategy)
         if self.generation_strategy == "legacy_10s":
             if any(len(segment.shots) > 6 or len(segment.speech_spans or []) > 6 for segment in self.segments):
                 raise ValueError("历史10秒方案每段最多6个镜头和旁白时段")
         elif self.ad_script is not None:
-            grouping = generation_groups(self.ad_script, sum(durations), self.generation_strategy)
+            grouping = generation_groups(self.ad_script, sum(durations), self.generation_strategy,
+                                         characters_per_tenth=tenth)
             actual_groups = [shot_beat_sequence(segment.shots) for segment in self.segments]
             expected_groups = [[self.ad_script.beats[index].id for index in group]
                                for group in grouping["beat_groups"]]
             if durations != grouping["durations"] or actual_groups != expected_groups:
                 raise ValueError("实际生成段必须保留已审脚本的连续性分组，不能切开连续动作或移动完整表达边界")
-        if not (info.context or {}).get("allow_script_repair") and len(self.script) > script_character_limit(sum(durations)):
+        if not (info.context or {}).get("allow_script_repair") and len(self.script) > script_character_limit(sum(durations), tenth):
             raise ValueError("文案超过所选时长的朗读长度，请精简后确认")
         if self.audio_strategy == "native" and not (info.context or {}).get("allow_script_repair"):
             if re.sub(r"\s", "", self.script) != re.sub(r"\s", "", "".join(s.narration for s in self.segments)):
                 raise ValueError("整条文案必须与逐段台词一致")
-            if any(len(s.narration) > script_character_limit(s.duration_seconds) for s in self.segments):
+            if any(len(s.narration) > script_character_limit(s.duration_seconds, tenth) for s in self.segments):
                 raise ValueError("单段台词超过该段的朗读长度，请精简后确认")
             # Historical native drafts remain readable. New provider plans opt
             # into this contract, and any shot-bound edit must keep it intact.
@@ -313,17 +384,22 @@ class Plan(BaseModel):
                         continue
                     if re.sub(r"\s", "", segment.narration) != re.sub(r"\s", "", "".join(shot.narration for shot in segment.shots)):
                         raise ValueError("每段台词必须与对应镜头台词一致")
-                    if any(len(shot.narration) > shot_character_limit(shot.start, shot.end) for shot in segment.shots):
+                    if any(len(shot.narration) > shot_character_limit(shot.start, shot.end, tenth) for shot in segment.shots):
                         raise ValueError("镜头台词超过对应画面时长，请精简或重新安排镜头")
         validate_production_plan(self)
         if self.plan_review is not None:
             # A model response must first pass validate_plan_review, which binds
             # the reviewed content on the server. Never auto-bind an attached
             # record here: that would silently reuse it after a content edit.
-            from .plan_review import validate_plan_review
-            if self.plan_review.get("reviewed_plan_sha256") is None:
-                raise ValueError("综合审核记录须先由服务端绑定最终方案")
-            self.plan_review = validate_plan_review(self.plan_review, self).model_dump(mode="json")
+            # A record that is not a review at all is dropped. A hash mismatch
+            # with the current plan still rejects the plan.
+            from .plan_review import review_record_incomplete, validate_plan_review
+            if review_record_incomplete(self.plan_review):
+                self.plan_review = None
+            else:
+                if self.plan_review.get("reviewed_plan_sha256") is None:
+                    raise ValueError("综合审核记录须先由服务端绑定最终方案")
+                self.plan_review = validate_plan_review(self.plan_review, self).model_dump(mode="json")
         return self
 
 
@@ -371,7 +447,7 @@ class QuestionOption(ConversationModel):
 class Question(ConversationModel):
     id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,48}$")
     prompt: str = Field(min_length=1, max_length=500)
-    options: list[QuestionOption] = Field(default_factory=list, max_length=4, description="实际答案选项；不得添加自填、其他或让用户转到输入框的伪选项")
+    options: list[QuestionOption] = Field(default_factory=list, max_length=5, description="实际答案选项；不得添加自填、其他或让用户转到输入框的伪选项")
     allow_custom: bool = True
     allow_skip: bool = True
 
@@ -422,6 +498,11 @@ class AgentDecision(ConversationModel):
     planning_brief: ProductBrief | None = None
     direction_candidates: DirectionCandidates | None = Field(default=None, exclude_if=lambda value: value is None)
     skill_trace: list[dict] | None = Field(default=None, max_length=30, exclude_if=lambda value: value is None)
+
+    @field_validator("skill_trace", mode="before")
+    @classmethod
+    def cap_skill_trace(cls, value):
+        return _bound_skill_trace(value)
 
     @model_validator(mode="after")
     def decision_shape(self, info: ValidationInfo):

@@ -110,15 +110,29 @@ def test_provider_ignoring_initial_contract_cannot_have_conflict_removed(source,
     assert raw == before
 
 
-@pytest.mark.parametrize("transition", ["opening", "cut", "scene_change"])
-def test_noncontinuous_missing_start_state_is_not_inherited(source, transition):
+@pytest.mark.parametrize("transition", ["opening", "cut"])
+def test_missing_opening_or_cut_start_state_is_derived_from_the_picture(source, transition):
     strategy = chosen_strategy(source)
     raw = director_output(strategy)
     index = 0 if transition == "opening" else 1
     raw["shots"][index]["continuity"].update(entry_transition=transition)
     raw["shots"][index]["continuity"].pop("start_state")
     before = deepcopy(raw)
-    with pytest.raises(ValueError, match="start_state"):
+    _, _, coordinated = compile_director(raw, strategy, 20, "continuity_v1", [source["id"]])
+    assert raw == before
+    filled = coordinated["shots"][index]["continuity"]["start_state"]
+    assert filled == before["shots"][index]["description"].strip("。； ")[:80]
+    if transition == "cut":
+        assert filled != coordinated["shots"][0]["continuity"]["end_state"]
+
+
+def test_scene_change_without_a_script_mark_still_fails(source):
+    strategy = chosen_strategy(source)
+    raw = director_output(strategy)
+    raw["shots"][1]["continuity"].update(entry_transition="scene_change")
+    raw["shots"][1]["continuity"].pop("start_state")
+    before = deepcopy(raw)
+    with pytest.raises(ValueError, match="场景转换"):
         compile_director(raw, strategy, 20, "continuity_v1", [source["id"]])
     assert raw == before
 

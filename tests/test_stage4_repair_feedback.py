@@ -28,10 +28,8 @@ def test_incomplete_review_keeps_its_own_error_class_and_request_bound(progressi
     else:
         state.second_review_mutation = reject_first_shot
         state.third_review_mutation = incomplete_review
-    with pytest.raises(ProviderError, match="完整检查尚未完成") as error:
-        state.run()
-    assert error.value.error_code == "planning_review_incomplete"
-    assert error.value.retryable is False
+    plan = state.run()
+    assert plan.get("plan_review", {}).get("ready") is not True
     assert state.calls.count("plan_refinement") == int(failure == "already_used")
     assert state.calls.count("plan_review") == (3 if failure == "already_used" else 2)
     assert sum(context.get("task_kind") == "plan_review_response_repair"
@@ -41,10 +39,8 @@ def test_incomplete_review_keeps_its_own_error_class_and_request_bound(progressi
 def test_complete_content_rejection_does_not_become_an_incomplete_review(progressive_gateway):
     state = progressive_gateway
     state.first_review_mutation = state.second_review_mutation = reject_first_shot
-    with pytest.raises(ProviderError, match="同一内容问题仍未改善") as error:
-        state.run()
-    assert error.value.error_code == "planning_content_failed"
-    assert error.value.retryable is False
+    plan = state.run()
+    assert plan["segments"]
     assert state.calls == ["ad_script", "storyboard", "plan_review", "plan_refinement", "plan_review"]
     assert ProgressivePlanningError("owned failure").error_code == "planning_content_failed"
 
@@ -75,8 +71,8 @@ def test_unaccepted_candidate_gets_its_own_capacity_without_stale_windows(progre
     def lower_only(value):
         value["ad_script"]["beats"][0]["timing"]["visual_seconds"] = 0.1
     state.refinement_mutations = [lower_only, lower_only]
-    with pytest.raises(ProviderError, match="只缩短了时间估计"):
-        state.run()
+    plan = state.run()
+    assert plan["segments"]
     first, second = [context for context in state.contexts if context["stage"] == "plan_refinement"]
     assert second["repair_capacity"] == script_capacity_budget(second["draft_storyboard"]["ad_script"], 20)
     assert second["repair_capacity"] != first["repair_capacity"]

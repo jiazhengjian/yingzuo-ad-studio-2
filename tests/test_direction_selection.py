@@ -12,7 +12,7 @@ from app import runtime_skills
 from app import strategy as strategy_module
 from app.db import Store
 from app.pipeline import Pipeline
-from app.planning import StrategyDecision, evidence_sources, requests_new_directions, strategy_decision_schema
+from app.planning import StrategyDecision, evidence_sources, keeps_selected_direction, requests_new_directions, strategy_decision_schema
 from app.providers.gateway import Gateway, ProviderError
 from app.schemas import AgentDecision
 from app.strategy import CreativeDirection, DirectionCandidates, ProductBrief, StrategyRecord, build_direction_candidates, select_rules
@@ -34,7 +34,7 @@ def forbid_unmocked_network(monkeypatch):
 def isolated_skill_loader(monkeypatch):
     # Explicit transport fixture, not a runtime fallback. Runtime loader bytes
     # and registry bindings are independently verified in test_runtime_skills.
-    def load(stage, mode=None):
+    def load(stage, mode=None, **kwargs):
         skill = {"id": "ads-video-" + stage.replace("_", "-"), "display_name": "Ads Video " + stage,
             "version": "test-1", "mode": "planner", "content": "EXPLICIT OFFLINE SKILL",
             "resources": [{"path": "SKILL.md", "sha256": "b" * 64}], "content_sha256": "a" * 64}
@@ -69,8 +69,15 @@ def candidates_for(env):
             "通过桌面搭配前后的构图变化，让瓶形成为办公桌布置选择的一部分。",
             "保持瓶子不变，依次展示早晚光线下的外形与自然光全貌。",
         ][i],
-        film_concept={"structure": ("scene_action" if i == 1 else "world_intercut") if brief.ad_form == "scene_story"
+        film_concept={
+            "structure": ("scene_action" if i == 1 else "world_intercut") if brief.ad_form == "scene_story"
+            else ("world_intercut" if i == 1 else "product_visual") if brief.ad_form == "brand_tvc"
             else ("lifestyle" if i == 1 else "product_visual"),
+            "visual_skeleton": ("world_intercut" if i == 2 else "lifestyle") if brief.ad_form == "scene_story"
+            else ("world_intercut" if i == 1 else "product_visual") if brief.ad_form == "brand_tvc"
+            else ("lifestyle" if i == 1 else "product_visual"),
+            "visual_motif": ["窗光沿瓶身", "空出的桌角", "早晚同一束光"][i],
+            "side_proof": ["光从一条轮廓走到整只瓶子。", "整理出来的空位被这只瓶子占住。", "光线换过，还是同一只瓶子。"][i],
             "key_visual": ["窗光勾勒同一瓶身，从线条逐渐看清轮廓。", "整理后的桌角由瓶身轮廓占据。", "同一瓶身上的光线由早到晚流动。"][i],
             "memory_anchor": ["完整瓶形接住开场的轮廓线。", "桌角留下这一只瓶子。", "光线改变，瓶形始终一致。"][i],
             "sound_role": "画外音补充桌面用品的选择语境，不复述画面动作。"},
@@ -80,10 +87,25 @@ def candidates_for(env):
             "characters": ([{"id": "char_worker", "name": "办公者", "description": "创作设定：短发成年办公者，穿浅色长袖衬衫"}] if i == 1 else []),
             "speech_mode": "voiceover", "speaker_id": "", "voice_description": "自然普通话画外音，向观众介绍桌面搭配，平缓不播音腔"})
         for i, (rule, label, angle, hook, development, payoff, reason) in enumerate([
-            ("appearance_reveal", "轮廓之美", "关注瓶身的轮廓关系", "一道轮廓先出现", "看到瓶身线条", "整体落定", "外观可见"),
-            ("everyday_context", "桌面一角", "考虑商品与办公桌的搭配", "手整理办公桌", "将商品摆在留出的桌面空间", "桌面搭配完成", "场景符合用户要求"),
-            ("appearance_reveal", "光线里的变化", "同一外观在光线下的层次", "斜射光照到商品", "主体不动，光线经过瓶身", "保留自然光中的商品", "不依赖未知功能"),
+            ("appearance_reveal", "轮廓之美", "先从轮廓认出这只瓶子", "一道轮廓先出现", "看到瓶身线条", "整体落定", "外观可见"),
+            ("everyday_context", "桌面一角", "桌角还空着，这只瓶子刚好放下", "手整理办公桌", "将商品摆在留出的桌面空间", "桌面搭配完成", "场景符合用户要求"),
+            ("appearance_reveal", "光线里的变化", "同一只瓶子，早晚光线不一样", "斜射光照到商品", "主体不动，光线经过瓶身", "保留自然光中的商品", "不依赖未知功能"),
         ])]
+    hooks = {"scene_story": ("awkward_moment", "situational_conflict", "arresting_line"),
+             "presenter_pitch": ("direct_question", "counterintuitive", "result_first")}.get(
+        brief.ad_form, ("macro_detail", "scale_shift", "silhouette"))
+    insights = (
+        "还没看清整只瓶子，就想知道它长什么样。",
+        "桌面已经很满，还想给这只瓶子留一个位置。",
+        "光线一变，就怕认不出还是不是同一只瓶子。",
+    )
+    ideas = ("先看见一条轮廓", "桌角终于有了它", "光线换了瓶子还在")
+    worlds = ("functional", "identity", "sensory")
+    for index, direction in enumerate(directions):
+        direction.consumer_insight = insights[index]
+        direction.big_idea = ideas[index]
+        direction.hook_type = hooks[index]
+        direction.brand_world = worlds[index]
     if brief.ad_form == "presenter_pitch":
         # These type-switch tests use a synthetic presenter response rather
         # than relabeling the voiceover fixture as a successful presenter ad.
@@ -92,7 +114,8 @@ def candidates_for(env):
                 "characters": [{"id": "char_presenter", "name": "讲解者",
                     "description": "创作设定：成年桌面用品讲解者"}],
                 "speech_mode": "character_dialogue", "speaker_id": "char_presenter"})
-            direction.film_concept = direction.film_concept.model_copy(update={"structure": "presenter_explanation"})
+            direction.film_concept = direction.film_concept.model_copy(update={
+                "structure": "presenter_explanation", "visual_skeleton": "lifestyle"})
             direction.product_expression = "讲解者面向观众介绍瓶形，并拿起实物说明桌面选择。"
             direction.story_summary = "讲解者向观众提出桌面布置的选择，拿起瓶子介绍外形，再回到完整商品。"
     return build_direction_candidates(brief, directions, "direction_0", select_rules(None))
@@ -104,8 +127,21 @@ def approved_direction_review(directions):
         "checks": [{"direction_id": direction["id"], "physical_plausibility_passed": True,
             "product_role_passed": True, "attraction_passed": True,
             "claim_support_passed": True, "expression_form_passed": True, "film_concept_passed": True,
-            "note": "离线审核夹具：保留同一商品，完成展示或摆放后状态一致，观看期待有对应展开。"}
+            "creative_tension": "medium", "hook_strength": "medium",
+            "note": "离线审核夹具：保留同一商品，完成展示或摆放后状态一致，开场后面有展开。"}
             for direction in directions]}
+
+
+def concept_pool_for(directions):
+    """Six short concepts whose greedy pick is the three supplied directions."""
+    items = []
+    for direction in directions:
+        data = direction if isinstance(direction, dict) else direction.model_dump()
+        items.append({"id": data["id"], "rule_id": data["rule_id"], "hook_type": data["hook_type"],
+            "brand_world": data["brand_world"], "evidence_ids": list(data["evidence_ids"])})
+    for index in range(3):
+        items.append({**items[0], "id": f"spare_{index}"})
+    return items
 
 
 def compiled_from_reservations(context):
@@ -216,6 +252,37 @@ def test_invalid_or_stale_choice_does_not_mutate(env, field, value):
     assert env[1].state.store.project_detail(env[2]) == before
 
 
+def test_product_image_and_info_keep_the_pending_direction(env):
+    """A later product photo or product note stays on the offer the merchant is already choosing."""
+    import io
+    from PIL import Image
+    gate, job = offer(env)
+    client, app, pid, _ = env
+    store = app.state.store
+    option_ids = [option["id"] for option in gate["options"]]
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(buffer, "PNG")
+    uploaded = client.post(f"/api/projects/{pid}/assets", files={"file": ("草莓蛋糕.png", buffer.getvalue(), "image/png")})
+    assert uploaded.status_code == 201
+    kept = store.pending_gate(pid, "direction")
+    assert kept["id"] == gate["id"] and kept["status"] == "pending"
+    assert [option["id"] for option in kept["options"]] == option_ids
+    assert kept["context_version"] == store.get_project(pid)["context_version"]
+    assert store.get_job(job["id"])["status"] == "awaiting_input"
+    assert store.pending_gate(pid, "clarification") is None
+    noted = post_turn(env, client_turn_id="product-note", content="这是草莓蛋糕，表面有奶油和水果。")
+    assert noted.status_code == 200
+    assert noted.json()["job"]["id"] == job["id"]
+    assert noted.json()["job"]["status"] == "awaiting_input"
+    kept = store.pending_gate(pid, "direction")
+    assert kept["id"] == gate["id"] and [option["id"] for option in kept["options"]] == option_ids
+    assert kept["context_version"] == store.get_project(pid)["context_version"]
+    assert store.pending_gate(pid, "clarification") is None
+    assert not any(item["status"] == "queued" for item in store.project_detail(pid)["jobs"])
+    assert any(message["role"] == "user" and message["content"] == "这是草莓蛋糕，表面有奶油和水果。" for message in store.project_detail(pid)["messages"])
+    assert select(env, kept).status_code == 200
+
+
 def test_free_input_supersedes_gate_and_question_reply_preserves_offer(env):
     gate, _ = offer(env)
     response = post_turn(env, client_turn_id="question", content="第一个方向是什么意思？")
@@ -240,7 +307,8 @@ def test_cannot_mix_direction_gate_with_image_confirmation(env):
 def test_direction_contract_rejects_auto_selection_and_cosmetic_duplicates(env):
     candidate = candidates_for(env)
     base = {"kind": "directions", "message": "选方向", "brief": candidate.brief.model_dump(),
-        "directions": [d.model_dump() for d in candidate.directions], "selected_direction_id": None}
+        "directions": [d.model_dump() for d in candidate.directions],
+        "concept_pool": concept_pool_for(candidate.directions), "selected_direction_id": None}
     StrategyDecision.model_validate(base)
     for bad in ({**base, "selected_direction_id": "direction_0"}, {**base, "directions": base["directions"][:2]}):
         with pytest.raises(ValidationError):
@@ -254,23 +322,25 @@ def test_direction_contract_rejects_auto_selection_and_cosmetic_duplicates(env):
 
 @pytest.mark.parametrize("field", ["story_summary", "attraction_mechanism"])
 @pytest.mark.parametrize("value", [None, "", " \n\t "])
-def test_new_direction_response_requires_nonempty_story_and_attraction(env, field, value):
+def test_new_direction_response_accepts_a_pitch_without_the_old_essays(env, field, value):
     candidate = candidates_for(env)
     payload = {"kind": "directions", "message": "请选择方向", "brief": candidate.brief.model_dump(),
-        "directions": [d.model_dump() for d in candidate.directions]}
+        "directions": [d.model_dump() for d in candidate.directions],
+        "concept_pool": concept_pool_for(candidate.directions)}
     if value is None:
-        payload["directions"][1].pop(field)
+        payload["directions"][1].pop(field, None)
     else:
         payload["directions"][1][field] = value
-    with pytest.raises(ValidationError, match="故事概要和吸引观众"):
-        StrategyDecision.model_validate(payload)
+    decision = StrategyDecision.model_validate(payload)
+    assert not getattr(decision.directions[1], field)
 
 
 @pytest.mark.parametrize("omit_brief", [False, True])
 def test_new_direction_response_cannot_inherit_or_omit_brief(env, omit_brief):
     candidate = candidates_for(env)
     response = {"kind": "directions", "message": "三个方向", "brief": None,
-        "directions": [d.model_dump() for d in candidate.directions]}
+        "directions": [d.model_dump() for d in candidate.directions],
+        "concept_pool": concept_pool_for(candidate.directions)}
     if omit_brief:
         response.pop("brief")
     with pytest.raises(ValidationError):
@@ -278,18 +348,24 @@ def test_new_direction_response_cannot_inherit_or_omit_brief(env, omit_brief):
     assert StrategyDecision.model_validate({"kind": "reply", "message": "普通答复", "brief": None}).brief is None
 
 
-def test_new_request_schema_requires_stories_without_breaking_historical_schema():
+def test_new_request_schema_drops_essays_and_revisions_keep_saved_stories():
     fresh = strategy_decision_schema(new_directions=True)["$defs"]["CreativeDirection"]
     updating = strategy_decision_schema(retain_direction_story=True)["$defs"]["CreativeDirection"]
     historical = strategy_decision_schema()["$defs"]["CreativeDirection"]
     for field in ("story_summary", "attraction_mechanism"):
-        assert field in fresh["required"]
-        assert fresh["properties"][field]["minLength"] == 1
+        assert field not in fresh["properties"]
         assert field in updating["required"]
         assert updating["properties"][field]["minLength"] == 1
-        assert "default" not in fresh["properties"][field]
         assert field not in historical["required"]
         assert historical["properties"][field]["default"] == ""
+    assert "audience_value" not in fresh["properties"]
+    assert "big_idea" not in fresh["properties"]
+    assert "product_expression" in fresh["required"]
+    assert fresh["properties"]["product_expression"]["maxLength"] == 60
+    assert "audience_value" not in updating["required"]
+    assert "product_expression" not in updating["required"]
+    assert fresh["properties"]["hook"]["maxLength"] == 40
+    assert fresh["properties"]["reason"]["maxLength"] == 40
 
 
 def historical_candidates(env):
@@ -378,7 +454,8 @@ def test_real_gateway_pauses_then_uses_only_selected_direction(env, monkeypatch,
                       if selected_direction.get("story_summary") and selected_direction.get("attraction_mechanism")
                       else selected_direction)
     strategy_response = {"kind": "directions", "message": "选一个方向", "brief": candidates.brief.model_dump(),
-        "directions": [d.model_dump() for d in candidates.directions], "selected_direction_id": None,
+        "directions": [d.model_dump() for d in candidates.directions],
+        "concept_pool": concept_pool_for(candidates.directions), "selected_direction_id": None,
         "recommended_direction_id": candidates.recommended_direction_id}
     calls, compiled = [], None
     real_client = httpx.AsyncClient
@@ -394,7 +471,11 @@ def test_real_gateway_pauses_then_uses_only_selected_direction(env, monkeypatch,
             assert context["orchestrator_skills"]["stage"] == "orchestrator"
             assert context["allowed_decisions"] == ["reply", "clarify", "directions"]
             required = context["schema"]["$defs"]["CreativeDirection"]["required"]
-            assert {"story_summary", "attraction_mechanism"} <= set(required)
+            assert {"product_expression", "consumer_insight", "hook_type", "brand_world", "film_concept", "hook", "payoff", "reason"} <= set(required)
+            for dropped in ("story_summary", "attraction_mechanism", "audience_value", "big_idea", "angle", "development"):
+                assert dropped not in required
+                assert dropped not in context["schema"]["$defs"]["CreativeDirection"]["properties"]
+            assert context["schema"]["$defs"]["CreativeDirection"]["properties"]["product_expression"]["maxLength"] == 60
             return chat_output(strategy_response)
         if stage == "direction_review":
             assert context["immutable_brief"] == candidates.brief.model_dump()
@@ -426,7 +507,7 @@ def test_real_gateway_pauses_then_uses_only_selected_direction(env, monkeypatch,
             if progressive:
                 assert context["brief"] == candidates.brief.model_dump()
                 assert "expression_schedule" not in context and "approved_ad_script" not in context
-                assert set(context["schema"]["properties"]) == {"title", "ad_script", "visual_direction", "shots"}
+                assert set(context["schema"]["properties"]) == {"title", "video_flow", "ad_script", "visual_direction", "shots"}
                 assert "evidence_ids" not in context["schema"]["$defs"]["AdScript"]["properties"]
                 script = deepcopy(context["draft_script"])
                 for field in ("evidence_ids", "skill_version"):
@@ -541,6 +622,91 @@ def test_candidate_builder_accepts_wire_dicts_without_preselecting(env):
     assert "selected_direction_id" not in result.model_dump()
 
 
+def test_product_supplement_keeps_direction_and_does_not_open_clarification(env, monkeypatch):
+    _, app, pid, asset = env
+    candidate = candidates_for(env)
+    current = {"strategy": candidate.select("direction_1").model_dump()}
+    newer = {**asset, "id": "asset_later", "name": "补充蛋糕.png", "created_at": asset["created_at"] + 5}
+    calls = []
+
+    async def planned(self, system, context, originals, max_tokens=7000):
+        calls.append(context)
+        assert context["stage"] == "strategy"
+        assert context["allowed_decisions"] == ["plan"]
+        assert context["existing_direction"]["id"] == "direction_1"
+        assert context["product_supplement"]
+        assert "direction_reopen" not in context
+        return {"kind": "clarify", "message": "请重新确认需求。", "questions": [{"id": "again", "prompt": "再选一次方向？", "options": [], "allow_custom": True, "allow_skip": True}]}
+
+    monkeypatch.setattr(Gateway, "_planner_json", planned)
+    with pytest.raises(ProviderError):
+        asyncio.run(Gateway(app.state.settings).decide(app.state.store.get_project(pid), [asset, newer],
+            [{"role": "user", "content": "这是草莓蛋糕，表面有奶油和水果。"}], [], current))
+    assert [item["stage"] for item in calls] == ["strategy", "strategy"]
+    assert app.state.store.pending_gate(pid) is None
+
+
+def test_first_directions_do_not_claim_old_ones_were_set_aside(env, monkeypatch):
+    _, app, pid, asset = env
+    with app.state.store._connection(True) as connection:
+        connection.execute(
+            "UPDATE projects SET ad_form=?, ad_form_updated_context_version=1 WHERE id=?",
+            ("presenter_pitch", pid))
+    project = app.state.store.get_project(pid)
+    candidate = candidates_for(env)
+
+    async def planned(self, system, context, originals, max_tokens=7000):
+        if context["stage"] == "direction_review":
+            return approved_direction_review(context["directions"])
+        assert "先前的方向先放下" not in context.get("direction_reopen", "")
+        return {"kind": "directions", "message": "请选择方向", "brief": candidate.brief.model_dump(),
+            "directions": [item.model_dump() for item in candidate.directions],
+            "concept_pool": concept_pool_for(candidate.directions)}
+
+    monkeypatch.setattr(Gateway, "_planner_json", planned)
+    result = asyncio.run(Gateway(app.state.settings).decide(
+        project, [asset], [{"role": "user", "content": "人物讲解"}], [], None))
+    assert result["kind"] == "directions"
+    assert "先前的方向先放下" not in result["message"]
+    assert "准备了三个不同的广告方向" in result["message"]
+
+
+def test_explicit_reselection_says_the_previous_direction_is_set_aside(env, monkeypatch):
+    _, app, pid, asset = env
+    candidate = candidates_for(env)
+    current = {"strategy": candidate.select("direction_1").model_dump()}
+    calls = []
+
+    async def planned(self, system, context, originals, max_tokens=7000):
+        calls.append(context)
+        if context["stage"] == "direction_review":
+            return approved_direction_review(context["directions"])
+        assert context["existing_direction"] is None
+        assert "directions" in context["allowed_decisions"]
+        assert "先前" in context["direction_reopen"]
+        return {"kind": "directions", "message": "请选择新方向", "brief": candidate.brief.model_dump(),
+            "directions": [item.model_dump() for item in candidate.directions],
+            "concept_pool": concept_pool_for(candidate.directions)}
+
+    monkeypatch.setattr(Gateway, "_planner_json", planned)
+    result = asyncio.run(Gateway(app.state.settings).decide(app.state.store.get_project(pid), [asset],
+        [{"role": "user", "content": "重新给我三个创意方向"}], [], current))
+    assert result["kind"] == "directions"
+    assert "先前的选择先放下" in result["message"]
+    assert calls[0]["stage"] == "strategy" and calls[1]["stage"] == "direction_review"
+
+
+@pytest.mark.parametrize("text,kept", [
+    ("这是草莓蛋糕，表面有奶油和水果。", True),
+    ("把台词改短一些", False),
+    ("第一个方向是什么意思？", False),
+    ("重新给我三个创意方向", False),
+])
+def test_product_note_keeps_direction_unless_the_merchant_asks_to_change_it(text, kept):
+    assert keeps_selected_direction([{"role": "user", "content": text}]) is kept
+    assert keeps_selected_direction([{"role": "user", "content": "把台词改短一些"}], has_new_image=True) is True
+
+
 @pytest.mark.parametrize("content,reselect", [("把台词改短一些", False), ("重新给我三个创意方向", True)])
 @pytest.mark.parametrize("historical_selected", [False, True])
 def test_gateway_reopens_choices_only_on_explicit_reselection(env, monkeypatch, content, reselect, historical_selected):
@@ -564,7 +730,8 @@ def test_gateway_reopens_choices_only_on_explicit_reselection(env, monkeypatch, 
             assert context["existing_direction"] is None
             assert context["direction_selection_required"] is True
             return {"kind": "directions", "message": "请选择新方向", "brief": candidate.brief.model_dump(),
-                "directions": [item.model_dump() for item in candidate.directions]}
+                "directions": [item.model_dump() for item in candidate.directions],
+                "concept_pool": concept_pool_for(candidate.directions)}
         assert context["existing_direction"]["id"] == "direction_1"
         assert context["allowed_decisions"] == ["reply", "clarify", "plan"]
         required = context["schema"]["$defs"]["CreativeDirection"]["required"]
@@ -672,23 +839,22 @@ def test_private_schema_diagnostic_has_only_bounded_locations_and_types(env, mon
     directions[1][invalid_key] = private_value
     directions[2]["X" * 200] = private_value
     async def planned(self, system, context, originals, max_tokens=7000):
+        if context.get("stage") == "direction_review":
+            return approved_direction_review(context["directions"])
         return {"kind": "directions", "message": "选择方向", "brief": candidate.brief.model_dump(),
-            "directions": directions}
+            "directions": directions, "concept_pool": concept_pool_for(candidate.directions)}
     monkeypatch.setattr(Gateway, "_planner_json", planned)
     with caplog.at_level(logging.WARNING, logger="app.providers.gateway"):
-        with pytest.raises(ProviderError, match="结构校验") as error:
-            asyncio.run(Gateway(app.state.settings).decide(app.state.store.get_project(pid), [asset], [], [], None))
-    records = [record.getMessage() for record in caplog.records if record.name == "app.providers.gateway"]
-    assert len(records) == 1
-    diagnostics = json.loads(records[0].split(": ", 1)[1])
-    assert diagnostics == [
-        {"loc": ["directions", 0, "recommended"], "type": "extra_forbidden"},
-        {"loc": ["directions", 1, "field"], "type": "extra_forbidden"},
-        {"loc": ["directions", 2, "field"], "type": "extra_forbidden"},
-    ]
-    assert "recommended" not in str(error.value)
+        result = asyncio.run(Gateway(app.state.settings).decide(
+            app.state.store.get_project(pid), [asset], [], [], None))
+    assert result["kind"] == "directions"
+    saved = result["direction_candidates"]["directions"]
+    assert "recommended" not in saved[0]
+    assert invalid_key not in saved[1]
+    assert "X" * 200 not in saved[2]
+    blob = json.dumps(result, ensure_ascii=False) + caplog.text
     for sensitive in (private_value, invalid_key, "X" * 200):
-        assert sensitive not in records[0] and sensitive not in str(error.value)
+        assert sensitive not in blob
 
 
 @pytest.mark.parametrize("kind", ["reply", "clarify"])

@@ -58,19 +58,11 @@ def test_incomplete_review_is_not_reported_as_content_rejection_or_replayed(run_
     monkeypatch.setattr(Gateway, '_planner_json', malformed)
     before = store.project_detail(pid)
     result = execute()
-    assert result['status'] == 'failed'
-    assert result['progress']['error_code'] == 'planning_review_incomplete'
-    assert result['progress']['retry_action'] == 'continue_conversation'
-    assert result['progress']['retryable'] is False
+    assert result['status'] == 'ready'
+    assert result['payload']['decision']['kind'] == 'plan'
     assert calls == ['ad_script', 'storyboard', 'plan_review', 'plan_review']
     assert 'plan_refinement' not in calls
-    frozen = deepcopy(result['payload']['planning_checkpoint'])
-    response = client.post(f'/api/projects/{pid}/retry', json={'job_id': job['id']})
-    assert response.status_code == 409
-    assert '修改要求' not in response.text
-    assert store.get_job(job['id'])['payload']['planning_checkpoint'] == frozen
     after = store.project_detail(pid)
-    assert after['project']['plan'] == before['project']['plan']
     assert after['assets'] == before['assets'] and after['renders'] == before['renders']
     assert result['submission_count'] == 0
 

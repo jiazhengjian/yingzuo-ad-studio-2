@@ -45,67 +45,117 @@ const filmDirection = (id, structure = 'product_visual') => ({ ...direction(id),
     memory_anchor: `记忆画面${id}：环绕产品的风与发丝。`, sound_role: `声音职责${id}：旁白补充已确认功能与造型师的选择关注。` },
 });
 
-test('film concepts make structure and the visible idea clear while secondary copy stays collapsed', () => {
+test('an ad concept shows the core idea, insight, three beats and why people stop', () => {
+  const production = { version: '1.0.0', product_constraints: [], characters: [], speech_mode: 'voiceover', speaker_id: '', voice_description: '自然旁白' };
+  const option = { ...filmDirection('concept'), production, rule_id: 'contrast_humor', hook_type: 'situational_conflict',
+    big_idea: '先看见一条轮廓', product_expression: '把瓶身轮廓和停住的光线绑在一起：线先出现，瓶子后到。',
+    consumer_insight: '还没看清整只瓶子，就想知道它长什么样。', reason: '停一下的光线，让人想看瓶子出不出现。' };
+  const html = markup(gate({ options: [option, { ...filmDirection('plain'), production, reason: '' }, { ...filmDirection('other'), production, reason: '' }] }));
+  const start = html.indexOf('方向：创意concept');
+  const heading = html.slice(start, html.indexOf('class="direction-film-main"', start));
+  const main = html.indexOf('class="direction-film-main"', start);
+  const summary = html.indexOf('class="production-summary"', main);
+  const visible = html.slice(main, summary);
+  assert.ok(heading.includes('反差幽默 · 小冲突开场'));
+  assert.ok(!heading.includes('contrast_humor'));
+  assert.ok(!heading.includes('situational_conflict'));
+  for (const text of ['核心创意', option.product_expression, '洞察', option.consumer_insight, '0–3秒', option.hook,
+    '中段', option.film_concept.key_visual, '结尾', option.payoff, '为什么吸引人', option.reason]) {
+    assert.ok(visible.includes(text), text);
+  }
+  for (const text of ['一句话创意', '先看见一条轮廓', '核心画面', '怎么开头、怎么收尾', '为什么能打', option.story_summary, option.angle,
+    option.film_concept.memory_anchor, option.film_concept.sound_role]) {
+    assert.ok(!visible.includes(text), text);
+  }
+  assert.equal((html.match(/<dt>为什么吸引人<\/dt>/g) ?? []).length, 1);
+  assert.ok(!html.includes('direction-film-details'));
+});
+
+test('direction cards stay on the short pitch and keep the production line', () => {
   const production = { version: '1.0.0', product_constraints: [], characters: [], speech_mode: 'voiceover', speaker_id: '', voice_description: '自然旁白' };
   const options = ['product_visual', 'world_intercut', 'lifestyle'].map((structure, index) => ({
-    ...filmDirection(String(index), structure), production,
+    ...filmDirection(String(index), structure), production, big_idea: `一句话${index}`,
   }));
   const html = markup(gate({ options }));
-  for (const label of ['产品视觉呈现', '产品与场景交替', '生活方式']) assert.ok(html.includes(label));
-  for (const label of ['主打什么', '核心画面', '创意展开', '怎样表达卖点']) {
+  for (const label of ['产品视觉呈现', '产品与场景交替', '生活方式', '主打什么', '创意展开', '怎样表达卖点', '剧情／场景', '人物讲解']) {
+    assert.ok(!html.includes(label), label);
+  }
+  for (const label of ['核心创意', '0–3秒', '中段', '结尾', '为什么吸引人']) {
     assert.equal((html.match(new RegExp(`<dt>${label}</dt>`, 'g')) ?? []).length, 3);
   }
+  assert.equal((html.match(/<dt>一句话创意<\/dt>/g) ?? []).length, 0);
+  assert.equal((html.match(/<dt>洞察<\/dt>/g) ?? []).length, 0);
   for (const option of options) {
     const start = html.indexOf(`方向：${option.label}`);
     const main = html.indexOf('class="direction-film-main"', start);
-    const secondary = html.indexOf('class="direction-film-details"', main);
-    const summary = html.indexOf('class="production-summary"', secondary);
-    assert.ok(start < main && main < secondary && secondary < summary);
-    const visible = html.slice(main, secondary);
-    const details = html.slice(secondary, summary);
-    for (const text of [option.angle, option.film_concept.key_visual, option.story_summary, option.product_expression]) assert.ok(visible.includes(text));
-    for (const text of [option.audience_value, option.attraction_mechanism, option.film_concept.memory_anchor, option.film_concept.sound_role]) {
+    const summary = html.indexOf('class="production-summary"', main);
+    assert.ok(start < main && main < summary);
+    const visible = html.slice(main, summary);
+    assert.ok(!visible.includes(option.big_idea));
+    assert.ok(visible.includes(option.product_expression));
+    assert.ok(visible.includes(option.film_concept.key_visual));
+    assert.ok(visible.includes(option.hook));
+    assert.ok(visible.includes(option.payoff));
+    assert.ok(visible.includes(option.reason));
+    assert.ok(!visible.includes(`${option.hook}；${option.payoff}`));
+    for (const text of [option.angle, option.story_summary, option.audience_value,
+      option.attraction_mechanism, option.film_concept.memory_anchor, option.film_concept.sound_role, option.development]) {
       assert.ok(!visible.includes(text));
-      assert.ok(details.includes(text));
     }
-    assert.ok(!html.includes(option.hook), 'the short film concept must not repeat the old opening/development/payoff fields');
-    assert.ok(!html.includes(option.reason));
   }
-  assert.equal((html.match(/<details class="direction-film-details">/g) ?? []).length, 3);
-  assert.doesNotMatch(html, /<details[^>]*\bopen[ =]/);
+  assert.equal((html.match(/<details class="direction-film-details">/g) ?? []).length, 0);
   assert.equal((html.match(/aria-label="人物、声音与参考图安排"/g) ?? []).length, 3);
   assert.equal(choiceButtons(html).length, 3);
   assert.ok(choiceButtons(html).every(button => !button.includes('disabled')));
-  assert.doesNotMatch(html, /<input|<textarea|<select|role="dialog"/);
+  assert.doesNotMatch(html, /<input|<textarea|<select|role="dialog"|scene_action|presenter_explanation|product_visual|film_concept/);
 });
 
-test('scene and presenter film structures use readable labels without displaying internal enum values', () => {
-  const html = markup(gate({ options: [filmDirection('a', 'scene_action'), filmDirection('b', 'presenter_explanation'), filmDirection('c')] }));
-  assert.ok(html.includes('剧情／场景'));
-  assert.ok(html.includes('人物讲解'));
-  assert.doesNotMatch(html, /scene_action|presenter_explanation|product_visual|film_concept/);
+test('a direction card says how the picture works, the side proof and the motif', () => {
+  const production = { version: '1.0.0', product_constraints: [], characters: [], speech_mode: 'voiceover', speaker_id: '', voice_description: '自然旁白' };
+  const options = [
+    { ...filmDirection('a', 'product_visual'), production, film_concept: { ...filmDirection('a').film_concept, visual_skeleton: 'product_visual', visual_motif: '蓝光', side_proof: '蓝光里的离子颗粒贴着发丝。' } },
+    { ...filmDirection('b', 'world_intercut'), production, film_concept: { ...filmDirection('b', 'world_intercut').film_concept, visual_skeleton: 'world_intercut', visual_motif: '可可', side_proof: '可可从枝头到蛋糕的那一层。' } },
+    { ...filmDirection('c', 'lifestyle'), production },
+  ];
+  const html = markup(gate({ options }));
+  assert.ok(html.includes('怎么讲画面'));
+  assert.ok(html.includes('拆解'));
+  assert.ok(html.includes('穿梭'));
+  assert.ok(html.includes('生活'));
+  assert.ok(html.includes('侧面证明'));
+  assert.ok(html.includes('贯穿母题'));
+  assert.ok(html.includes('蓝光里的离子颗粒贴着发丝。'));
+  assert.ok(!html.includes('product_visual'));
+  assert.ok(!html.includes('生活方式'));
+  assert.ok(!html.includes('产品视觉呈现'));
 });
 
-test('identical film copy appears once and blank secondary fields do not create empty sections', () => {
+test('the same sentence can label two beats, and blank lines do not create empty rows', () => {
   const repeated = '吹风机与环绕它的气流一起进入画面。';
-  const one = { ...filmDirection('a'), story_summary: repeated, product_expression: repeated,
-    audience_value: '', attraction_mechanism: ' ',
+  const one = { ...filmDirection('a'), big_idea: repeated, story_summary: repeated, product_expression: repeated,
+    hook: '', payoff: '', reason: '',
     film_concept: { structure: 'product_visual', key_visual: repeated, memory_anchor: repeated, sound_role: '' } };
   const html = markup(gate({ options: [one, direction('b'), direction('c')] }));
-  assert.equal(html.split(repeated).length - 1, 1);
-  assert.ok(!html.includes('direction-film-details'), 'empty or repeated supporting copy needs no disclosure');
+  assert.equal(html.split(repeated).length - 1, 2);
+  assert.ok(!html.includes('direction-film-details'));
   assert.doesNotMatch(html, /<dd>\s*<\/dd>/);
   assert.equal(choiceButtons(html).length, 3);
 });
 
-test('new and historical options can coexist without inventing a film structure for older cards', () => {
+test('older cards still show the short lines they already have and hide the essays', () => {
   const html = markup(gate({ options: [filmDirection('a'), direction('b'), { ...direction('c'), film_concept: null }] }));
-  assert.equal((html.match(/class="direction-structure"/g) ?? []).length, 1);
-  assert.equal((html.match(/class="direction-film-main"/g) ?? []).length, 1);
-  assert.equal((html.match(/class="direction-product-value"/g) ?? []).length, 2);
+  assert.ok(!html.includes('direction-structure'));
+  assert.equal((html.match(/class="direction-film-main"/g) ?? []).length, 3);
+  assert.ok(!html.includes('direction-product-value'));
   for (const id of ['b', 'c']) {
-    for (const text of [`故事${id}`, `受众在意${id}`, `产品呈现${id}`, `吸引方式${id}`]) assert.ok(html.includes(text));
+    assert.ok(html.includes(`开场画面${id}`));
+    assert.ok(html.includes(`收束画面${id}`));
+    assert.ok(html.includes(`产品呈现${id}`));
+    assert.ok(html.includes(`选择商品的理由${id}`));
+    assert.ok(!html.includes(`开场画面${id}；收束画面${id}`));
+    for (const text of [`故事${id}`, `受众在意${id}`, `吸引方式${id}`, `角度${id}`]) assert.ok(!html.includes(text));
   }
+  assert.ok(html.includes('核心视觉a'));
   assert.equal(choiceButtons(html).length, 3);
 });
 
@@ -130,84 +180,96 @@ test('film concept choices retain exact selection context and invalidate drafts 
   assert.ok(history.includes('核心视觉b'));
 });
 
-test('three directions show product value and its expression before the creative idea without auto-selecting', () => {
+test('three directions show the short pitch and a recommendation without auto-selecting', () => {
   const html = markup();
   assert.equal(choiceButtons(html).length, 3);
   assert.equal((html.match(/class="direction-recommended"/g) ?? []).length, 1);
   for (const id of ['a', 'b', 'c']) {
-    for (const text of [`创意${id}`, `角度${id}`, `受众在意${id}`, `产品呈现${id}`, `故事${id}`, `吸引方式${id}`]) assert.ok(html.includes(text));
+    assert.ok(html.includes(`创意${id}`));
+    assert.ok(html.includes(`开场画面${id}`));
+    assert.ok(html.includes(`收束画面${id}`));
+    assert.ok(html.includes(`产品呈现${id}`));
+    assert.ok(html.includes(`选择商品的理由${id}`));
+    assert.ok(!html.includes(`开场画面${id}；收束画面${id}`));
     assert.ok(html.replace(/<!--.*?-->/g, '').includes(`<h4>方向：创意${id}</h4>`));
-    assert.ok(!html.includes(`选择商品的理由${id}`));
-    assert.ok(html.indexOf(`角度${id}`) < html.indexOf(`受众在意${id}`));
-    assert.ok(html.indexOf(`受众在意${id}`) < html.indexOf(`产品呈现${id}`));
-    assert.ok(html.indexOf(`产品呈现${id}`) < html.indexOf(`故事${id}`));
+    for (const text of [`角度${id}`, `受众在意${id}`, `故事${id}`, `吸引方式${id}`]) {
+      assert.ok(!html.includes(text), text);
+    }
   }
-  for (const label of ['主打什么', '为什么在意', '如何体现']) assert.equal((html.match(new RegExp(`<dt>${label}</dt>`, 'g')) ?? []).length, 3);
-  assert.equal((html.match(/<span>创意展开<\/span>/g) ?? []).length, 3);
-  assert.equal((html.match(/<span>怎样吸引观众<\/span>/g) ?? []).length, 3);
-  assert.ok(!html.includes('开场画面a'), 'shot-level fields should not duplicate the story on the direction card');
+  assert.equal((html.match(/<dt>一句话创意<\/dt>/g) ?? []).length, 0);
+  assert.equal((html.match(/<dt>为什么吸引人<\/dt>/g) ?? []).length, 3);
+  assert.equal((html.match(/<dt>怎么开头、怎么收尾<\/dt>/g) ?? []).length, 0);
   assert.ok(html.includes('选好后，再展开完整脚本与分镜'));
   assert.ok(!html.includes('创意依据'));
   assert.ok(!html.includes('<span>选择理由</span>'));
   assert.ok(!html.includes('is-selected'));
+  assert.ok(!html.includes('direction-film-details'));
   assert.doesNotMatch(html, /<img|<video|<textarea|<input|role="dialog"/);
   assert.ok(choiceButtons(html).every(button => !button.includes('disabled')));
 });
 
-test('story and attraction are fully visible without exposing rationale or production notes', () => {
+test('saved essays stay off the card while the opening and ending remain', () => {
   const long = { ...direction('a'), story_summary: '午后，白领从鼠标上移开手，拿起蛋糕；同事的目光随之转过来。'.repeat(8),
     attraction_mechanism: '从同事之间的目光和动作让观众好奇发生了什么。',
     reason: '依据原图里可见的轮廓和已经确认的办公室场景。'.repeat(8), production_notes: ['保持商品原图外观。'] };
   const html = markup(gate({ options: [long, direction('b'), direction('c')] }));
-  assert.ok(html.includes(long.story_summary));
-  assert.ok(html.includes(long.attraction_mechanism));
+  assert.ok(!html.includes(long.story_summary));
+  assert.ok(!html.includes(long.attraction_mechanism));
+  assert.ok(html.includes('开场画面a'));
+  assert.ok(html.includes('收束画面a'));
+  assert.ok(!html.includes('开场画面a；收束画面a'));
   assert.ok(!html.includes('is-compact'));
   assert.ok(!html.includes(long.reason));
+  assert.ok(html.includes('依据原图里可见的轮廓和已经确认的办公室场景。'));
   assert.ok(!html.includes('保持商品原图外观。'));
   assert.ok(!html.includes('制作说明'));
   assert.ok(!html.includes('创意依据'));
   assert.ok(!html.includes('direction-detail-content'));
   assert.ok(!html.includes('direction-details-toggle'));
+  assert.ok(!html.includes('direction-film-details'));
   assert.equal(choiceButtons(html).length, 3, 'removing supporting details preserves the same explicit choices');
   assert.doesNotMatch(html, /<textarea|<input|role="dialog"/);
 });
 
-test('each direction keeps its title prefix and selection without extra details controls, including multiline stories', () => {
+test('each direction keeps its title prefix and selection without extra details controls', () => {
   const html = markup(gate({ options: [direction('a'), { ...direction('b'), story_summary: '第一行\n第二行\n第三行\n第四行' }, direction('c')] }));
   assert.equal((html.match(/class="direction-card-actions"/g) ?? []).length, 3);
   assert.equal((html.replace(/<!--.*?-->/g, '').match(/<h4>方向：/g) ?? []).length, 3);
   assert.equal(choiceButtons(html).length, 3);
   assert.ok(!html.includes('direction-details-toggle'));
   assert.ok(!html.includes('aria-expanded'));
-  assert.ok(html.includes('第一行\n第二行\n第三行\n第四行'));
+  assert.ok(!html.includes('第一行\n第二行\n第三行\n第四行'));
+  assert.ok(html.includes('开场画面b'));
+  assert.ok(html.includes('收束画面b'));
 });
 
-test('legacy directions retain their original content without claiming it is a newly generated story', () => {
+test('legacy directions show opening and ending without inventing a story label', () => {
   const legacy = { ...direction('a'), audience_value: undefined, product_expression: undefined, story_summary: undefined, attraction_mechanism: undefined };
   const blank = { ...direction('b'), audience_value: '  ', product_expression: '', story_summary: '  ', attraction_mechanism: '' };
   const olderStory = { ...direction('c'), audience_value: undefined, product_expression: undefined };
   const html = markup(gate({ options: [legacy, blank, olderStory] }));
-  assert.ok(html.includes('<span>原画面设想</span>开场画面a 展开画面a 收束画面a'));
-  assert.ok(html.includes('<span>原方向说明</span>角度a'));
-  assert.ok(html.includes('<span>原画面设想</span>开场画面b 展开画面b 收束画面b'));
-  assert.equal((html.match(/<span>故事概要<\/span>/g) ?? []).length, 1);
-  assert.doesNotMatch(html, /主打什么|为什么在意|如何体现|direction-product-value/);
+  assert.ok(html.includes('开场画面a') && html.includes('收束画面a'));
+  assert.ok(html.includes('开场画面b') && html.includes('收束画面b'));
+  assert.ok(html.includes('开场画面c') && html.includes('收束画面c'));
+  assert.ok(!html.includes('开场画面a；收束画面a'));
+  assert.doesNotMatch(html, /原画面设想|原方向说明|故事概要|主打什么|为什么在意|如何体现|direction-product-value|角度a/);
   assert.equal(choiceButtons(html).length, 3);
   assert.ok(choiceButtons(html).every(button => !button.includes('disabled')));
   assert.ok(!html.includes('人物、声音与参考图安排'), 'legacy cards must not infer cast or voice choices');
 });
 
-test('partially stored value fields remain readable without empty rows or duplicate angle fallbacks', () => {
+test('historical prose is not put back on the card when some value fields are missing', () => {
   const html = markup(gate({ options: [
     { ...direction('a'), audience_value: ' ', product_expression: '仅展示可核对的外观，不推导护发效果。', attraction_mechanism: '' },
     { ...direction('b'), product_expression: undefined },
     direction('c'),
   ] }));
-  assert.equal((html.match(/<dt>为什么在意<\/dt>/g) ?? []).length, 2);
-  assert.equal((html.match(/<dt>如何体现<\/dt>/g) ?? []).length, 2);
-  assert.equal((html.match(/角度a/g) ?? []).length, 1);
   assert.ok(html.includes('仅展示可核对的外观，不推导护发效果。'));
-  assert.doesNotMatch(html, /<dd>\s*<\/dd>|<span>原方向说明<\/span>/);
+  assert.ok(html.includes('核心创意'));
+  assert.ok(!html.includes('角度a'));
+  assert.ok(html.includes('开场画面a'));
+  assert.ok(html.includes('收束画面a'));
+  assert.doesNotMatch(html, /<dd>\s*<\/dd>|<dt>为什么在意<\/dt>|<dt>如何体现<\/dt>/);
   assert.equal(choiceButtons(html).length, 3, 'historical field gaps do not invalidate the choice');
 });
 
@@ -243,7 +305,7 @@ test('busy and unsent composer changes prevent all direction clicks', () => {
 });
 
 test('a malformed direction set cannot submit, while the shared composer still accepts revisions', () => {
-  for (const options of [[direction('a')], [direction('a'), direction('a'), direction('c')], [direction('a'), direction('b'), { ...direction('c'), reason: '' }]]) {
+  for (const options of [[direction('a')], [direction('a'), direction('a'), direction('c')], [direction('a'), direction('b'), { ...direction('c'), label: '  ', hook: '', payoff: '', angle: '' }]]) {
     const current = gate({ options });
     assert.equal(validDirectionOptions(current), false);
     assert.equal(choiceButtons(markup(current)).length, 0);
@@ -257,7 +319,10 @@ test('answered history records exactly the chosen direction and has no actionabl
   assert.equal((html.match(/class="direction-chosen"/g) ?? []).length, 1);
   assert.equal((html.match(/is-selected/g) ?? []).length, 1);
   assert.equal(choiceButtons(html).length, 0);
-  for (const text of ['受众在意a', '产品呈现a', '主打什么', '创意展开']) assert.ok(html.includes(text));
+  assert.ok(html.includes('开场画面a'));
+  assert.ok(html.includes('收束画面a'));
+  assert.ok(html.includes('产品呈现a'));
+  for (const text of ['受众在意a', '主打什么', '创意展开']) assert.ok(!html.includes(text));
   assert.doesNotMatch(html, /<details[^>]*\bopen[ =]/);
   const old = markup(gate({ status: 'superseded' }));
   assert.ok(old.includes('这组创意方向已更新'));

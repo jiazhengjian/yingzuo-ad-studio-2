@@ -52,6 +52,7 @@ def test_discovery_returns_versioned_rules_with_pinned_sources_and_constraints()
     assert {rule["id"] for rule in rules} == {
         "sensory_detail", "everyday_context", "appearance_reveal",
         "operation_walkthrough", "problem_solution", "evidence_comparison", "feature_value",
+        "exaggeration", "contrast_humor", "identity_attitude", "ritual_sensory", "situational_conflict",
     }
     for rule in rules:
         assert rule["version"] == ("1.2.0" if rule["id"] in {"everyday_context", "appearance_reveal"} else "1.1.0" if rule["id"] in {
@@ -255,7 +256,7 @@ def test_build_freezes_original_brief_and_exact_used_rule_provenance():
     directions = [direction(), direction("everyday_context", "d2")]
     rules = select_rules(value)
     record = build_strategy(value, directions, "d2", rules)
-    assert record.selected_direction_id == "d2" and record.version == "1.2.0"
+    assert record.selected_direction_id == "d2" and record.version == "1.3.0"
     assert [rule.id for rule in record.rules_used] == ["appearance_reveal", "everyday_context"]
     assert record.rules_used[0].sources == rules[0]["sources"]
     value.facts[0].text = "后来改过的商品描述"

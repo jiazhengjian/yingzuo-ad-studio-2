@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from .production import CHARACTER_SHEET_TEMPLATE, apply_cast_instructions
 from .runtime_skills import compiler_template
 
 
@@ -40,12 +41,15 @@ def scene_design_request(project, plan):
 
 
 def character_design_request(project, plan, character):
-    """Compile one four-view sheet for one approved, identifiable character."""
+    """Compile one horizontal identity sheet for one approved, identifiable character."""
     approved = (plan.get("production") or {}).get("characters", [])
     if not isinstance(character, dict) or character not in approved:
         raise ValueError("角色四视图必须引用本次已确认方案中的角色")
     instructions, trace = compiler_template("ads-video-asset-prompts", "references/character-template.txt")
+    instructions = apply_cast_instructions(instructions, character.get("description", ""))
     context = {"name": character["name"], "description": character["description"]}
-    return {"version": "character-context-v1", "character_id": character["id"],
+    return {"version": "character-context-v2", "character_id": character["id"],
+            "aspect_ratio": "16:9", "sheet_layout": "horizontal_16x9",
+            "template_version": CHARACTER_SHEET_TEMPLATE,
             "skill_trace": [trace], "prompt": instructions + "\n已确认角色：\n"
             + json.dumps(context, ensure_ascii=False)}

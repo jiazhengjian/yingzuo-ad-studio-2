@@ -16,12 +16,12 @@ def upgrade_continuity_plan(plan):
     if not 10 <= total <= 30 or original["audio_strategy"] != "native":
         raise ValueError("此升级仅适用于10至30秒的已确认原声广告，长视频请按新版流程重新策划")
     if any(segment.get("speech_spans") is None for segment in original["segments"]):
-        raise ValueError("此方案没有独立旁白时段，请重新策划后使用连续性生成")
+        raise ValueError("此方案没有独立旁白时段，已有方案仍保留。请在对话里说明要改的地方。")
     # Different reference sets may intentionally depict different products or
     # scenes. Combining those requests needs creative planning, not migration.
     references = original["segments"][0]["reference_asset_ids"]
     if any(set(s["reference_asset_ids"]) != set(references) for s in original["segments"]):
-        raise ValueError("各段参考图片不同，请先重新策划连续性关系")
+        raise ValueError("各段参考图片不同，已有方案仍保留。请在对话里说明要改的地方。")
     shots, speech, cursor = [], [], 0
     for segment in original["segments"]:
         names = {}

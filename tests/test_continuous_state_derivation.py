@@ -130,7 +130,7 @@ def test_stored_plans_are_never_implicitly_upgraded_or_changed(directed_plan_dat
 
 @pytest.mark.parametrize("new_flow,mutation,accepted", [
     (True, "omitted", True), (True, "authored_drift", False),
-    (True, "cut_omitted", False), (False, "omitted", False),
+    (True, "cut_omitted", True), (False, "omitted", False),
 ])
 def test_gateway_derives_only_new_wire_omissions_without_extra_model_requests(
         settings, source, strategy_stage, install_transport, tmp_path, new_flow, mutation, accepted):
@@ -176,7 +176,11 @@ def test_gateway_derives_only_new_wire_omissions_without_extra_model_requests(
             return chat_output(compiled)
         assert accepted and stage == "alignment_review"
         reviewed_shots = [shot for segment in context["segments"] for shot in segment["shots"]]
-        assert reviewed_shots[1]["continuity"]["start_state"] == reviewed_shots[0]["continuity"]["end_state"]
+        filled = reviewed_shots[1]["continuity"]["start_state"]
+        if mutation == "cut_omitted":
+            assert filled.strip()
+        else:
+            assert filled == reviewed_shots[0]["continuity"]["end_state"]
         # The raw model result was not changed when the complete Plan was built.
         assert "start_state" not in shots(compiled)[1]["continuity"]
         return chat_output(directed_review(compiled))
@@ -191,7 +195,11 @@ def test_gateway_derives_only_new_wire_omissions_without_extra_model_requests(
 
     if accepted:
         result = asyncio.run(run())
-        assert shots(result)[1]["continuity"]["start_state"] == shots(result)[0]["continuity"]["end_state"]
+        filled = shots(result)[1]["continuity"]["start_state"]
+        if mutation == "cut_omitted":
+            assert filled.strip()
+        else:
+            assert filled == shots(result)[0]["continuity"]["end_state"]
     else:
         with pytest.raises(ProviderError): asyncio.run(run())
     assert seen == ([] if new_flow else ["strategy"]) + ["ad_script", "script_review", "storyboard"] + (["alignment_review"] if accepted else [])

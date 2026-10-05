@@ -153,14 +153,20 @@ def test_exhaustion_is_durable_and_explicit_retry_reuses_completed_work(run_case
 
 @pytest.mark.parametrize("failure,code", [("invalid", "planning_invalid_response"),
                                          ("configuration", "planning_configuration_failed")])
-def test_content_or_configuration_errors_do_not_loop_or_offer_generic_retry(run_case, failure, code):
+def test_schema_failure_can_be_retried_and_configuration_failure_cannot(run_case, failure, code):
     client, store, pid, job, calls, _, control, execute = run_case
     control["failure"] = failure
     result = execute()
-    assert result["status"] == "failed" and result["progress"]["error_code"] == code
-    assert result["progress"]["retryable"] is False
-    assert calls == ["ad_script", "storyboard", "plan_review"]
-    assert client.post(f"/api/projects/{pid}/retry", json={"job_id": job["id"]}).status_code == 409
+    if failure == "invalid":
+        assert result["status"] == "ready"
+        # Unreadable review JSON is repaired once, then the compiled plan is kept.
+        assert calls == ["ad_script", "storyboard", "plan_review", "plan_review"]
+        assert result["submission_count"] == 0
+    else:
+        assert result["status"] == "failed" and result["progress"]["error_code"] == code
+        assert calls == ["ad_script", "storyboard", "plan_review"]
+        assert result["progress"]["retryable"] is False
+        assert client.post(f"/api/projects/{pid}/retry", json={"job_id": job["id"]}).status_code == 409
     assert "PRIVATE" not in json.dumps(client.get(f"/api/projects/{pid}").json())
 
 
@@ -171,15 +177,14 @@ def test_changed_rules_cannot_reuse_old_stage_results(run_case, monkeypatch):
         execute()
     from app import runtime_skills
     original = runtime_skills.stage_skill_context
-    def changed(stage):
-        data = original(stage)
+    def changed(stage, mode=None, **kwargs):
+        data = original(stage, mode, **kwargs)
         data["skills"][0]["content"] += "规则已更新。"
         return data
     monkeypatch.setattr(runtime_skills, "stage_skill_context", changed)
     result = execute()
-    assert result["status"] == "failed"
-    assert result["progress"]["error_code"] == "planning_invalid_response"
-    assert len(calls) == 3
+    assert result["status"] in ("ready", "awaiting_input")
+    assert len(calls) > 3
 
 
 @pytest.mark.parametrize("failure,status", [("cancel", "canceled"), ("change_context", "needs_review")])
@@ -210,5 +215,9 @@ def test_replaced_original_bytes_cannot_reuse_cached_director(run_case):
     original = next(asset for asset in store.project_detail(pid)["assets"] if asset["kind"] == "product")
     Path(original["path"]).write_bytes(b"EXPLICIT_TEST_REPLACED_BYTES")
     result = execute()
-    assert result["status"] == "failed" and result["progress"]["error_code"] == "planning_invalid_response"
-    assert len(calls) == 3
+    # The script does not hash the image, so it replays. Storyboard and review
+    # do, so they run again. Saving the plan then sees the file no longer
+    # matches its recorded digest.
+    assert calls == ["ad_script", "storyboard", "plan_review", "storyboard", "plan_review"]
+    assert result["status"] == "failed"
+    assert result["error"] == "参考文件已变化，请重新上传并确认方案"

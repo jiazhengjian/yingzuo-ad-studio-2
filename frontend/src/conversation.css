@@ -89,7 +89,9 @@
 .direction-card{border:1px solid #41354d;border-radius:12px;background:#28212f;padding:10px 12px;min-width:0}
 .direction-card.is-selected,.direction-card.is-submitting{border-color:#8b6db8;background:#30253f}
 .direction-card-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.direction-card-title{min-width:0}
 .direction-card-heading h4{font-size:12px;font-weight:600;line-height:1.6;color:#e9e1f1;margin:0;min-width:0}
+.direction-technique{margin:2px 0 0;font-size:10px;line-height:1.6;color:#b9a6c9}
 .direction-badges{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end;flex-shrink:0}
 .direction-recommended,.direction-chosen{display:inline-flex;align-items:center;gap:3px;font-size:9px;line-height:1.5;border-radius:5px;padding:2px 5px;white-space:nowrap}
 .direction-recommended{color:#c1acd9;background:#42304f;border:1px solid #62477a}
@@ -174,6 +176,10 @@
 .composer-area .composer-shell.has-pending-gate > .chat-composer{min-height:60px;padding:11px 14px;border-top:1px solid #403247;background:#1e1925}
 .composer-area .composer-shell.has-pending-gate > .chat-composer textarea{min-width:0;min-height:26px;max-height:84px;overflow-y:auto;line-height:1.7}
 .composer-area .composer-shell > .selected-reference{flex:0 0 auto;min-width:0;margin:0;padding:8px 14px;border:0;border-radius:0;background:#292032}
+.composer-area .composer-shell > .composer-file-strip{flex:0 0 auto;display:flex;gap:8px;min-width:0;margin:0;padding:10px 14px 2px;overflow-x:auto}
+.composer-file{position:relative;width:64px;height:64px;flex:0 0 auto;border-radius:10px;overflow:hidden;background:#2a2433}
+.composer-file img{width:100%;height:100%;object-fit:cover;display:block}
+.composer-file button{position:absolute;top:3px;right:3px;width:18px;height:18px;border-radius:50%;background:#1a1520e6;display:grid;place-items:center;color:#f3eef8}
 .composer-area.has-pending-gate > .composer-note{flex:0 0 auto}
 .composer-area .composer-gate-scroll{flex:0 1 auto;min-width:0;min-height:0;max-height:min(48dvh,470px);overflow-x:hidden;overflow-y:auto;overscroll-behavior-y:contain;scrollbar-width:thin;scrollbar-color:#574361 transparent;scroll-padding-block:16px;-webkit-overflow-scrolling:touch}
 .composer-area .composer-gate-scroll::-webkit-scrollbar{width:5px}

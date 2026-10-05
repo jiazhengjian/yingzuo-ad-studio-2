@@ -1,9 +1,62 @@
 """Approved product, cast and speech choices; no provider or inferred facts."""
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+# Image and video prompts share this sentence. An explicit other look replaces it.
+DEFAULT_CAST_LINE = "默认出镜为中国人，East Asian Chinese appearance，日常大陆长相。"
+# Bump when the default sheet layout or cast line changes, so an unconfirmed
+# older sheet can be told apart from one generated with this template.
+CHARACTER_SHEET_TEMPLATE = "chinese-horizontal-v1"
+OVERRIDE_CAST_LINE = "外貌按已确认资料中的明确要求绘制。"
+_OTHER_CAST = re.compile(
+    r"(?:不要|别用|不要画成|别画成).{0,4}(?:中国人|东亚面孔|华人)"
+    r"|欧美(?:人|面孔|模特|女性|男性|长相|脸)"
+    r"|西方(?:人|面孔|模特|女性|男性|长相|脸)"
+    r"|外国人|外国模特|外国面孔"
+    r"|白人|黑人|非裔|拉丁裔"
+    r"|(?:日本|韩国|东南亚|南亚|印度)(?:人|面孔|模特|女性|男性)"
+    r"|Caucasian|Western face|European face|African American|\bKorean\b|\bJapanese\b",
+    re.IGNORECASE,
+)
+
+
+def merchant_requests_other_cast(*texts) -> bool:
+    """True when the merchant, or the description written from that request, names another look."""
+    return any(isinstance(text, str) and _OTHER_CAST.search(text) for text in texts)
+
+
+def cast_appearance_clause(*texts) -> str:
+    """The look sent with one character. Explicit requests replace the Chinese default."""
+    if merchant_requests_other_cast(*texts):
+        return OVERRIDE_CAST_LINE
+    return DEFAULT_CAST_LINE
+
+
+def saved_character_sheet_is_stale(metadata) -> bool:
+    """True unless this saved sheet is the current horizontal Chinese-default template."""
+    data = metadata if isinstance(metadata, dict) else {}
+    return not (data.get("sheet_layout") == "horizontal_16x9"
+                and data.get("template_version") == CHARACTER_SHEET_TEMPLATE)
+
+
+def current_character_sheet_name(key: str, request) -> str:
+    """New-template sheets use their own file so an older 2×2 image is left in place."""
+    if (isinstance(request, dict) and request.get("sheet_layout") == "horizontal_16x9"
+            and request.get("template_version") == CHARACTER_SHEET_TEMPLATE):
+        return f"{key}.{CHARACTER_SHEET_TEMPLATE}.png"
+    return f"{key}.png"
+
+
+def apply_cast_instructions(instructions: str, *texts: str) -> str:
+    """Keep the sheet layout, and use one appearance line."""
+    clause = cast_appearance_clause(*texts)
+    if DEFAULT_CAST_LINE in instructions:
+        return instructions.replace(DEFAULT_CAST_LINE, clause)
+    return instructions.rstrip() + "\n" + clause
 
 
 class ProductConstraint(BaseModel):
@@ -18,7 +71,7 @@ class CharacterSpec(BaseModel):
     id: str = Field(pattern=r"^char_[a-z0-9_]{1,40}$")
     name: str = Field(min_length=1, max_length=60, description="故事中的角色称呼")
     description: str = Field(min_length=1, max_length=800,
-        description="明确为创作设定的外貌、年龄段、发型、服装和体态，供同一角色四视图与视频复用")
+        description="创作设定的年龄段、发型、服装和体态。商家没有明确其他外貌时写成中国人、东亚面孔、日常大陆长相；商家明确要求的外貌按该要求写，不要改回中国人。供同一角色参考图与视频复用")
     appearance: Literal["face_visible", "partial_only"] | None = Field(
         default=None, exclude_if=lambda value: value is None,
         description="本片出镜安排：face_visible至少有脸部可见画面；partial_only只露手、头发或身体局部，不露脸。局部也是人物出镜，不把同一人拆成多个角色；历史缺省不推断")

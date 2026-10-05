@@ -19,7 +19,7 @@ from app.planning import evidence_sources
 from app.providers.gateway import Gateway
 from app.strategy import ProductBrief, validate_brief
 from test_conversation_api import env, post_turn, ready_plan
-from test_direction_selection import candidates_for, isolated_skill_loader, approved_direction_review
+from test_direction_selection import candidates_for, isolated_skill_loader, approved_direction_review, concept_pool_for
 
 
 @pytest.fixture(autouse=True)
@@ -210,6 +210,8 @@ def test_real_acceptance_sequence_through_api_frozen_gateway_and_reopened_store(
         ({"content": "我想换个剧情广告"}, "scene_story"),
         ({"content": "我想改广告倾向，想做口播广告"}, "presenter_pitch"),
     ]
+    with store._connection(True) as c:
+        c.execute("UPDATE projects SET cta_target='ai_decide' WHERE id=?", (pid,))
     seen = []
     async def fake(self, system, data, sources, **kwargs):
         seen.append((data["stage"], data["ad_form"]))
@@ -219,7 +221,8 @@ def test_real_acceptance_sequence_through_api_frozen_gateway_and_reopened_store(
         brief = candidate.brief.model_dump()
         brief.pop("ad_form", None)
         return {"kind": "directions", "message": "请选择一个方向。", "brief": brief,
-                "directions": [d.model_dump() for d in candidate.directions]}
+                "directions": [d.model_dump() for d in candidate.directions],
+                "concept_pool": concept_pool_for(candidate.directions)}
     monkeypatch.setattr(Gateway, "_planner_json", fake)
     previous_gate = None
     for index, (fields, expected) in enumerate(inputs):
@@ -381,7 +384,7 @@ def test_preference_and_skipped_facts_are_not_merchant_evidence(label):
 def test_gateway_intake_requests_only_reply_or_clarify_until_form_is_chosen(env, monkeypatch, isolated_skill_loader):
     _, app, _, original = env
     app.state.settings.direction_selection_enabled = True
-    p = {**app.state.store.get_project(env[2]), "ad_form": None}
+    p = {**app.state.store.get_project(env[2]), "ad_form": None, "cta_target": None}
     contexts = []
     async def fake(self, system, data, sources, **kwargs):
         contexts.append(deepcopy(data))
@@ -389,7 +392,7 @@ def test_gateway_intake_requests_only_reply_or_clarify_until_form_is_chosen(env,
             {"id": "facts", "prompt": "有哪些已知特点？", "options": [], "allow_skip": True}]}
     monkeypatch.setattr(Gateway, "_planner_json", fake)
     result = asyncio.run(Gateway(app.state.settings).decide(p, [app.state.store.get_asset(original["id"])], [], [], None))
-    assert result["kind"] == "clarify" and [q["id"] for q in result["questions"]] == ["ad_form", "facts"]
+    assert result["kind"] == "clarify" and [q["id"] for q in result["questions"]] == ["ad_form", "cta_target", "facts"]
     assert len(contexts) == 1
     assert contexts[0]["allowed_decisions"] == ["reply", "clarify"]
     assert contexts[0]["ad_form_question"] == ad_form_question()
@@ -477,6 +480,8 @@ def test_actual_gateway_candidate_and_selected_job_inherit_preference(env, monke
     _, app, pid, original = env
     store = app.state.store
     app.state.settings.direction_selection_enabled = True
+    with store._connection(True) as c:
+        c.execute("UPDATE projects SET cta_target='ai_decide' WHERE id=?", (pid,))
     job = turn(store, pid, ad_form=form)
     candidate = candidates_for(env)
     raw_brief = candidate.brief.model_dump()
@@ -486,7 +491,8 @@ def test_actual_gateway_candidate_and_selected_job_inherit_preference(env, monke
         contexts.append(deepcopy(data))
         if data["stage"] == "strategy":
             return {"kind": "directions", "message": "请选择", "brief": raw_brief,
-                    "directions": [d.model_dump() for d in candidate.directions]}
+                    "directions": [d.model_dump() for d in candidate.directions],
+                    "concept_pool": concept_pool_for(candidate.directions)}
         assert data["stage"] == "direction_review"
         return approved_direction_review(data["directions"])
     monkeypatch.setattr(Gateway, "_planner_json", fake)

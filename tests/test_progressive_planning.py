@@ -93,7 +93,9 @@ def progressive_gateway(settings, source, install_transport, tmp_path):
     state = SimpleNamespace(strategy=chosen_strategy(source), calls=[], contexts=[], phases=[], traces=[],
         duration=20, brief="蓝瓶商品", conversation=[], current_plan=None, first_director_mutation=None,
         draft_mutation=None, refinement_mutation=None, first_review_mutation=None,
-        second_review_mutation=None, third_review_mutation=None, refinement_mutations=[], empty_stage=None, empty_count=0)
+        second_review_mutation=None, third_review_mutation=None, refinement_mutations=[], empty_stage=None, empty_count=0,
+        empty_finish="stop", empty_forever=False, inherited_skill_trace=(), ad_form=None,
+        review_suffix=None)
 
     def handler(request):
         assert str(request.url) == "https://api.deepseek.com/chat/completions"
@@ -101,9 +103,18 @@ def progressive_gateway(settings, source, install_transport, tmp_path):
         stage = context["stage"]
         state.calls.append(stage)
         state.contexts.append(deepcopy(context))
-        if stage == state.empty_stage and state.empty_count == 0:
-            state.empty_count += 1
-            return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": ""}}]})
+        if stage == state.empty_stage and (state.empty_forever or state.empty_count == 0):
+            if not state.empty_forever:
+                state.empty_count += 1
+            body = {"choices": [{"finish_reason": state.empty_finish, "message": {"content": ""}}]}
+            if state.empty_finish == "length":
+                body["usage"] = {"completion_tokens": 32768,
+                    "completion_tokens_details": {"reasoning_tokens": 32766}}
+            return httpx.Response(200, json=body)
+        if stage == "ad_script" and context.get("task_kind") == "line_jargon_rewrite":
+            value = {"lines": [{"beat_id": item["beat_id"], "narration": "吹完是顺的。"}
+                               for item in context["lines"]]}
+            return chat_output(value)
         if stage == "ad_script":
             value = director_output(state.strategy)["ad_script"]
             if state.draft_mutation: state.draft_mutation(value)
@@ -124,6 +135,9 @@ def progressive_gateway(settings, source, install_transport, tmp_path):
         reviews = sum(item["stage"] == "plan_review" for item in state.contexts)
         mutation = {1: state.first_review_mutation, 2: state.second_review_mutation}.get(reviews, state.third_review_mutation)
         if mutation: mutation(value)
+        if state.review_suffix:
+            text = json.dumps(value, ensure_ascii=False) + state.review_suffix
+            return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": text}}]})
         return chat_output(value)
 
     install_transport(handler)
@@ -132,9 +146,13 @@ def progressive_gateway(settings, source, install_transport, tmp_path):
         def report(phase):
             state.phases.append(phase)
             if progress: progress(phase)
+        project = {"brief": state.brief, "duration_seconds": state.duration}
+        if state.ad_form:
+            project["ad_form"] = state.ad_form
         return asyncio.run(Gateway(settings).decide(
-            {"brief": state.brief, "duration_seconds": state.duration}, [source], state.conversation, [],
+            project, [source], state.conversation, [],
             state.current_plan, selected_strategy=state.strategy.model_dump(), on_progress=report,
+            inherited_skill_trace=state.inherited_skill_trace,
             on_skill_trace=lambda trace: state.traces.append(deepcopy(trace))))["plan"]
     state.run = run
     state.records = lambda: [json.loads(path.read_text()) for path in (settings.data_root / "diagnostics").glob("*.json")]
@@ -282,6 +300,10 @@ def test_authored_coverage_and_ownership_failures_never_get_silently_repaired(so
         raw["shots"][0]["coverage"] = [{"beat_id": f"b{i}", "weight": 1} for i in range(3)]
         if invalid == "scene_change": raw["ad_script"]["beats"][1]["boundary_before"] = "scene_change"
         else: duration = 45
+    if invalid == "model_seconds":
+        plan, _, _ = compile_director(raw, strategy, duration, "continuity_v1", [source["id"]])
+        assert plan["segments"]
+        return
     with pytest.raises(ValueError):
         compile_director(raw, strategy, duration, "continuity_v1", [source["id"]])
 
@@ -328,8 +350,8 @@ def test_local_failure_gets_scoped_refinement_and_fresh_whole_plan_review(progre
 def test_repeated_unimproved_rejection_stops_after_five_calls(progressive_gateway):
     state = progressive_gateway
     state.first_review_mutation = state.second_review_mutation = reject_first_shot
-    with pytest.raises(ProviderError, match="同一内容问题仍未改善"):
-        state.run()
+    plan = state.run()
+    assert plan["segments"]
     assert state.calls == ["ad_script", "storyboard", "plan_review", "plan_refinement", "plan_review"]
 
 
@@ -363,8 +385,8 @@ def test_same_shot_overrun_can_use_remaining_round_only_with_measurable_progress
         assert state.calls.count("plan_review") == 3
         assert "已在桌角静置" in plan["segments"][0]["shots"][0]["description"]
     else:
-        with pytest.raises(ProviderError, match="同一内容问题仍未改善"):
-            state.run()
+        plan = state.run()
+        assert plan["segments"]
         assert state.calls.count("plan_refinement") == 1
         assert state.calls.count("plan_review") == 2
     first = next(item for item in state.contexts if item["stage"] == "plan_review")
@@ -447,9 +469,8 @@ def test_renaming_failed_shots_cannot_reset_same_content_problem_count(progressi
             # as new issues and thereby claim the old ones were resolved.
             simplify_shot(0)(value)
     state.refinement_mutation = rename
-    message = "没有产生有效的内容变化" if rename_only else "同一内容问题仍未改善"
-    with pytest.raises(ProviderError, match=message):
-        state.run()
+    plan = state.run()
+    assert plan["segments"]
     assert state.calls.count("plan_refinement") == 1
     assert state.calls.count("plan_review") == (1 if rename_only else 2)
 
@@ -460,8 +481,8 @@ def test_two_round_budget_stops_even_if_remaining_issue_is_new(progressive_gatew
     state.second_review_mutation = lambda review: reject_shot(review, 2)
     state.third_review_mutation = lambda review: reject_shot(review, 1)
     state.refinement_mutations = [simplify_shot(0), simplify_shot(2)]
-    with pytest.raises(ProviderError, match="两轮自动调整"):
-        state.run()
+    plan = state.run()
+    assert plan["segments"]
     assert state.calls.count("plan_refinement") == 2
     assert state.calls.count("plan_review") == 3
 
@@ -474,8 +495,9 @@ def test_cosmetic_refinement_does_not_spend_another_review_or_round(progressive_
         value["shots"][0]["continuity"]["entry_reason"] += "这次调整可以通过检查。"
         value["ad_script"]["beats"][0]["timing"]["action_plan"] += "重新确认可以执行。"
     state.refinement_mutation = justify
-    with pytest.raises(ProviderError, match="没有产生有效的内容变化"):
-        state.run()
+    plan = state.run()
+    assert plan["segments"]
+    assert "说明已经改好了" not in json.dumps(plan, ensure_ascii=False)
     assert state.calls == ["ad_script", "storyboard", "plan_review", "plan_refinement"]
 
 
@@ -495,15 +517,14 @@ def test_content_failure_exposes_only_owned_summary_and_is_not_retryable(source)
         reject_first_shot(review)
         review["alignment"]["shots"][0]["note"] = "PRIVATE_MODEL_RECEIPT_DO_NOT_SHOW"
         return review
-    with pytest.raises(ProgressivePlanningError) as raised:
-        asyncio.run(progressive_plan(stage_call=stage_call, on_progress=None, record_failure=lambda plan: None,
-            strategy=strategy, draft=raw["ad_script"], draft_issues=[], duration=20,
-            generation_strategy="continuity_v1", assets=[source], conversation=[], merchant_request="蓝瓶商品", current_plan=None))
-    error = raised.value
-    assert error.error_code == "planning_content_failed" and error.retryable is False
-    assert error.repair_attempts == 1
-    assert error.issue_summary == ["第1段第1个镜头的动作或声画安排仍需调整"]
-    assert "PRIVATE_MODEL_RECEIPT" not in str(error) + json.dumps(error.issue_summary)
+    recorded = []
+    plan = asyncio.run(progressive_plan(stage_call=stage_call, on_progress=None, record_failure=recorded.append,
+        strategy=strategy, draft=raw["ad_script"], draft_issues=[], duration=20,
+        generation_strategy="continuity_v1", assets=[source], conversation=[], merchant_request="蓝瓶商品", current_plan=None))
+    assert plan["segments"]
+    assert recorded and recorded[-1]["nonblocking"] is True
+    assert recorded[-1]["error_code"] == "planning_content_failed"
+    assert "PRIVATE_MODEL_RECEIPT" not in json.dumps(plan, ensure_ascii=False)
 
 
 @pytest.mark.parametrize("outside", ["beat", "shot", "global_message"])
@@ -515,7 +536,9 @@ def test_local_revision_cannot_change_unrelated_content(progressive_gateway, out
         elif outside == "shot": value["shots"][2]["description"] += "又换了整套环境。"
         else: value["ad_script"]["core_message"] = "改成全新商品故事。"
     state.refinement_mutation = mutate
-    with pytest.raises(ProviderError): state.run()
+    plan = state.run()
+    blob = json.dumps(plan, ensure_ascii=False)
+    assert "改掉末句" not in blob and "又换了整套环境" not in blob and "改成全新商品故事" not in blob
     assert state.calls == ["ad_script", "storyboard", "plan_review", "plan_refinement"]
 
 
@@ -529,14 +552,16 @@ def test_incomplete_independent_reviews_never_release_or_invent_passes(progressi
         elif missing == "span": value["alignment"]["spans"].pop()
         else: value["alignment"]["shots"][0].pop("pacing")
     state.first_review_mutation = state.second_review_mutation = mutate
-    with pytest.raises(ProviderError): state.run()
+    plan = state.run()
+    assert plan.get("plan_review", {}).get("ready") is not True
     assert state.calls == ["ad_script", "storyboard", "plan_review", "plan_review"]
 
 
 def test_unknown_fact_stops_before_review_or_refinement(progressive_gateway):
     state = progressive_gateway
     state.first_director_mutation = lambda value: value["ad_script"]["beats"][0].update(evidence_ids=["invented"])
-    with pytest.raises(ProviderError): state.run()
+    plan = state.run()
+    assert "invented" not in json.dumps(plan)
     assert state.calls == ["ad_script", "storyboard"]
 
 
@@ -645,8 +670,8 @@ def test_capacity_repair_cannot_shrink_estimates_without_changing_actual_actions
         value["ad_script"]["beats"][0]["timing"].update(visual_seconds=3,
             action_plan="重新估计本拍三秒可完成。")
     state.refinement_mutation = merely_lower_estimate
-    with pytest.raises(ProviderError, match="只缩短了时间估计"):
-        state.run()
+    plan = state.run()
+    assert plan["segments"]
     assert state.calls == ["ad_script", "storyboard", "plan_refinement", "plan_refinement"]
 
 
@@ -654,8 +679,8 @@ def test_capacity_repair_stops_if_action_changes_do_not_reduce_overrun(progressi
     state = progressive_gateway
     state.first_director_mutation = overburden_first_beat
     state.refinement_mutation = simplify_shot(0)
-    with pytest.raises(ProviderError, match="容量仍未改善"):
-        state.run()
+    plan = state.run()
+    assert plan["segments"]
     assert state.calls == ["ad_script", "storyboard", "plan_refinement"]
 
 
@@ -705,7 +730,10 @@ def test_deterministic_repair_cannot_bypass_capacity_or_stable_contract(progress
             assert plan["ad_script"]["core_message"] == "省去重复取放，直接辨认同一商品与桌角的关系。"
         assert state.calls == ["ad_script", "storyboard", "plan_refinement", "plan_review"]
     else:
-        with pytest.raises(ProviderError): state.run()
+        plan = state.run()
+        assert plan["segments"]
+        if change == "fact":
+            assert "invented" not in json.dumps(plan)
         assert state.calls == ["ad_script", "storyboard", "plan_refinement"]
 
 
@@ -763,6 +791,175 @@ def test_reviewable_draft_enum_issue_goes_directly_to_coordinator_without_old_re
     assert plan["ad_script"]["beats"][0].get("boundary_before", "complete") == "complete"
 
 
+def test_stacked_brand_voiceover_is_collapsed_before_the_plan_is_ready(progressive_gateway):
+    state = progressive_gateway
+    raw = state.strategy.model_dump()
+    raw["brief"]["ad_form"] = "brand_tvc"
+    state.strategy = StrategyRecord.model_validate(raw)
+
+    def stack(value):
+        beats = value["ad_script"]["beats"]
+        beats[0]["narration"] = "夜里吹，几下就干，这风不吵。"
+        beats[1]["narration"] = "带负离子，吹完是顺的。"
+        beats[2]["narration"] = "点下面链接，把它看清楚。"
+        value["shots"][0]["description"] = "同一瓶子停在夜里的桌面，机位不动。"
+        value["shots"][1]["description"] = "带负离子的光扫过。旁白说这句话时画面基本停住。"
+        value["shots"][1]["visual_motif"] = "负离子"
+
+    state.first_director_mutation = stack
+    plan = state.run()
+    narrations = [beat["narration"] for beat in plan["ad_script"]["beats"]]
+    assert narrations[0] == "夜里吹，几下就干。"
+    assert narrations[1] == ""
+    assert "点下面链接" in narrations[2]
+    assert "不吵" not in "".join(narrations) and "负离子" not in "".join(narrations)
+    assert "这风不吵" not in plan["segments"][0]["shots"][0]["description"]
+    shot_text = " ".join(shot.get("description") or "" for shot in plan["segments"][0]["shots"])
+    assert "负离子" not in shot_text and "旁白说这句话" not in shot_text
+    assert all((shot.get("visual_motif") or "") != "负离子" for shot in plan["segments"][0]["shots"])
+    assert plan["plan_review"]["ready"] is True
+    assert "plan_review" in state.calls
+
+
+def _lock_speech(strategy_record, mode):
+    raw = strategy_record.model_dump()
+    production = next(item for item in raw["directions"] if item["id"] == raw["selected_direction_id"])["production"]
+    production.update(
+        speech_mode=mode,
+        speaker_id="char_worker" if mode == "character_dialogue" else "",
+        voice_description="" if mode == "none" else "自然普通话，平缓介绍。",
+    )
+    return StrategyRecord.model_validate(raw)
+
+
+def test_voice_identity_mixup_is_not_marked_ready(progressive_gateway):
+    state = progressive_gateway
+    raw = state.strategy.model_dump()
+    raw["brief"]["ad_form"] = "brand_tvc"
+    state.strategy = _lock_speech(StrategyRecord.model_validate(raw), "character_dialogue")
+    with pytest.raises(ProviderError, match="对不上"):
+        state.run()
+    assert "plan_review" not in state.calls
+
+
+def test_presenter_voiceover_is_not_marked_ready(progressive_gateway):
+    state = progressive_gateway
+    raw = state.strategy.model_dump()
+    raw["brief"]["ad_form"] = "presenter_pitch"
+    state.strategy = StrategyRecord.model_validate(raw)
+    with pytest.raises(ProviderError, match="对不上"):
+        state.run()
+    assert "plan_review" not in state.calls
+
+
+def test_story_voiceover_is_not_marked_ready(progressive_gateway):
+    state = progressive_gateway
+    raw = state.strategy.model_dump()
+    raw["brief"]["ad_form"] = "scene_story"
+    state.strategy = StrategyRecord.model_validate(raw)
+    with pytest.raises(ProviderError, match="对不上"):
+        state.run()
+    assert "plan_review" not in state.calls
+
+
+def test_story_explainer_is_rewritten_before_the_plan_is_ready(progressive_gateway, monkeypatch):
+    state = progressive_gateway
+    raw = state.strategy.model_dump()
+    raw["brief"]["ad_form"] = "scene_story"
+    state.strategy = _lock_speech(StrategyRecord.model_validate(raw), "character_dialogue")
+
+    def explain(value):
+        beats = value["ad_script"]["beats"]
+        beats[0]["narration"] = "不敢开，怕吵醒她。"
+        beats[1]["narration"] = "太吵了。"
+        beats[2]["narration"] = "终于不毛躁了。"
+        value["shots"][0]["description"] = "夜里，室友侧躺在床上睡着。她站在镜前，手指停在开关上。"
+
+    async def speak_as_the_character(stage_call, director, strategy, duration_seconds, locked_lines=(), plan=None):
+        revised = deepcopy(director)
+        for beat in revised["ad_script"]["beats"]:
+            if beat.get("narration") == "不敢开，怕吵醒她。":
+                beat["narration"] = "太响了。"
+        return True, revised
+
+    monkeypatch.setattr("app.line_quality.rewrite_director_if_needed", speak_as_the_character)
+    state.first_director_mutation = explain
+    plan = state.run()
+    narrations = [beat["narration"] for beat in plan["ad_script"]["beats"]]
+    assert narrations[0] == "太响了。"
+    assert "不敢开" not in "".join(narrations)
+    assert plan["plan_review"]["ready"] is True
+
+
+def test_story_explainer_is_not_marked_ready_when_the_rewrite_stays(progressive_gateway, monkeypatch):
+    state = progressive_gateway
+    raw = state.strategy.model_dump()
+    raw["brief"]["ad_form"] = "scene_story"
+    state.strategy = _lock_speech(StrategyRecord.model_validate(raw), "character_dialogue")
+
+    def explain(value):
+        beats = value["ad_script"]["beats"]
+        beats[0]["narration"] = "不敢开，怕吵醒她。"
+        beats[1]["narration"] = "太吵了。"
+        beats[2]["narration"] = "终于不毛躁了。"
+        value["shots"][0]["description"] = "夜里，室友侧躺在床上睡着。她站在镜前，手指停在开关上。"
+
+    async def keep_explainer(*args, **kwargs):
+        return True, None
+
+    monkeypatch.setattr("app.line_quality.rewrite_director_if_needed", keep_explainer)
+    state.first_director_mutation = explain
+    with pytest.raises(ProviderError, match="解说画面"):
+        state.run()
+    assert "plan_review" not in state.calls
+
+
+def test_stacked_brand_voiceover_is_not_marked_ready_when_it_cannot_be_rewritten(progressive_gateway, monkeypatch):
+    state = progressive_gateway
+    raw = state.strategy.model_dump()
+    raw["brief"]["ad_form"] = "brand_tvc"
+    state.strategy = StrategyRecord.model_validate(raw)
+
+    def stack(value):
+        beats = value["ad_script"]["beats"]
+        beats[0]["narration"] = "夜里吹，几下就干，这风不吵。"
+        beats[1]["narration"] = "带负离子，吹完是顺的。"
+        beats[2]["narration"] = "点下面链接，把它看清楚。"
+
+    async def keep_stack(*args, **kwargs):
+        return True, None
+
+    monkeypatch.setattr(
+        "app.line_quality.apply_brand_claim_collapse",
+        lambda director, strategy, locked_lines=(), duration_seconds=None: (director, False))
+    monkeypatch.setattr("app.line_quality.rewrite_director_if_needed", keep_stack)
+    state.first_director_mutation = stack
+    with pytest.raises(ProviderError, match="堆卖点"):
+        state.run()
+    assert "plan_review" not in state.calls
+
+
+def test_planner_jargon_is_rewritten_once_before_review(progressive_gateway):
+    state = progressive_gateway
+    state.first_director_mutation = lambda value: value["ad_script"]["beats"][0].update(
+        narration="采用等离子技术，关注秀发护理。")
+    plan = state.run()
+    assert state.calls == ["ad_script", "storyboard", "ad_script", "plan_review"]
+    rewrite = state.contexts[2]
+    assert rewrite["task_kind"] == "line_jargon_rewrite"
+    assert rewrite["stage"] == "ad_script"
+    assert [item["id"] for item in rewrite["stage_skills"]["skills"]] == ["ads-video-dialogue-writing"]
+    assert rewrite["stage_skills"]["shared_references"] == []
+    assert "说出口的对照" in rewrite["stage_skills"]["skills"][0]["content"]
+    loaded = [trace for trace in state.traces if trace["stage"] == "line_rewrite"]
+    assert len(loaded) == 1
+    assert loaded[0]["loaded_sections"] == ["SKILL.md", "references/ad-dialogue-examples.md"]
+    assert loaded[0]["id"] == "ads-video-dialogue-writing"
+    assert "关注" not in plan["script"]
+    assert plan["ad_script"]["beats"][0]["narration"] == "吹完是顺的。"
+    assert plan["ad_script"]["beats"][1]["narration"] == "看桌角。"
+
+
 def test_fixed_line_is_also_protected_during_local_refinement(progressive_gateway):
     state = progressive_gateway
     state.brief = "台词逐字保留“看轮廓。”"
@@ -770,3 +967,99 @@ def test_fixed_line_is_also_protected_during_local_refinement(progressive_gatewa
     state.refinement_mutation = lambda value: value["ad_script"]["beats"][0].update(narration="改过的轮廓。")
     with pytest.raises(ProviderError): state.run()
     assert state.calls == ["ad_script", "storyboard", "plan_review", "plan_refinement"]
+
+
+def test_craft_refine_that_still_fails_is_accepted_and_the_job_continues(progressive_gateway):
+    state = progressive_gateway
+    raw = state.strategy.model_dump()
+    raw["brief"]["ad_form"] = "presenter_pitch"
+    state.strategy = _lock_speech(StrategyRecord.model_validate(raw), "character_dialogue")
+
+    def show_product_late(value):
+        value["video_flow"] = "先看见吹风机，再讲完停住。"
+        for index, shot in enumerate(value["shots"]):
+            shot["product_visible"] = index != 0
+            shot["continuity"]["camera_move"] = "中近景，镜头缓慢推进" if index < 2 else "中景，机位停住"
+            if index == len(value["shots"]) - 1:
+                shot["description"] += "机位停住。"
+
+    state.first_director_mutation = show_product_late
+    state.refinement_mutation = lambda value: None
+    plan = state.run()
+    assert plan["plan_review"]["ready"] is True
+    repair = next(item for item in state.contexts if item["stage"] == "plan_refinement")
+    assert repair["repair_scope"]["shot_ids"] == ["shot_0"]
+    assert "b0" in repair["repair_scope"]["beat_ids"]
+    assert any(record.get("kind") == "craft_accept" for record in state.records())
+    assert "请重新策划" not in json.dumps(plan, ensure_ascii=False)
+    notes = [item.get("note", "") for item in plan["plan_review"].get("suggestions") or []]
+    assert any("建议" in note for note in notes)
+
+
+def test_scene_story_revision_keeps_a_long_skill_trace_valid(progressive_gateway):
+    state = progressive_gateway
+    raw = state.strategy.model_dump()
+    raw["brief"]["ad_form"] = "scene_story"
+    state.strategy = _lock_speech(StrategyRecord.model_validate(raw), "character_dialogue")
+    state.ad_form = "scene_story"
+    state.inherited_skill_trace = [
+        {"stage": "strategy", "id": f"legacy-{index}", "version": "1", "content_sha256": f"{index:064x}"}
+        for index in range(18)]
+    state.first_review_mutation = reject_first_shot
+    state.refinement_mutation = lambda value: value["shots"][0].update(
+        description=value["shots"][0]["description"] + "只保留静置。")
+    plan = state.run()
+    produced = len(state.inherited_skill_trace) + len(state.traces)
+    assert produced > 30
+    assert len(plan["skill_trace"]) <= 30
+    assert plan["skill_trace"][-1]["id"] == state.traces[-1]["id"]
+    assert plan["skill_trace"][0]["id"] != "legacy-0"
+    Plan.model_validate(plan)
+    assert any(item["id"] == "ad-form-playbook-scene-story" for item in plan["skill_trace"])
+    assert plan["plan_review"]["ready"] is True
+
+
+def test_review_that_burns_its_budget_on_reasoning_retries_low_and_can_pass(progressive_gateway):
+    state = progressive_gateway
+    state.empty_stage = "plan_review"
+    state.empty_finish = "length"
+    plan = state.run()
+    reviews = [item for item in state.contexts if item["stage"] == "plan_review"]
+    assert len(reviews) == 2
+    assert "上一轮没有返回正文" in json.dumps(reviews[1], ensure_ascii=False)
+    assert "contentless_retried" not in reviews[1]
+    assert plan["plan_review"]["ready"] is True
+
+
+def test_incomplete_review_record_returns_the_compiled_plan(progressive_gateway):
+    state = progressive_gateway
+
+    def incomplete(value):
+        value.clear()
+        value["ready"] = True
+
+    state.first_review_mutation = state.second_review_mutation = state.third_review_mutation = incomplete
+    plan = state.run()
+    assert plan["segments"]
+    assert plan.get("plan_review", {}).get("ready") is not True
+    assert "看这里" not in "".join(beat.get("narration") or "" for beat in plan["ad_script"]["beats"])
+
+
+def test_review_json_with_an_extra_brace_is_accepted_on_the_first_call(progressive_gateway):
+    state = progressive_gateway
+    state.review_suffix = "}"
+    plan = state.run()
+    assert state.calls == ["ad_script", "storyboard", "plan_review"]
+    assert plan["plan_review"]["ready"] is True
+
+
+def test_review_with_no_content_keeps_the_compiled_plan(progressive_gateway):
+    state = progressive_gateway
+    state.empty_stage = "plan_review"
+    state.empty_finish = "length"
+    state.empty_forever = True
+    plan = state.run()
+    assert [item["stage"] for item in state.contexts].count("plan_review") == 2
+    assert plan["segments"]
+    assert plan.get("plan_review", {}).get("ready") is not True
+    assert "看这里" not in "".join(beat.get("narration") or "" for beat in plan["ad_script"]["beats"])

@@ -20,7 +20,7 @@ from app.providers.gateway import Gateway
 from app.strategy import DirectionCandidates, select_rules
 from test_conversation_api import env, post_turn
 from test_direction_selection import (approved_direction_review, candidates_for,
-    isolated_skill_loader, select)
+    concept_pool_for, isolated_skill_loader, select)
 
 
 @pytest.fixture(autouse=True)
@@ -120,7 +120,7 @@ def test_same_two_text_requests_publish_corrected_fact_and_carry_it_to_selected_
         calls.append(context["stage"])
         if context["stage"] == "strategy":
             return {"kind": "directions", "message": "初稿", "brief": before["brief"],
-                "directions": before["directions"]}
+                "directions": before["directions"], "concept_pool": concept_pool_for(before["directions"])}
         assert context["stage"] == "direction_review"
         assert context["immutable_brief"] == before["brief"]
         assert len(originals) == 1 and originals[0]["id"] == asset["id"]

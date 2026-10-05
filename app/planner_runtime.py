@@ -13,6 +13,7 @@ https://api-docs.deepseek.com/api/create-chat-completion/
 from __future__ import annotations
 
 import math
+import re
 from copy import deepcopy
 
 from app.ad_script import script_request_options
@@ -124,6 +125,10 @@ def planner_model_context(context: dict) -> dict:
     even though those bookkeeping fields no longer consume model input.
     """
     result = planner_wire_context(context)
+    # Transport flags stay off the model prompt. The recovery note itself remains.
+    result.pop("contentless_retried", None)
+    result.pop("reasoning_effort_override", None)
+    result.pop("json_syntax_retried", None)
     if result.get("stage") == "ad_script" and result.get("draft_format") == "speech_only":
         # The signed source context retains the complete selected strategy.
         # This experiment renders its explicit copy brief once, without also
@@ -224,7 +229,8 @@ def planner_wire_context(context: dict) -> dict:
         if len(selected) == 1:
             gate["options"] = [{key: value for key, value in selected[0].items()
                                 if key in ("id", "rule_id", "label", "angle", "audience_value",
-                                           "product_expression", "evidence_ids", "story_summary", "attraction_mechanism", "film_concept")}]
+                                           "product_expression", "evidence_ids", "story_summary", "attraction_mechanism", "film_concept",
+                                           "consumer_insight", "big_idea", "hook_type", "brand_world", "hook", "payoff")}]
     return result
 
 
@@ -268,21 +274,38 @@ def stage_request_options(stage: str, new_flow: bool) -> dict:
     return {}
 
 
-def safe_planner_metrics(stage: object, elapsed_seconds: object, usage: object = None) -> dict:
-    """Allowlist numeric usage and wall time; never retain prompts or reasoning.
+def _finite_milliseconds(seconds):
+    if type(seconds) not in (float, int):
+        return None
+    try:
+        if math.isfinite(seconds) and seconds >= 0:
+            milliseconds = seconds * 1000
+            if math.isfinite(milliseconds):
+                return round(milliseconds)
+    except OverflowError:
+        return None
+    return None
+
+
+_RECOVERY_KINDS = frozenset({
+    "nonstream", "fallback", "strategy_retry", "strategy_salvage",
+    "direction_review_salvage", "interrupted", "checkpoint_recompute",
+})
+
+
+def safe_planner_metrics(stage: object, elapsed_seconds: object, usage: object = None, *,
+                         first_token_seconds: object = None, stream: object = None,
+                         transport: object = None, stream_fallback: object = None,
+                         recovery: object = None, dropped_entries: object = None,
+                         reasons: object = None) -> dict:
+    """Allowlist numeric usage, wall time and time-to-first-token.
 
     Callers can log this once per completed transport request, including empty
     or invalid responses. Missing provider usage remains absent, never zero.
+    Optional transport fields are omitted unless the caller measured them, so
+    older log readers keep the historical keys.
     """
-    elapsed_ms = None
-    if type(elapsed_seconds) in (float, int):
-        try:
-            if math.isfinite(elapsed_seconds) and elapsed_seconds >= 0:
-                milliseconds = elapsed_seconds * 1000
-                if math.isfinite(milliseconds):
-                    elapsed_ms = round(milliseconds)
-        except OverflowError:
-            pass
+    elapsed_ms = _finite_milliseconds(elapsed_seconds)
     safe_usage = {}
     if isinstance(usage, dict):
         for key in ("prompt_tokens", "completion_tokens", "total_tokens",
@@ -295,8 +318,32 @@ def safe_planner_metrics(stage: object, elapsed_seconds: object, usage: object =
             value = details.get("reasoning_tokens")
             if type(value) is int and value >= 0:
                 safe_usage["reasoning_tokens"] = value
-    return {"stage": stage if isinstance(stage, str) and stage in PLANNER_STAGES else "unknown",
-            "elapsed_ms": elapsed_ms, "usage": safe_usage}
+    result = {"stage": stage if isinstance(stage, str) and stage in PLANNER_STAGES else "unknown",
+              "elapsed_ms": elapsed_ms, "usage": safe_usage}
+    first_token_ms = _finite_milliseconds(first_token_seconds)
+    if first_token_seconds is not None and first_token_ms is not None:
+        result["first_token_ms"] = first_token_ms
+    if stream is True or stream is False:
+        result["stream"] = stream
+    if transport in ("primary", "fallback"):
+        result["transport"] = transport
+    if stream_fallback is True:
+        result["stream_fallback"] = True
+    if recovery in _RECOVERY_KINDS:
+        result["recovery"] = recovery
+    if type(dropped_entries) is int and 0 <= dropped_entries <= 64:
+        result["dropped_entries"] = dropped_entries
+    if isinstance(reasons, list):
+        safe_reasons = []
+        for item in reasons:
+            if (isinstance(item, str) and re.fullmatch(r"[a-z0-9_]{1,40}", item)
+                    and item not in safe_reasons):
+                safe_reasons.append(item)
+            if len(safe_reasons) == 8:
+                break
+        if safe_reasons:
+            result["reasons"] = safe_reasons
+    return result
 
 
 def safe_planner_transport_failure(stage, elapsed_seconds, *, status_code=None, error_type=None):

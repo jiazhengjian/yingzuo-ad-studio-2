@@ -231,8 +231,9 @@ def test_video_prompt_preserves_continuation_without_adding_faces_or_second_voic
     assert "同一人物画外延续" in prompt
     assert "本镜说话角色不入画" in prompt
     assert "不补人物或嘴部" in prompt
-    assert "不能换成另一位旁白" in prompt
-    assert "这是执行要求，不是已验证的声纹" in prompt
+    assert "其余角色不说话" in prompt
+    assert "嘴型与字同步" in prompt
+    assert "声线保持连贯是执行要求，不是已验证的声纹" in prompt
     assert segment == before
     segment["production"].update(speech_mode="voiceover", speech_delivery=None, speaker_id="")
     segment["production"]["characters"][0]["appearance"] = "partial_only"

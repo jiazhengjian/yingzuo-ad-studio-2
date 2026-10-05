@@ -5,6 +5,8 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
+from .ad_form_playbook import speech_profile_for_strategy
+from .line_quality import key_line_options_schema
 from .strategy import StrategyRecord
 
 
@@ -62,14 +64,17 @@ def validate_content_draft(raw: ContentDraft | dict, strategy: StrategyRecord | 
 def content_draft_schema(strategy: StrategyRecord | dict) -> dict:
     schema = ContentDraft.model_json_schema()
     strategy = StrategyRecord.model_validate(strategy)
-    schema["$defs"]["ContentBeat"]["properties"]["narration"]["maxLength"] = 29
+    schema["$defs"]["ContentBeat"]["properties"]["narration"]["maxLength"] = (
+        speech_profile_for_strategy(strategy).max_beat_characters)
     schema["$defs"]["ContentBeat"]["properties"]["evidence_ids"]["items"] = {
         "type": "string", "enum": [fact.id for fact in strategy.brief.facts]}
+    schema["properties"]["key_line_options"] = key_line_options_schema(
+        speech_profile_for_strategy(strategy).max_beat_characters)
     return schema
 
 
 CONTENT_DRAFT_SYSTEM = """你写中文商品广告的内容初稿，只返回本次schema的ContentDraft JSON，执行stage_skills中的content_draft方法。
 依据brief中的已确认事实、selected_direction及用户原话，逐拍写实际台词与需要看见的画面。两者共同兑现选中方向和商品特点，不把画面描述念成旁白，不以创作说明代替内容。商品事实、广告倾向、角色、声音形式与用户固定原句均不可改变。
-只写beats中的id、narration、visual_role、evidence_ids；无台词的拍明确narration=""。evidence_ids仅引用已有事实，台词每拍含标点最多29字符，保留完整句意。既定无人声方向所有台词为空。
+只写beats中的id、narration、visual_role、evidence_ids；无台词的拍明确narration=""。evidence_ids仅引用已有事实，台词每拍含标点不超过 speech_budget.max_beat_characters，保留完整句意。若 shared_references 有本类型 playbook，开场和节拍按那一份写。台词承接核心创意，旧方向若只有 big_idea 就承接那一句，按类型说出口，不写关注、呈现、兼顾、打造、采用某技术、高端质感、赋能。schema 若含 key_line_options，开场有声句和收束有声句各再写两句可说的候选，程序只留一句。既定无人声方向所有台词为空。
 本步不分配镜头、秒数或动作估时，不写purpose、message、创作理由、审核结论、版本信息或成片保证。分镜阶段会把内容落成可执行镜头并统一编排，最终方案仍须完整独立审核。
 """

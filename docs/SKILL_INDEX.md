@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | 系统提示 | 本次角色、输入数据边界、Schema/字段协议、允许修改范围与输出约束 | `planning.py`、`ad_script.py`、`direction_review.py`、`progressive_planning.py` 的当前阶段 system 常量 |
 | Skill 主文件及阶段参考 | 创作步骤、表达方法、声音和画面判断、当前阶段交接 | `app/skills/ads-video-*/SKILL.md` 及其 `references/` |
-| 共用参考 | 多阶段需要保持一致的商品事实边界、广告表达定义与分类脚本方法 | 下表三份 `shared/` 文件，各自只在注册阶段加载一次 |
+| 共用参考 | 多阶段需要保持一致的商品事实边界、广告表达定义、分类脚本方法，以及按类型注入的一份 playbook | 下表 `shared/` 文件；playbook 只加载与当前类型匹配的一份 |
 | Python | 阶段调度、状态、确认、版本、确定性校验、预算、回执与付费去重 | `gateway.py`、`pipeline.py`、`db.py`、`progressive_planning.py`、`planner_runtime.py` 等 |
 
 同一条广告方法确定主要维护位置。生成和审核分别说明如何使用它；字段权限可以在 system 中简短重申，程序仍执行强制校验。旧适配器的冻结提示保留兼容用途，不作为当前规则的维护位置。
@@ -25,19 +25,24 @@
 | --- | --- | --- |
 | [product-evidence.md](../app/skills/shared/product-evidence.md) | 商品主张、图片观察与创作假设的依据边界；本轮广告必需内容与可选资料的区别及逐候选覆盖 | `strategy`、`direction_review` |
 | [ad-form-contract.md](../app/skills/shared/ad-form-contract.md) | 三种主要表达方式及创作意图/影片概念的共同约定 | `strategy`、`direction_review` |
-| [script-expression.md](../app/skills/shared/script-expression.md) | 沿已选类型展开脚本；画面与声音分工、有效同述与机械动作播报、角色及局部出镜的表达方法 | `ad_script`、`storyboard`、`plan_refinement`、`plan_review` |
+| [script-expression.md](../app/skills/shared/script-expression.md) | 沿已选类型展开脚本；画面与声音分工、有效同述与机械动作播报、角色及局部出镜的表达方法 | `ad_script`、`storyboard`、`plan_refinement`、`plan_review`、`content_draft` |
+| [ad-form-playbooks/index.md](../app/skills/shared/ad-form-playbooks/index.md) | 推荐类型时的三种骨架短索引 | 仅 `ad_form=auto` 的 `strategy`、`direction_review` |
+| [brand-tvc.md](../app/skills/shared/ad-form-playbooks/brand-tvc.md) | 产品展示的开场、节拍、短旁白、镜头和英雄定格 | 该类型的策略、写稿、分镜、审核；另含 `speech_draft` |
+| [scene-story.md](../app/skills/shared/ad-form-playbooks/scene-story.md) | 剧情／场景的处境、一个包袱、短对白和定格 | 该类型的策略到综合审核 |
+| [presenter-pitch.md](../app/skills/shared/ad-form-playbooks/presenter-pitch.md) | 人物讲解的直视开场、讲加演示和更高台词密度 | 该类型的策略到综合审核 |
 
-`shared/` 是应用共用参考，不是独立可调用 Skill。其内容在 `stage_skills.shared_references` 中传入模型，完整版本和哈希由 `shared_reference_trace` 单独追溯并进入请求签名，不额外产生模型请求。`script-expression` 只进入上表四个展开与审核阶段，不注入入口、方向审核或旧分拆审核。其他阶段读取已选结果及自己的执行方法，不把所有参考一次性装入所有请求。
+`shared/` 是应用共用参考，不是独立可调用 Skill。其内容在 `stage_skills.shared_references` 中传入模型，完整版本和哈希由 `shared_reference_trace` 单独追溯并进入请求签名，不额外产生模型请求。`script-expression` 进入展开与审核阶段，不注入入口、方向审核或旧分拆审核。类型 playbook 按 `ad_form` 只注入一份：明确类型用全文；`auto` 在方向选定前只用短索引，选定 `film_concept.structure` 后的写稿、分镜和审核改注入对应全文。未带类型的历史调用不注入 playbook。
 
 ## 当前阶段映射
 
 | 程序阶段 | 实际模型指令 | 说明 |
 | --- | --- | --- |
-| 入口 `strategy` | Orchestrator + Sound Direction + Product Understanding + Creative Strategy；两份共用参考 | 一次请求，可回复/澄清或生成三个方向；创意含方向比较与影片概念参考 |
-| `direction_review` | Plan Review 主文件 + `direction-review.md`；两份共用参考 | 一次独立审核，可在同回复内修订方向 |
+| 入口 `strategy` | Orchestrator + Sound Direction + Product Understanding + Creative Strategy；两份共用参考 | 一次请求，可回复/澄清，或先写六个短概念再展开三个有效方向；程序只记录贪心选择 |
+| `direction_review` | Plan Review 主文件 + `direction-review.md`；两份共用参考 | 一次独立审核，只修没有依据的主张，不改写创意身份 |
 | `ad_script` | Script Planning + Dialogue Writing 及其声音参考；`script-expression` 共用参考 | 同一次请求联合完成分类内容稿和台词 |
 | `content_draft`（试验内部资源分支，传输仍为 `ad_script`） | Script Planning 主入口 + `content-draft.md`；Dialogue 主文件/示例；共用表达方法 | 只写实际台词与画面内容，完整动作、状态和估时交既有分镜阶段 |
 | `speech_draft`（默认关闭的候选，传输仍为 `ad_script`） | 独立 Voiceover Draft 短方法；仅已选产品视觉展示与画外音 | 原始事实先写整段旁白；替换原起稿，导演仍拿完整策略，不添加模型请求。人工简报样本不等于自动路径已验证 |
+| `line_rewrite`（只在台词检查命中时发生，传输阶段仍是 `ad_script`） | Dialogue Writing 主文件与台词示例 | 只重写策划腔、绝对化或购买引导的句子；不加载整份脚本规划、时长参考或类型 playbook |
 | `storyboard` | Storyboard Direction + `coordinated-storyboard.md`、Dialogue Writing 主文件与台词示例；`script-expression` 一次共用参考 | 可直接联合起稿，或协调既有内容稿；时轴由程序派生 |
 | `plan_refinement` | Storyboard Direction + `coordinated-storyboard.md`；`script-expression` 共用参考 | 仅按实际失败稿与程序范围修正，不重写联合初稿 |
 | `plan_review` | Plan Review + `plan-review.md`；`script-expression` 共用参考 | 独立审查程序排时后的完整最终方案，只审不改 |
@@ -108,5 +113,8 @@
 | --- | --- |
 | `LICENSE` | `d5ddbca6d673d5f02b30ce0e576db65c36d46ef9f2f7bd78f84558452055a068` |
 | `references/treatment.md` | `9692d6efab17b8311d870a9811211c24c218a98f187a268a6d1057fd80ec6cd3` |
+| 用户提供的摘录汇编 `tvc-director-examples.md`（含说明与逐字摘录，不是上游单文件） | `c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1` |
+
+摘录用于类型 playbook 的时长模板、出镜比例、镜头词汇和阶段结构，并从 16:9/Seedance 改写为 9:16/wan3.0。摘录没有文案例子，playbook 中的台词为映作原创。分镜与视频提示词另改编了七要素、字面画面、分类型出镜、视频内英雄定格和同一次请求内的多阶段运动；不引入九宫格，不多生成图，不让模型画 Logo。
 
 第四阶段 Plan Review 1.11.1 只为新审核的 `supported_by_cut` 增加省略动作、实际切点与前后画面原文证据。代码核验位置和引用来源；模型仍需独立判断动作语义。无省略不增加必填，旧绑定审核保持可读。错误分类、次数及当前容量由 Python 维护，不写成重复的 Skill 业务规则。

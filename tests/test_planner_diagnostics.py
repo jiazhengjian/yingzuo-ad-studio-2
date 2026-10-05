@@ -9,7 +9,7 @@ import pytest
 from app.providers import gateway as gateway_module
 from app.providers.gateway import Gateway, ProviderError, save_failed_planner_output
 from test_conversation_api import env
-from test_direction_selection import candidates_for, forbid_unmocked_network
+from test_direction_selection import candidates_for, concept_pool_for, forbid_unmocked_network
 
 
 def test_truncated_response_reports_stage_without_logging_private_content(env, monkeypatch, caplog):
@@ -40,6 +40,30 @@ def test_truncated_response_reports_stage_without_logging_private_content(env, m
     assert logged["usage"]["reasoning_tokens"] == 21900
 
 
+def test_plan_review_length_retries_once_before_the_card(env, monkeypatch):
+    requests = []
+    original_client = httpx.AsyncClient
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return httpx.Response(200, json={"choices": [{"finish_reason": "length", "message": {
+                "content": "PRIVATE_PARTIAL_REVIEW"}}]})
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {
+            "content": "{\"ready\":true}"}}]})
+
+    monkeypatch.setattr(gateway_module.httpx, "AsyncClient",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(respond), **kwargs))
+    result = asyncio.run(Gateway(env[1].state.settings)._planner_json(
+        "json", {"stage": "plan_review"}, []))
+    assert result == {"ready": True}
+    assert len(requests) == 2
+    assert "写超了" in json.dumps(requests[1], ensure_ascii=False)
+    files = list((env[1].state.settings.data_root / "diagnostics").glob("*.json"))
+    assert len(files) == 1
+    assert "PRIVATE_PARTIAL_REVIEW" in files[0].read_text()
+
+
 def test_invalid_json_keeps_bounded_final_output_only_for_private_replay(env, monkeypatch, caplog):
     original_client = httpx.AsyncClient
     def respond(request):
@@ -48,7 +72,7 @@ def test_invalid_json_keeps_bounded_final_output_only_for_private_replay(env, mo
     monkeypatch.setattr(gateway_module.httpx, "AsyncClient",
         lambda **kwargs: original_client(transport=httpx.MockTransport(respond), **kwargs))
     with caplog.at_level(logging.WARNING, logger="app.providers.gateway"):
-        with pytest.raises(ProviderError, match="结构校验"):
+        with pytest.raises(ProviderError, match="完整 JSON"):
             asyncio.run(Gateway(env[1].state.settings)._planner_json("json", {"stage": "strategy"}, []))
     assert "json_line" in caplog.text and "PRIVATE_OUTPUT" not in caplog.text
     files = list((env[1].state.settings.data_root / "diagnostics").glob("*.json"))
@@ -61,14 +85,28 @@ def test_failed_planner_saves_only_last_response_and_safe_guard_locations(env, m
     _, app, pid, asset = env
     candidate = candidates_for(env)
     response = {"kind": "directions", "message": "选择方向", "brief": candidate.brief.model_dump(),
-        "directions": [d.model_dump() for d in candidate.directions]}
+        "directions": [d.model_dump() for d in candidate.directions],
+        "concept_pool": concept_pool_for(candidate.directions)}
     if failure == "schema":
         response["extra"] = "REPLAYABLE_SCHEMA_FAILURE"
     else:
         response["brief"]["facts"][0]["source_id"] = "REPLAYABLE_BAD_SOURCE_ID"
     async def planned(self, system, context, originals, max_tokens=7000):
+        if isinstance(context, dict) and context.get("stage") == "direction_review":
+            from test_direction_selection import approved_direction_review
+            return approved_direction_review(context["directions"])
         return response
     monkeypatch.setattr(Gateway, "_planner_json", planned)
+    if failure == "schema":
+        with caplog.at_level(logging.WARNING, logger="app.providers.gateway"):
+            result = asyncio.run(Gateway(app.state.settings).decide(app.state.store.get_project(pid), [asset],
+                [{"role": "user", "content": "PRIVATE_REQUEST_NOT_FOR_DIAGNOSTIC"}], [], None))
+        assert result["kind"] == "directions"
+        assert "REPLAYABLE_SCHEMA_FAILURE" not in json.dumps(result, ensure_ascii=False)
+        assert "REPLAYABLE" not in caplog.text
+        assert "PRIVATE_REQUEST_NOT_FOR_DIAGNOSTIC" not in caplog.text
+        assert not list((app.state.settings.data_root / "diagnostics").glob("*.json"))
+        return
     with caplog.at_level(logging.WARNING, logger="app.providers.gateway"):
         with pytest.raises(ProviderError) as error:
             asyncio.run(Gateway(app.state.settings).decide(app.state.store.get_project(pid), [asset],
@@ -121,7 +159,7 @@ def test_diagnostic_redacts_media_credentials_and_omits_oversize_output(env):
 def test_diagnostic_write_failure_preserves_original_provider_error(env, monkeypatch):
     _, app, pid, asset = env
     async def planned(self, system, context, originals, max_tokens=7000):
-        return {"kind": "reply", "message": "回复", "extra": "NEVER_PUBLIC"}
+        return {"kind": "reply", "message": "回复", "questions": "NEVER_PUBLIC"}
     def cannot_write(*args, **kwargs):
         raise PermissionError("DIAGNOSTIC_WRITE_FAILED_PRIVATE")
     monkeypatch.setattr(Gateway, "_planner_json", planned)

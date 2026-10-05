@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from app.providers.gateway import Gateway, ProviderError
-from test_direction_selection import candidates_for, approved_direction_review
+from test_direction_selection import candidates_for, approved_direction_review, concept_pool_for
 from test_progressive_planning import (progressive_gateway, chosen_strategy, director_output,
                                        accepted_review, reject_first_shot)
 from test_providers import settings, source, install_transport, chat_output, request_context
@@ -87,7 +87,8 @@ def test_routed_edit_and_new_direction_review_receive_actual_latest_request(sett
             if new_directions:
                 candidates = candidates_for((None, None, None, source))
                 return chat_output({"kind": "directions", "message": "三个方向", "brief": candidates.brief.model_dump(),
-                                    "directions": [d.model_dump() for d in candidates.directions]})
+                                    "directions": [d.model_dump() for d in candidates.directions],
+                                    "concept_pool": concept_pool_for(candidates.directions)})
             return chat_output({"kind": "plan", "message": "修改方向", "brief": strategy.brief.model_dump(),
                 "directions": [selected.model_dump()], "selected_direction_id": selected.id})
         if context["stage"] == "direction_review":

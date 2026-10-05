@@ -148,10 +148,12 @@ async def planner_request(system, context, key, model):
     """Fixed planner endpoint, no tools/media, one attempt, no raw HTTP logs."""
     import httpx
     from app.ad_script import script_request_options
+    from app.planner_recovery import ensure_json_prompt
+    user_text = json.dumps(context, ensure_ascii=False)
     payload = {
         "model": model, "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
+            {"role": "system", "content": ensure_json_prompt(system, user_text)},
+            {"role": "user", "content": user_text},
         ],
         "response_format": {"type": "json_object"}, "stream": False,
         **script_request_options(),

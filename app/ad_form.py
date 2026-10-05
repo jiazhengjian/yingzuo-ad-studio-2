@@ -99,6 +99,49 @@ def guard_ad_form_confirmation(raw, project):
     return raw
 
 
+_INFER_FORMS = (
+    ("presenter_pitch", re.compile(r"口播|讲解|主播")),
+    ("scene_story", re.compile(r"剧情短视频|小剧情|剧情|故事")),
+    ("brand_tvc", re.compile(r"产品展示|不出镜|品牌片|质感|TVC", re.I)),
+)
+_NOT_A_FORM_CHOICE = re.compile(r"里的|台词|演员|文案|改一下|缩短")
+
+
+def plain_merchant_text(text):
+    """Merchant-facing wording. Internal field names stay out of the reply."""
+    if not isinstance(text, str) or not text:
+        return text
+    result = text
+    for old, new in (
+        ("保存值为空的偏好", "还没选定广告类型"),
+        ("还差一项保存的偏好", "还需要先选定广告类型"),
+        ("保存的偏好", "广告类型"),
+        ("保存值", "已选的广告类型"),
+    ):
+        result = result.replace(old, new)
+    return result
+
+
+def infer_ad_form(text):
+    """Use an explicit choice, otherwise one clear keyword in the brief."""
+    chosen = explicit_ad_form(text)
+    if chosen is not None:
+        return chosen
+    whole = re.sub(r"\s+", "", str(text))
+    if not whole or re.search(_DISCUSSION + "|" + _NEGATIVE, whole, re.I):
+        return None
+    if _NOT_A_FORM_CHOICE.search(whole):
+        return None
+    hits = []
+    for clause in re.split(r"[，,。！!；;\n\r]", whole):
+        if re.search(_NEGATIVE + r"|不一定|未必|不见得", clause):
+            continue
+        hits.extend(form for form, pattern in _INFER_FORMS if pattern.search(clause))
+    if len(set(hits)) != 1:
+        return None
+    return hits[0]
+
+
 def explicit_ad_form(text):
     """Recognize affirmative declarations, not conditional/comparative mentions."""
     whole = re.sub(r"\s+", "", str(text))
@@ -178,6 +221,7 @@ def intake_strategy_response(raw, project, *, ask_preference=True):
         guarded = guard_ad_form_confirmation(result, project)
         if guarded is not result:
             return guarded
+    from .cta import should_ask_cta
     form = project.get("ad_form")
     kind = result.get("kind")
     if ask_preference and kind == "clarify":
@@ -193,9 +237,18 @@ def intake_strategy_response(raw, project, *, ask_preference=True):
             # A redundant form-only clarification should not force a user to
             # answer again. The existing one-shot correction can reroute it.
             raise ValueError("广告倾向已确认，不应重复提问；根据已有信息回复或继续策划")
-    elif ask_preference and kind in ("directions", "plan") and needs_ad_form_choice(project):
-        result = {"kind": "clarify", "message": "先确认这条广告的表达倾向，再继续准备方案。",
-                  "questions": [ad_form_question()]}
+        from .cta import attach_cta_question
+        result = attach_cta_question(result, project)
+    elif ask_preference and kind in ("directions", "plan") and (
+            needs_ad_form_choice(project) or should_ask_cta(project)):
+        from .cta import cta_question
+        questions = []
+        if needs_ad_form_choice(project):
+            questions.append(ad_form_question())
+        if should_ask_cta(project):
+            questions.append(cta_question())
+        result = {"kind": "clarify", "message": "先确认看完视频后希望观众去哪里，再继续准备方案。",
+                  "questions": questions}
     brief = result.get("brief")
     if isinstance(brief, dict):
         bind_brief_ad_form(brief, project)

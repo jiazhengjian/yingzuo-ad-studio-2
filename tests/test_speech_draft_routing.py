@@ -58,7 +58,8 @@ def test_speech_draft_replaces_first_call_without_inventing_beats(speech_gateway
     content, director, review = state.contexts
     assert content["draft_format"] == director["draft_format"] == "speech_only"
     assert content["speech_draft_version"] == director["speech_draft_version"] == SPEECH_DRAFT_VERSION
-    assert set(content["schema"]["properties"]) == {"narration"}
+    assert set(content["schema"]["properties"]) == {"narration", "hook_options", "closing_options"}
+    assert content["schema"]["required"] == ["narration"]
     assert content["stage_skills"]["stage"] == "speech_draft"
     assert "source_context" not in content
     assert director["draft_speech"] == {"narration": "给忙碌的桌角，留一点自己的喜欢。"}
@@ -88,7 +89,11 @@ def test_noneligible_paths_keep_existing_contracts(speech_gateway, settings, exc
     elif excluded in ("scene", "presenter", "auto", "missing_form"):
         raw["brief"]["ad_form"] = {"scene": "scene_story", "presenter": "presenter_pitch",
             "auto": "auto", "missing_form": None}[excluded]
+        if excluded in ("scene", "presenter"):
+            selected["production"].update(
+                speech_mode="character_dialogue", speaker_id="char_worker", voice_description="自然介绍。")
     elif excluded in ("dialogue", "silent"):
+        raw["brief"]["ad_form"] = "scene_story" if excluded == "dialogue" else "brand_tvc"
         selected["production"].update(speech_mode="character_dialogue" if excluded == "dialogue" else "none",
             speaker_id="char_worker" if excluded == "dialogue" else "",
             voice_description="自然介绍。" if excluded == "dialogue" else "")
@@ -106,8 +111,7 @@ def test_noneligible_paths_keep_existing_contracts(speech_gateway, settings, exc
         assert state.contexts[0]["draft_format"] == "content_only"
 
 
-@pytest.mark.parametrize("bad", [{}, {"narration": " "}, {"narration": 4},
-    {"narration": "字" * 501}, {"narration": "有效话语。", "beats": []}])
+@pytest.mark.parametrize("bad", [{}, {"narration": " "}, {"narration": 4}, {"narration": "字" * 501}])
 def test_invalid_speech_output_stops_before_director(speech_gateway, bad):
     state = speech_gateway
     def invalid(value):
@@ -117,6 +121,17 @@ def test_invalid_speech_output_stops_before_director(speech_gateway, bad):
     with pytest.raises(ProviderError):
         state.run()
     assert state.calls == ["ad_script"]
+
+
+def test_extra_speech_field_is_dropped_before_the_director(speech_gateway):
+    state = speech_gateway
+    def invalid(value):
+        value.clear()
+        value.update({"narration": "有效话语。", "beats": []})
+    state.draft_mutation = invalid
+    state.run()
+    assert state.calls == ["ad_script", "storyboard", "plan_review"]
+    assert state.contexts[1]["draft_speech"] == {"narration": "有效话语。"}
 
 
 def test_fixed_speech_remains_guarded_after_new_handoff(speech_gateway):
@@ -146,9 +161,13 @@ def test_speech_route_does_not_allow_director_to_drop_selected_evidence(speech_g
         for shot in value["shots"]:
             shot["evidence_ids"] = []
     state.first_director_mutation = drop
-    with pytest.raises(ProviderError):
-        state.run()
-    assert state.calls == ["ad_script", "storyboard"]
+    plan = state.run()
+    used = {fact_id for beat in plan["ad_script"]["beats"] for fact_id in beat["evidence_ids"]}
+    selected = next(item for item in state.strategy.directions if item.id == state.strategy.selected_direction_id)
+    assert set(selected.evidence_ids).issubset(used)
+    assert plan["segments"]
+    assert state.calls[0:2] == ["ad_script", "storyboard"]
+    assert len(state.calls) <= 6
 
 
 def test_nonprogressive_initial_authoring_keeps_timed_contract(speech_gateway, settings, monkeypatch):
@@ -234,12 +253,10 @@ def test_checkpoint_cannot_replay_other_speech_version_or_mode(speech_gateway, s
         monkeypatch.setattr("app.providers.gateway.SPEECH_DRAFT_VERSION", "new-version")
     else:
         settings.speech_draft_enabled = False
-    with pytest.raises(ProviderError) as caught:
-        run(checkpoint)
-    assert caught.value.error_code == "planning_invalid_response"
-    assert caught.value.retryable is False
-    assert len(state.calls) == 3
-    assert checkpoint == frozen
+    result = run(checkpoint)
+    assert result["plan"]["plan_review"]["ready"]
+    assert len(state.calls) > 3
+    assert checkpoint != frozen
 
 
 @pytest.mark.parametrize("raw,enabled", [(None, False), (" true ", True), ("FALSE", False)])

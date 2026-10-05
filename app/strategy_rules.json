@@ -1,5 +1,5 @@
 {
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "原创中文创意规则。方法参考公开资料，不代表任何广告已经验证有效。",
   "production_constraints": [
     "复用商品原图；一张场景图，有出镜角色时每位一张组合四视图；不生成逐镜关键帧或首尾帧",
@@ -275,6 +275,136 @@
         "从图片猜操作步骤、按钮作用或绝对尺寸，或把生成演示当实测证据",
         "为规避未知参数而删除全部用户主推特点，改成无关外观、拿放和运镜",
         "仅引用一条商家原话就放行其中未包含的商品主张，或把需求愿望和受众假设当产品效果"
+      ]
+    },
+    {
+      "id": "exaggeration",
+      "version": "1.0.0",
+      "sources": [
+        "https://github.com/coreyhaines31/marketingskills/blob/5b2c0007766c6a1cf1d53fd8fc73e979e0821022/skills/ad-creative/references/hook-system.md",
+        "https://github.com/motion-team/creative-strategy-skills/blob/8e467a3547dcd2118e4d08fa58099553677d52ff/creative-mechanics/SKILL.md"
+      ],
+      "categories": ["food", "appliance", "general"],
+      "label": "夸张演绎",
+      "mechanism": "把一个已确认的特点或可见关系放大成一个看得见的夸张场面，让人先被场面抓住，再认出商品。夸张是表演和尺度，不是新的功效、测试或对比。",
+      "prerequisites": {
+        "min_facts": 1,
+        "merchant_patterns_all": [],
+        "description": "至少一条可追溯商品事实，用来托住被夸张的那个特点；夸张场面本身不需要事实编号"
+      },
+      "shot_functions": [
+        "开场把一个真实关系放到反常的尺度或数量里",
+        "让商品进入这个场面，观众看出夸张的是哪一个已知特点",
+        "收回正常尺度，记住商品本身，不把夸张结果说成实测"
+      ],
+      "must_not_claim": [
+        "把夸张场面写成效果证明、销量或优于竞品",
+        "为了场面新增商品没有的功能、成分或结构",
+        "用前后对照暗示未知功效"
+      ]
+    },
+    {
+      "id": "contrast_humor",
+      "version": "1.0.0",
+      "sources": [
+        "https://github.com/motion-team/creative-strategy-skills/blob/8e467a3547dcd2118e4d08fa58099553677d52ff/creative-mechanics/SKILL.md",
+        "https://github.com/coreyhaines31/marketingskills/blob/5b2c0007766c6a1cf1d53fd8fc73e979e0821022/skills/ad-creative/references/creative-roadmap.md"
+      ],
+      "categories": ["food", "appliance", "general"],
+      "label": "反差幽默",
+      "mechanism": "用一个具体的反差或小误会把人逗住，商品负责把这个反差落地。笑点来自处境，不来自编造的性能，也不嘲笑未核实的竞品。",
+      "prerequisites": {
+        "min_facts": 1,
+        "merchant_patterns_all": [],
+        "description": "至少一条可追溯商品事实；笑点、误会和人物反应是创意，不能用来证明未知效果"
+      },
+      "shot_functions": [
+        "开场给一个具体的期待落空或反差",
+        "商品以已知特点参与这个反差，而不是等笑完再摆出来",
+        "包袱落地时仍能认出商品，不另加效果结论"
+      ],
+      "must_not_claim": [
+        "把观众发笑写成使用效果或真实评价",
+        "贬低没有资料的竞品",
+        "用笑话替换本轮必须让人知道的商品特点"
+      ]
+    },
+    {
+      "id": "identity_attitude",
+      "version": "1.0.0",
+      "sources": [
+        "https://github.com/motion-team/creative-strategy-skills/blob/8e467a3547dcd2118e4d08fa58099553677d52ff/creative-strategy-engine/SKILL.md",
+        "https://github.com/coreyhaines31/marketingskills/blob/5b2c0007766c6a1cf1d53fd8fc73e979e0821022/skills/ad-creative/references/creative-roadmap.md"
+      ],
+      "categories": ["food", "appliance", "general"],
+      "label": "身份与态度",
+      "mechanism": "让一种具体的态度或自我认同带着商品出现：谁会把它留在身边、怎样拿、怎样看。态度是创意设定，不是人群调研，也不能升成身份特权或认证。",
+      "prerequisites": {
+        "min_facts": 1,
+        "merchant_patterns_all": [],
+        "description": "至少一条可追溯商品事实；人物态度和身份想象写入创意，不写成已证实的使用者画像"
+      },
+      "shot_functions": [
+        "开场先看见一种态度或一个选择动作",
+        "商品出现在这个态度里，已知特点被这个人在意",
+        "收在人和商品的关系上，不宣布一类人都需要它"
+      ],
+      "must_not_claim": [
+        "把创意人设写成真实用户调研或证言",
+        "用态度代替商品没有的功效",
+        "暗示拥有商品就获得未说明的身份或地位"
+      ]
+    },
+    {
+      "id": "ritual_sensory",
+      "version": "1.0.0",
+      "sources": [
+        "https://github.com/coreyhaines31/marketingskills/blob/5b2c0007766c6a1cf1d53fd8fc73e979e0821022/skills/ad-creative/references/hook-system.md",
+        "https://github.com/Creatify-AI/video-ad-reverse-engineer/blob/d5704e992393546da73bb173dab39867f30b28f6/references/output-template.md"
+      ],
+      "categories": ["food", "appliance", "general"],
+      "label": "仪式与感官",
+      "mechanism": "把一次重复的小动作或一种感官节奏写成仪式：打开、放下、靠近、听一声。感官是观看体验，用来记住商品，不用来证明味道、成分或护理结果。",
+      "prerequisites": {
+        "min_facts": 1,
+        "merchant_patterns_all": [],
+        "description": "至少一条可追溯的外观或商家事实；仪式和感官节奏本身不是功效证据"
+      },
+      "shot_functions": [
+        "开场进入这个重复动作或声音的一次",
+        "商品在仪式里被看见，已知特点跟着动作出现",
+        "最后一次动作停住，留下商品，不解释成疗效"
+      ],
+      "must_not_claim": [
+        "由光泽、声音或手感推断成分、新鲜或护理效果",
+        "把仪式写成已测量的使用结果",
+        "虚构商品没有的操作步骤"
+      ]
+    },
+    {
+      "id": "situational_conflict",
+      "version": "1.0.0",
+      "sources": [
+        "https://github.com/motion-team/creative-strategy-skills/blob/8e467a3547dcd2118e4d08fa58099553677d52ff/creative-strategy-engine/SKILL.md",
+        "https://github.com/coreyhaines31/marketingskills/blob/5b2c0007766c6a1cf1d53fd8fc73e979e0821022/skills/ad-creative/references/creative-roadmap.md"
+      ],
+      "categories": ["food", "appliance", "general"],
+      "label": "情境冲突",
+      "mechanism": "开场给一个很小的当场冲突或卡住的动作，商品用已确认的用途或可见特点把这一下接住。冲突是情节张力，解决不能超出已知事实，也不靠放大焦虑。",
+      "prerequisites": {
+        "min_facts": 1,
+        "merchant_patterns_all": [],
+        "description": "至少一条可追溯商品事实；冲突和人物压力是创意，不能把愿望写成已经实现的效果"
+      },
+      "shot_functions": [
+        "开场让一个具体动作卡住或两个人看法不同",
+        "商品带着已知特点进入这个冲突",
+        "冲突收住，只兑现已确认的用途或可见关系"
+      ],
+      "must_not_claim": [
+        "放大没有依据的危险、羞耻或健康焦虑",
+        "用冲突前后的表情证明未知功效",
+        "编造商品没有的解决能力"
       ]
     }
   ]

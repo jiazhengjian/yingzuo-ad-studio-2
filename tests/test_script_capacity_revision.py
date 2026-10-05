@@ -167,15 +167,24 @@ def test_early_capacity_return_consumes_the_same_final_av_revision_budget(capaci
     assert "refining_storyboard" not in capacity_gateway.phases
 
 
-@pytest.mark.parametrize("invalid", ["unknown_fact", "missing_timing", "root_identity"])
+@pytest.mark.parametrize("invalid", ["unknown_fact", "missing_timing"])
 def test_numeric_overload_does_not_bypass_review_authority_guards(capacity_gateway, invalid):
     def mutate(script):
         if invalid == "unknown_fact": script["beats"][0]["evidence_ids"] = ["invented"]
-        elif invalid == "missing_timing": script["beats"][0].pop("timing")
-        else: script["production"] = {"speech_mode": "none"}
+        else: script["beats"][0].pop("timing")
     capacity_gateway.first_review_mutation = mutate
     with pytest.raises(ProviderError): capacity_gateway.run()
     assert capacity_gateway.calls == ["ad_script", "script_review"]
+
+
+def test_extra_production_on_the_reviewed_script_is_dropped(capacity_gateway):
+    capacity_gateway.first_review_mutation = lambda script: script.update(production={"speech_mode": "none"})
+    result = capacity_gateway.run()
+    assert capacity_gateway.calls == ["ad_script", "script_review", "script_review", "storyboard", "alignment_review"]
+    selected = next(d for d in capacity_gateway.strategy.directions
+                    if d.id == capacity_gateway.strategy.selected_direction_id)
+    assert result["production"] == selected.production.model_dump()
+    assert "production" not in result["ad_script"]
 
 
 def test_second_review_cannot_add_unknown_facts(capacity_gateway):

@@ -1,7 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ArrowRight, Check, CheckCircle2, ChevronDown, Circle, LoaderCircle, TriangleAlert } from 'lucide-react';
-import type { DirectionGateData, DirectionOption, FilmConcept, FilmStructure } from './api';
+import type { DirectionGateData, DirectionOption } from './api';
 import type { ConversationGateHandle, ConversationGateProps } from './ConversationGate';
 import { draftKey, initialDraft, restoreDraft } from './gateDraft';
 import { directionSubmission, validDirectionOptions } from './directionSelection';
@@ -9,72 +9,72 @@ import ProductionSummary from './ProductionSummary';
 
 type Props = Omit<ConversationGateProps, 'gate'> & { gate: DirectionGateData };
 
-const filmStructureLabels: Record<FilmStructure, string> = {
-  product_visual: '产品视觉呈现',
-  world_intercut: '产品与场景交替',
-  lifestyle: '生活方式',
-  scene_action: '剧情／场景',
-  presenter_explanation: '人物讲解',
+const RULE_LABELS: Record<string, string> = {
+  sensory_detail: '感官细节', everyday_context: '生活情境', appearance_reveal: '外观揭示',
+  operation_walkthrough: '操作讲解', problem_solution: '问题与解决', evidence_comparison: '有依据的对比',
+  feature_value: '特点与选择理由', exaggeration: '夸张演绎', contrast_humor: '反差幽默',
+  identity_attitude: '身份与态度', ritual_sensory: '仪式与感官', situational_conflict: '情境冲突',
+};
+const HOOK_LABELS: Record<string, string> = {
+  macro_detail: '微距开场', silhouette: '剪影开场', signature_sound: '声音开场', scale_shift: '尺度开场',
+  awkward_moment: '尴尬开场', situational_conflict: '小冲突开场', arresting_line: '一句开场',
+  direct_question: '提问开场', counterintuitive: '反常识开场', result_first: '结果开场',
 };
 
-function distinctRows(rows: [string, string | undefined][], seen = new Set<string>()) {
-  return rows.flatMap(([label, value]) => {
-    const text = value?.trim();
-    const key = text?.replace(/\s+/g, ' ');
-    if (!text || !key || seen.has(key)) return [];
-    seen.add(key);
-    return [{ label, text }];
-  });
+function clip(value: string | undefined, limit: number) {
+  const cleaned = value?.trim() || '';
+  if (cleaned.length <= limit) return cleaned;
+  const window = cleaned.slice(0, limit);
+  const earliest = Math.max(8, Math.floor(limit / 3));
+  for (const mark of ['。', '！', '？', '；', '，']) {
+    const at = window.lastIndexOf(mark);
+    if (at >= earliest) return window.slice(0, at + 1).trim();
+  }
+  return window.trim();
 }
 
-function FilmConceptContent({ option, concept }: { option: DirectionOption; concept: FilmConcept }) {
-  const seen = new Set<string>();
-  const mainRows = distinctRows([
-    ['主打什么', option.angle],
-    ['核心画面', concept.key_visual],
-    ['创意展开', option.story_summary],
-    ['怎样表达卖点', option.product_expression],
-  ], seen);
-  const details = distinctRows([
-    ['受众为什么在意', option.audience_value],
-    ['观看理由', option.attraction_mechanism],
-    ['留下的印象', concept.memory_anchor],
-    ['声音怎样配合', concept.sound_role],
-  ], seen);
-  return <div className="direction-film-concept">
-    <span className="direction-structure"><span className="gate-sr-only">影片结构：</span>{filmStructureLabels[concept.structure]}</span>
-    <dl className="direction-film-main">{mainRows.map(({ label, text }) => <div key={label}><dt>{label}</dt><dd>{text}</dd></div>)}</dl>
-    {details.length > 0 && <details className="direction-film-details">
-      <summary><span>受众、记忆点与声音</span><ChevronDown size={13}/></summary>
-      <dl>{details.map(({ label, text }) => <div key={label}><dt>{label}</dt><dd>{text}</dd></div>)}</dl>
-    </details>}
-  </div>;
+function techniqueTag(option: DirectionOption) {
+  const rule = RULE_LABELS[option.rule_id] || '';
+  const hook = option.hook_type ? HOOK_LABELS[option.hook_type] || '' : '';
+  if (rule && hook) return `${rule} · ${hook}`;
+  return rule || hook;
+}
+
+const SKELETON_LABELS: Record<string, string> = {
+  product_visual: '拆解', world_intercut: '穿梭', lifestyle: '生活',
+};
+
+function pictureLabel(option: DirectionOption) {
+  const concept = option.film_concept;
+  if (!concept) return '';
+  return SKELETON_LABELS[concept.visual_skeleton || ''] || SKELETON_LABELS[concept.structure] || '';
+}
+
+function PitchLines({ option }: { option: DirectionOption }) {
+  const rows = [
+    ['核心创意', clip(option.product_expression, 60)],
+    ['洞察', clip(option.consumer_insight, 40)],
+    ['怎么讲画面', pictureLabel(option)],
+    ['侧面证明', clip(option.film_concept?.side_proof, 40)],
+    ['贯穿母题', clip(option.film_concept?.visual_motif, 16)],
+    ['0–3秒', clip(option.hook, 40)],
+    ['中段', clip(option.film_concept?.key_visual, 40)],
+    ['结尾', clip(option.payoff, 40)],
+    ['为什么吸引人', clip(option.reason, 40)],
+  ].filter(([, text]) => text);
+  if (!rows.length) return null;
+  return <dl className="direction-film-main">{rows.map(([label, text]) => <div key={label}><dt>{label}</dt><dd>{text}</dd></div>)}</dl>;
 }
 
 function OptionContent({ option, selected, action }: { option: DirectionOption; selected?: boolean; action?: ReactNode }) {
-  const story = option.story_summary?.trim();
-  const attraction = option.attraction_mechanism?.trim();
-  const audienceValue = option.audience_value?.trim();
-  const productExpression = option.product_expression?.trim();
-  const hasProductValue = !!(audienceValue || productExpression);
-  const filmConcept = option.film_concept;
-  const hasFilmConcept = filmConcept && filmStructureLabels[filmConcept.structure];
-  const legacyStory = [option.hook, option.development, option.payoff].filter(Boolean).join(' ');
+  const technique = techniqueTag(option);
   return <>
     <div className="direction-copy">
-    <div className="direction-card-heading"><h4>方向：{option.label}</h4><span className="direction-badges">
+    <div className="direction-card-heading"><div className="direction-card-title"><h4>方向：{option.label}</h4>{technique && <p className="direction-technique">{technique}</p>}</div><span className="direction-badges">
       {selected && <span className="direction-chosen"><Check size={12}/>已选择</span>}
       {option.recommended === true && <span className="direction-recommended">推荐</span>}
     </span></div>
-    {hasFilmConcept ? <FilmConceptContent option={option} concept={filmConcept}/> : <>
-    {hasProductValue && <dl className="direction-product-value">
-      {option.angle.trim() && <div><dt>主打什么</dt><dd>{option.angle}</dd></div>}
-      {audienceValue && <div><dt>为什么在意</dt><dd>{audienceValue}</dd></div>}
-      {productExpression && <div><dt>如何体现</dt><dd>{productExpression}</dd></div>}
-    </dl>}
-    {(story || legacyStory) && <p className="direction-story"><span>{story ? (hasProductValue ? '创意展开' : '故事概要') : '原画面设想'}</span>{story || legacyStory}</p>}
-    {(attraction || !hasProductValue) && <p className="direction-attraction"><span>{attraction ? '怎样吸引观众' : '原方向说明'}</span>{attraction || option.angle}</p>}
-    </>}
+    <PitchLines option={option}/>
     <ProductionSummary production={option.production}/>
     </div>
     {action && <div className="direction-card-actions">{action}</div>}

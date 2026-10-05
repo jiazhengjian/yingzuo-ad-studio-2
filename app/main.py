@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+from urllib.parse import urlparse
 import uuid
 
 from dotenv import set_key
@@ -29,6 +30,36 @@ from app.schemas import ContinuityInput, CredentialsInput, CreativeConfirmInput,
 
 
 PRIVATE_FIELDS = {"path", "source_path", "payload", "snapshot", "raw", "provider_url", "download_url", "lease_until"}
+_WORKBENCH_ORIGINS = {
+    "http://127.0.0.1:8787", "http://localhost:8787",
+    "http://127.0.0.1:5173", "http://localhost:5173",
+}
+
+
+def _same_workbench_origin(origin: str, host: str | None) -> bool:
+    """Allow the fixed dev ports, or this request's own loopback host:port.
+
+    A second local instance is not cross-site. The origin host and port must
+    equal the Host header, and the host must still be 127.0.0.1 or localhost.
+    """
+    if origin in _WORKBENCH_ORIGINS:
+        return True
+    if not host or any(char in host for char in " \t\r\n/\\"):
+        return False
+    parsed = urlparse(origin)
+    if (parsed.scheme != "http" or parsed.username or parsed.password
+            or parsed.query or parsed.fragment or parsed.path not in ("", "/")):
+        return False
+    hostname = parsed.hostname
+    if hostname not in ("127.0.0.1", "localhost"):
+        return False
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    if port is None:
+        return False
+    return host.lower() == f"{hostname}:{port}"
 
 
 def attachment_name(asset, path: Path):
@@ -56,6 +87,9 @@ def create_app(settings=None, gateway=None, run_worker=True):
 
     async def worker():
         store.recover_jobs()
+        if getattr(settings, "planner_speculate_recommended", False):
+            from app.speculative_plan import kick_speculation
+            kick_speculation(store, gateway, settings)
         while True:
             for job in store.active_jobs():
                 if job["status"] == "queued":
@@ -94,7 +128,7 @@ def create_app(settings=None, gateway=None, run_worker=True):
     async def same_origin(request, call_next):
         if request.method not in ("GET", "HEAD", "OPTIONS"):
             origin = request.headers.get("origin")
-            if origin and origin not in ("http://127.0.0.1:8787", "http://localhost:8787", "http://127.0.0.1:5173", "http://localhost:5173"):
+            if origin and not _same_workbench_origin(origin, request.headers.get("host")):
                 return JSONResponse({"detail": "仅允许本机工作台提交请求"}, status_code=403)
             if request.headers.get("sec-fetch-site") == "cross-site":
                 return JSONResponse({"detail": "拒绝跨站请求"}, status_code=403)
@@ -143,13 +177,23 @@ def create_app(settings=None, gateway=None, run_worker=True):
             skill_registry = registry_metadata()
         except (OSError, ValueError):
             skill_registry = {"status": "unavailable"}
+        routes = getattr(settings, "planner_stage_routes", {}) or {}
+        route_labels = {stage: item["provider"] + ":" + item["model"] + ((":" + item["effort"]) if item.get("effort") else "")
+                        for stage, item in sorted(routes.items()) if isinstance(item, dict)}
         return {"ok": True, "configured": {"planner": bool(planner_api_key(settings)), "video": bool(settings.tudou_api_key)},
                 "skill_registry": skill_registry,
                 "active_jobs": len(store.active_jobs()), "providers": {"planner": planner_label(settings), "video": "土豆 API · Wan 3.0"},
                 "capabilities": {"planner_provider": planner_provider(settings), "planner_model": settings.planner_model,
                                  "video_model": settings.video_model, "max_video_submissions": settings.max_video_submissions,
                                  "max_image_submissions": 9, "duration_min_seconds": 10, "duration_max_seconds": 60,
-                                 "default_duration_seconds": 20},
+                                 "default_duration_seconds": 20,
+                                 "planner_stream": settings.planner_stream,
+                                 "planner_fallback": bool(settings.planner_fallback_on),
+                                 "planner_stage_routes": route_labels,
+                                 "planner_speculate_recommended": settings.planner_speculate_recommended,
+                                 "planner_max_refinements": settings.planner_max_refinements,
+                                 "planner_refinement_format": settings.planner_refinement_format,
+                                 "planner_request_deadline_seconds": settings.planner_request_deadline_seconds},
                 "limitations": ["支持10至60秒商品广告；独立主播入口暂未开放，商品广告可按方向安排角色说话", "原生声音、台词与口型需检查成片，暂不自动生成字幕", "商品使用上传原图；每方案一张场景图，有角色时每位一张组合四视图，一起确认后生成视频"]}
 
     @app.get("/api/projects")
@@ -196,7 +240,7 @@ def create_app(settings=None, gateway=None, run_worker=True):
         name = Path(file.filename or "商品图").name[:100]
         asset = store.add_asset(project_id, "product", name, path, "image/jpeg", metadata={"generated": False, "width": im.width, "height": im.height})
         if store.get_project(project_id)["plan"]:
-            store.add_message(project_id, "system", "新增商品图已保存。现有方案继续使用原先确认的参考；点击更新脚本后，才会采用新增图片。")
+            store.add_message(project_id, "system", "商品图已保存。已选方向保持不变；写上商品信息并发送后，才会把新图并进当前方案。")
         return public(asset)
 
     @app.post("/api/projects/{project_id}/messages", status_code=201)
@@ -324,6 +368,13 @@ def create_app(settings=None, gateway=None, run_worker=True):
                 job = store.update_job(job["id"], payload=payload)
         idle(project_id)
         return {"job": public(store.update_job(job["id"], status="queued", error=None))}
+
+    @app.post("/api/projects/{project_id}/resume-planning")
+    def resume_planning(project_id: str):
+        require_planner()
+        store.get_project(project_id)
+        idle(project_id)
+        return {"job": public(store.resume_saved_planning(project_id))}
 
     @app.post("/api/projects/{project_id}/cancel")
     def cancel(project_id: str):

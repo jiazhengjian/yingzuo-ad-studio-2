@@ -74,6 +74,15 @@ def test_visual_evidence_cannot_borrow_or_invent_the_current_shot(plan, review, 
         row["quote"] = 7
     else:
         row["verdict"] = "probably"
+    if mutation in ("invented_quote", "other_shot", "no_camera", "long_quote"):
+        checked = validate_plan_review(lower_failed_plan_verdicts(review, plan), plan)
+        visual = checked.alignment.shots[0].visual_execution
+        shot = plan.segments[0].shots[0]
+        owned = shot.description
+        if shot.continuity is not None and shot.continuity.camera_move:
+            owned += shot.continuity.camera_move
+        assert visual.quote in owned
+        return
     with pytest.raises(ValueError):
         validate_plan_review(lower_failed_plan_verdicts(review, plan), plan)
 
@@ -88,8 +97,9 @@ def test_camera_move_is_checked_at_current_shot_continuity(cut_plan):
     assert validate_plan_review(review, value).ready
     # A valid description quote cannot be mislabeled as camera_move.
     visual_row(review)["quote"] = shot["description"]
-    with pytest.raises(ValueError, match="当前镜头"):
-        validate_plan_review(review, value)
+    checked = validate_plan_review(review, value)
+    assert checked.alignment.shots[0].visual_execution.source == "description"
+    assert checked.alignment.shots[0].visual_execution.quote == shot["description"]
 
 
 @pytest.mark.parametrize("description", [
