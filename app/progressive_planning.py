@@ -1303,18 +1303,56 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             if getattr(error, "contentless", False) or getattr(error, "syntax", False):
                 break
             storyboard_errors += 1
+
+    def brand_hold(lines):
+        """Fallback board whose product-ad voiceover already keeps one claim."""
+        director = fallback_director(strategy, lines)
+        folded, _changed = apply_brand_claim_collapse(director, strategy, locked, duration)
+        return folded
+
+    def stacked_plan(plan):
+        if not isinstance(plan, dict):
+            return False
+        script = plan.get("ad_script") or {}
+        if (brand_stack_remaining(script, strategy, locked, plan, duration)
+                or brand_visual_claim_overflow(plan, strategy, locked, duration)):
+            return True
+        spoken = []
+        for segment in plan.get("segments") or []:
+            if not isinstance(segment, dict):
+                continue
+            for span in segment.get("speech_spans") or []:
+                if not isinstance(span, dict):
+                    continue
+                text = span.get("text")
+                if isinstance(text, str) and text.strip():
+                    spoken.append({
+                        "id": span.get("beat_id") or span.get("id") or f"span_{len(spoken)}",
+                        "narration": text,
+                    })
+        return bool(spoken) and brand_stack_remaining(
+            {"beats": spoken}, strategy, locked, plan, duration)
+
+    def release(plan):
+        if stacked_plan(plan):
+            record_failure(plan)
+            raise ProgressivePlanningError(
+                "产品片旁白还在堆卖点，这次不采用。已有方案和素材已保留，尚未开始新的图片或视频生成",
+                issue_summary=["产品片旁白还在堆卖点"], repair_attempts=repairs)
+        return plan
+
     if raw is None:
         limit = profile.max_beat_characters
         kept_lines = [line for line in (_draft_lines(draft) or list(locked)) if len(line) <= limit]
         if kept_lines:
             record_failure({"nonblocking": True, "message": "分镜没有返回，已沿用已有台词",
                             "issues": ["storyboard"], "error_code": "storyboard_kept_lines"})
-            raw = fallback_director(strategy, kept_lines)
+            raw = brand_hold(kept_lines)
         else:
             record_failure({"nonblocking": True,
                             "message": "分镜阶段没有留下可用内容，占位稿不是完成的方案",
                             "issues": ["fallback_skeleton"], "error_code": "fallback_skeleton"})
-            raw = _mark_skeleton(fallback_director(strategy, locked))
+            raw = _mark_skeleton(brand_hold(locked))
     repairs = 0
     last_valid_plan = None
     real_candidates = []
@@ -1420,7 +1458,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 "issues": ["storyboard"], "error_code": "storyboard_kept_lines"})
             try:
                 chosen, _, _ = compile_director(
-                    fallback_director(strategy, kept_lines or locked), strategy, duration, generation_strategy,
+                    brand_hold(kept_lines or locked), strategy, duration, generation_strategy,
                     [asset["id"] for asset in assets], locked, cta_target)
             except (ValueError, KeyError, TypeError, ValidationError):
                 if not kept_lines:
@@ -1430,7 +1468,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 log_skeleton()
                 try:
                     chosen, _, _ = compile_director(
-                        fallback_director(strategy, locked), strategy, duration, generation_strategy,
+                        brand_hold(locked), strategy, duration, generation_strategy,
                         [asset["id"] for asset in assets], locked, cta_target)
                 except (ValueError, KeyError, TypeError, ValidationError):
                     raise ProgressivePlanningError(message + "。已有方案和素材已保留，尚未开始新的图片或视频生成",
@@ -1616,7 +1654,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                             log_skeleton()
                             limit = profile.max_beat_characters
                             kept_lines = [line for line in (_draft_lines(draft) or list(locked)) if len(line) <= limit]
-                            raw = _mark_skeleton(fallback_director(strategy, kept_lines or locked))
+                            raw = _mark_skeleton(brand_hold(kept_lines or locked))
                             fallback_installed = True
                             continue
                     record_failure(None)
@@ -1699,14 +1737,13 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                     raise _PlanAccepted(chosen)
                 log_skeleton()
             spoken = coordinated.get("ad_script") or {}
-            # One local pass. A second benefit is blanked before any model rewrite,
-            # and before this draft can be remembered as ready.
-            if not current_is_skeleton:
-                folded, did_fold = apply_brand_claim_collapse(
-                    coordinated, strategy, locked, duration)
-                if did_fold:
-                    raw = folded
-                    continue
+            # One local pass, including a fallback board. A second benefit is
+            # blanked before any model rewrite and before this draft can be saved.
+            folded, did_fold = apply_brand_claim_collapse(
+                coordinated, strategy, locked, duration)
+            if did_fold:
+                raw = folded
+                continue
             # Per-line jargon stays independent of the strategy. Cross-line craft
             # still sees the ad type, without opening the product-reference check.
             if not jargon_rewrite_used and (
@@ -1721,8 +1758,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 if replacement is not None:
                     raw = replacement
                     continue
-            if not current_is_skeleton and (
-                    brand_stack_remaining(spoken, strategy, locked, plan, duration)
+            if (brand_stack_remaining(spoken, strategy, locked, plan, duration)
                     or brand_visual_claim_overflow(coordinated, strategy, locked, duration)):
                 record_failure(plan)
                 raise ProgressivePlanningError(
@@ -1770,7 +1806,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             elif craft_request is not None and craft_refine_used and not craft_accepted:
                 craft_accepted = _accept_craft_issue(diagnostic_settings, craft_request) or craft_accepted
             if skip_review:
-                return plan
+                return release(plan)
             progress("reviewing_plan")
             review_input = {"stage": "plan_review", "schema": compact_review_schema(plan_review_schema(plan)),
                 "review_output_version": REVIEW_OUTPUT_VERSION, "review_policy_version": REVIEW_POLICY_VERSION,
@@ -1848,8 +1884,8 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 if is_placeholder_plan(plan):
                     chosen = best_real()
                     if chosen is not None and not is_placeholder_plan(chosen):
-                        return chosen
-                return plan
+                        return release(chosen)
+                return release(plan)
             record_failure(plan)
             feedback = review.model_dump(exclude={"reviewed_plan_sha256", "reviewed_reference_asset_ids"})
             issues = _review_issues(feedback, plan)
@@ -1894,7 +1930,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             except RevisionKept:
                 chosen = best_real()
                 if chosen is not None:
-                    return chosen
+                    return release(chosen)
                 if (brand_stack_remaining(
                         (plan or {}).get("ad_script") or {}, strategy, locked, plan, duration)
                         or brand_visual_claim_overflow(plan, strategy, locked, duration)):
@@ -1902,6 +1938,6 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                         "产品片旁白还在堆卖点，这次不采用。已有方案和素材已保留，尚未开始新的图片或视频生成",
                         issue_summary=["产品片旁白还在堆卖点"], repair_attempts=repairs)
                 refuse_mismatched_voice(plan)
-                return plan
+                return release(plan)
     except _PlanAccepted as accepted:
-        return accepted.plan
+        return release(accepted.plan)
