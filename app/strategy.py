@@ -146,8 +146,8 @@ class FilmConcept(_StrictModel):
         description="贯穿母题，只写一个元素，不超过16字")
     side_proof: Annotated[str, StringConstraints(strip_whitespace=True, max_length=40)] = Field(
         default="", exclude_if=lambda value: not value,
-        description="侧面证明，不超过40字。用场景、过程或概念层比喻让人看见好处，不写规格、价格或数字")
-    key_visual: LongText = Field(description="中段，不超过40字。写这一拍的具体动作：剧情是转折，讲解是演示，产品片是产品高光。不是运镜清单")
+        description="侧面证明，不超过40字。大白话，用场景、过程或概念层比喻让人看见好处。不写规格、价格、数字或照片说明")
+    key_visual: LongText = Field(description="中段，不超过40字。大白话写这一拍：剧情是转折，讲解是演示，产品片是产品高光。不是运镜清单，也不是摄影散文")
     memory_anchor: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
         description="历史字段。新方向不写；脚本从核心画面和收尾推导观众留下的印象")
     sound_role: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
@@ -180,7 +180,7 @@ class CreativeDirection(_StrictModel):
         description="本方向的商品形态与动作约束、出镜角色、声音形式；新创作必须明确，历史缺失不推断")
     id: Identifier
     rule_id: Identifier
-    label: ShortText = Field(description="商家看得懂的创意标题：表达产品价值或观看主张，不是商品部位、构图或运镜名称")
+    label: ShortText = Field(description="商家扫一眼就能选的短标题，2到8个字，像影棚特写、早上赶出门、工艺感。写这条和另外两条的差别，不写画面散文")
     audience: ShortText
     scenario: ShortText
     angle: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
@@ -188,7 +188,7 @@ class CreativeDirection(_StrictModel):
     audience_value: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
         description="历史字段。新方向不写；脚本从已选方向和简报说明受众为何在意")
     product_expression: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
-        description="核心创意，不超过60字。写成「把【已确认特点】和【一个动作或画面】绑在一起：……」。只绑已有事实，不写未确认功效")
+        description="核心创意，不超过60字。用大白话写出这条和另外两条差在哪。只绑已有事实，不写未确认功效，不写摄影散文")
     # Historical plans/gates predate these fields. Only newly authored offers
     # must provide them; reading or selecting a saved direction never invents
     # a synopsis from its old technical notes.
@@ -197,19 +197,19 @@ class CreativeDirection(_StrictModel):
     attraction_mechanism: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
         description="历史字段。新方向不写观看理由；脚本从0–3秒、结尾和为什么吸引人组织观看过程")
     consumer_insight: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
-        description="洞察，不超过40字。写成观众心里的一句话，说明为什么在意，不写他们正在做什么。这是创意假设，不是调研")
+        description="洞察，不超过40字。大白话写观众为什么在意。不写他们正在做什么，不写摄影散文。这是创意假设，不是调研")
     big_idea: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
         description="历史字段。新方向不写。脚本优先用核心创意 product_expression")
     hook_type: HookType | None = Field(default=None, exclude_if=lambda value: value is None,
         description="具名开场钩子，必须属于当前广告类型 playbook 允许的那一组")
     brand_world: BrandWorld | None = Field(default=None, exclude_if=lambda value: value is None,
         description="概念层的品牌世界路径：functional 功能环境、identity 身份态度、sensory 感官仪式。不是商品事实")
-    hook: LongText = Field(description="0到3秒，不超过40字。写谁在做什么、看到或听到什么。不是钩子编号的中文翻译")
+    hook: LongText = Field(description="0到3秒，不超过40字。大白话写这一下和另外两条有什么不同。不是钩子编号的翻译，也不是镜头散文")
     development: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
         description="历史字段。新方向不写这段展开；中段写在 key_visual")
-    payoff: LongText = Field(description="结尾，不超过40字。写这一下具体落在什么画面或动作上")
+    payoff: LongText = Field(description="结尾，不超过40字。大白话写这一下落在哪。不写摄影散文")
     evidence_ids: list[Identifier] = Field(min_length=1, max_length=12)
-    reason: LongText = Field(description="为什么吸引人，不超过40字。说明观众为什么会被吸引、停下来并记住。不承诺转化、销量或成片效果")
+    reason: LongText = Field(description="为什么吸引人，不超过40字。大白话写为什么会停下来看。不承诺转化、销量或成片效果，不写摄影散文")
     production_notes: list[ShortText] = Field(min_length=1, max_length=8)
 
     @model_validator(mode="after")
@@ -300,6 +300,40 @@ def require_direction_concepts(directions: list[CreativeDirection], brief: Produ
         _require_visual_contract(directions, brief)
 
 
+_STORY_FAMILIES = (
+    re.compile(r"吵醒|叫醒|弄醒|还在睡|别吵|室友|出声"),
+    re.compile(r"送礼|礼物|拆穿"),
+    re.compile(r"赶出门|迟到|闹钟"),
+    re.compile(r"扣子|卡住|按不开"),
+)
+
+
+def _story_text(direction: CreativeDirection) -> str:
+    return f"{direction.label}{direction.hook}"
+
+
+def _story_bigrams(text: str) -> set[str]:
+    core = re.sub(r"[^\u4e00-\u9fff]", "", text or "")
+    return {core[index:index + 2] for index in range(len(core) - 1)}
+
+
+def _story_cores_collide(directions: list[CreativeDirection]) -> bool:
+    """True when two scene directions are the same situation in different words."""
+    texts = [_story_text(direction) for direction in directions]
+    for family in _STORY_FAMILIES:
+        if sum(bool(family.search(text)) for text in texts) >= 2:
+            return True
+    grams = [_story_bigrams(text) for text in texts]
+    for left in range(len(grams)):
+        for right in range(left + 1, len(grams)):
+            if not grams[left] or not grams[right]:
+                continue
+            shared = len(grams[left] & grams[right]) / len(grams[left] | grams[right])
+            if shared >= 0.45:
+                return True
+    return False
+
+
 def _require_visual_contract(directions: list[CreativeDirection], brief: ProductBrief) -> None:
     """Director-layer skeleton, one motif, and one side proof. Merchants do not pick these."""
     concepts = []
@@ -336,6 +370,8 @@ def _require_visual_contract(directions: list[CreativeDirection], brief: Product
     ]
     if len(set(signatures)) < len(signatures):
         raise ValueError("三个方向要在画面结构、贯穿母题或侧面证明上彼此不同")
+    if form == "scene_story" and _story_cores_collide(directions):
+        raise ValueError("剧情三个方向的故事核要分开")
 
 
 class StrategyRecord(_StrictModel):

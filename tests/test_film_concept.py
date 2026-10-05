@@ -145,14 +145,52 @@ def test_side_proof_does_not_invent_a_price(env):
 
 
 def test_direction_prompt_does_not_default_to_a_plain_real_scene():
-    from app.planning import FILM_CONCEPT_SYSTEM
+    from app.planning import FILM_CONCEPT_SYSTEM, STRATEGY_SELECTION_SYSTEM
+    from app.progressive_planning import DIRECTOR_SYSTEM
     from pathlib import Path
     assert "真场景演示不是创意标准" in FILM_CONCEPT_SYSTEM
     assert "产品世界" in FILM_CONCEPT_SYSTEM
     assert "生成失败或缺少素材" in FILM_CONCEPT_SYSTEM
+    assert "大白话" in FILM_CONCEPT_SYSTEM and "别吵醒她" in FILM_CONCEPT_SYSTEM
+    assert "影棚特写" in STRATEGY_SELECTION_SYSTEM and "别吵醒她" in STRATEGY_SELECTION_SYSTEM
+    assert "生活世界" in DIRECTOR_SYSTEM and "衔接" in DIRECTOR_SYSTEM
     skill = Path("app/skills/ads-video-creative-strategy/references/film-concept.md").read_text()
     assert "真场景演示不是创意标准" in skill
     assert "九宫格" in skill
+    assert "别吵醒她" in skill
+    brand = Path("app/skills/shared/ad-form-playbooks/brand-tvc.md").read_text()
+    assert "吹完是顺的" in brand
+    assert "是它的脸" in brand
+
+
+def test_scene_story_cores_must_differ(env):
+    raw = fresh(candidates_for(env))
+    raw["brief"]["ad_form"] = "scene_story"
+    hooks = ["别吵醒她", "小声点，别吵醒", "她还在睡，别出声"]
+    for index, direction in enumerate(raw["directions"]):
+        direction["label"] = hooks[index]
+        direction["hook"] = hooks[index]
+        direction["film_concept"]["structure"] = "scene_action"
+        direction["film_concept"]["visual_skeleton"] = "world_intercut" if index == 2 else "lifestyle"
+    with pytest.raises(ValidationError, match="故事核"):
+        StrategyDecision.model_validate(raw)
+
+
+def test_scene_story_accepts_three_different_cores(env):
+    raw = fresh(candidates_for(env))
+    raw["brief"]["ad_form"] = "scene_story"
+    labels = ["赶出门", "送礼穿帮", "扣子卡住"]
+    hooks = ["闹钟响了还在吹", "礼物盒被拆开", "扣子按了两下"]
+    hook_ids = ("awkward_moment", "situational_conflict", "arresting_line")
+    for index, direction in enumerate(raw["directions"]):
+        direction["label"] = labels[index]
+        direction["hook"] = hooks[index]
+        direction["hook_type"] = hook_ids[index]
+        direction["film_concept"]["structure"] = "scene_action"
+        direction["film_concept"]["visual_skeleton"] = "world_intercut" if index == 2 else "lifestyle"
+    raw["concept_pool"] = concept_pool_for(raw["directions"])
+    decision = StrategyDecision.model_validate(raw)
+    assert {item.label for item in decision.directions} == set(labels)
 
 
 def test_use_context_and_film_location_remain_distinct_data(env):

@@ -112,7 +112,7 @@ def progressive_gateway(settings, source, install_transport, tmp_path):
                     "completion_tokens_details": {"reasoning_tokens": 32766}}
             return httpx.Response(200, json=body)
         if stage == "ad_script" and context.get("task_kind") == "line_jargon_rewrite":
-            value = {"lines": [{"beat_id": item["beat_id"], "narration": "肩线这一圈，是它的脸。"}
+            value = {"lines": [{"beat_id": item["beat_id"], "narration": "吹完是顺的。"}
                                for item in context["lines"]]}
             return chat_output(value)
         if stage == "ad_script":
@@ -808,7 +808,7 @@ def test_planner_jargon_is_rewritten_once_before_review(progressive_gateway):
     assert loaded[0]["loaded_sections"] == ["SKILL.md", "references/ad-dialogue-examples.md"]
     assert loaded[0]["id"] == "ads-video-dialogue-writing"
     assert "关注" not in plan["script"]
-    assert plan["ad_script"]["beats"][0]["narration"] == "肩线这一圈，是它的脸。"
+    assert plan["ad_script"]["beats"][0]["narration"] == "吹完是顺的。"
     assert plan["ad_script"]["beats"][1]["narration"] == "看桌角。"
 
 

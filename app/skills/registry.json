@@ -114,7 +114,7 @@
     {
       "id": "ads-video-creative-strategy",
       "display_name": "Ads Video Creative Strategy",
-      "version": "1.7.1",
+      "version": "1.7.2",
       "stages": [
         "strategy"
       ],
@@ -201,7 +201,7 @@
     {
       "id": "ads-video-dialogue-writing",
       "display_name": "Ads Video Dialogue Writing",
-      "version": "1.9.0",
+      "version": "1.9.1",
       "stages": [
         "ad_script",
         "storyboard",
@@ -253,7 +253,7 @@
     {
       "id": "ads-video-storyboard-direction",
       "display_name": "Ads Video Storyboard Direction",
-      "version": "1.13.1",
+      "version": "1.13.2",
       "stages": [
         "storyboard",
         "plan_refinement",
@@ -516,7 +516,7 @@
     {
       "id": "ad-form-contract",
       "path": "shared/ad-form-contract.md",
-      "version": "1.4.0",
+      "version": "1.4.1",
       "stages": [
         "strategy",
         "direction_review"
@@ -525,7 +525,7 @@
     {
       "id": "script-expression",
       "path": "shared/script-expression.md",
-      "version": "1.8.1",
+      "version": "1.8.2",
       "stages": [
         "ad_script",
         "storyboard",
@@ -537,7 +537,7 @@
     {
       "id": "ad-form-playbook-index",
       "path": "shared/ad-form-playbooks/index.md",
-      "version": "1.1.0",
+      "version": "1.1.1",
       "stages": ["strategy", "direction_review"],
       "ad_forms": ["auto"],
       "source_refs": [{"source_id": "tvc-director-local", "path": "tvc-director-examples.md", "sha256": "c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1"}],
@@ -546,7 +546,7 @@
     {
       "id": "ad-form-playbook-brand-tvc",
       "path": "shared/ad-form-playbooks/brand-tvc.md",
-      "version": "1.4.0",
+      "version": "1.4.1",
       "stages": ["strategy", "direction_review", "ad_script", "content_draft", "storyboard", "plan_refinement", "plan_review", "speech_draft"],
       "ad_forms": ["brand_tvc"],
       "source_refs": [{"source_id": "tvc-director-local", "path": "tvc-director-examples.md", "sha256": "c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1"}],
@@ -555,7 +555,7 @@
     {
       "id": "ad-form-playbook-scene-story",
       "path": "shared/ad-form-playbooks/scene-story.md",
-      "version": "1.4.0",
+      "version": "1.4.1",
       "stages": ["strategy", "direction_review", "ad_script", "content_draft", "storyboard", "plan_refinement", "plan_review"],
       "ad_forms": ["scene_story"],
       "source_refs": [{"source_id": "tvc-director-local", "path": "tvc-director-examples.md", "sha256": "c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1"}],
@@ -564,7 +564,7 @@
     {
       "id": "ad-form-playbook-presenter-pitch",
       "path": "shared/ad-form-playbooks/presenter-pitch.md",
-      "version": "1.4.0",
+      "version": "1.4.1",
       "stages": ["strategy", "direction_review", "ad_script", "content_draft", "storyboard", "plan_refinement", "plan_review"],
       "ad_forms": ["presenter_pitch"],
       "source_refs": [{"source_id": "tvc-director-local", "path": "tvc-director-examples.md", "sha256": "c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1"}],

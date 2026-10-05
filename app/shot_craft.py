@@ -37,6 +37,9 @@ _HOLD_LINE = "机位停住，人物和手都不再动，商品稳稳留在手里
 _PUT_DOWN = re.compile(r"放下|放回|收起|递")
 _COMPLEX_HAND = re.compile(r"换风嘴|按小按钮|两手交接|两手|快速放下|快速收起|快速转动|翻转|按键|换挡")
 _CONTINUE_LINE = "动作或运镜进行到切点，下一段从同一动作或同一机位方向接上。"
+_WORLD_MARK = re.compile(r"生活世界|产品世界|衔接")
+_DUAL_WORLD = {"world_intercut", "lifestyle"}
+_WORLD_NOTE = "这条要穿过生活世界和产品世界。每镜用「生活世界：」「产品世界：」或「衔接：」起头，两边才不会混成一段。防变形只提醒保持商品外形。这是建议，不因此重排。"
 
 
 class _ShotText(BaseModel):
@@ -121,6 +124,20 @@ def _snippet(text: str, match, radius=12) -> str:
     if not snippet or snippet not in text:
         snippet = match.group(0)
     return snippet[:240]
+
+
+def _selected_skeleton(strategy) -> str:
+    if not isinstance(strategy, dict):
+        return ""
+    selected = strategy.get("selected_direction_id")
+    for direction in strategy.get("directions") or []:
+        if not isinstance(direction, dict):
+            continue
+        if selected and direction.get("id") != selected:
+            continue
+        concept = direction.get("film_concept") if isinstance(direction.get("film_concept"), dict) else {}
+        return str(concept.get("visual_skeleton") or concept.get("structure") or "")
+    return ""
 
 
 def _form(strategy) -> str | None:
@@ -266,6 +283,17 @@ def shot_suggestions(plan, strategy=None) -> list[dict]:
                 suggestions.append(item)
     _append_hand_suggestions(suggestions, rows)
     _append_opening_suggestions(suggestions, rows, strategy)
+    if _selected_skeleton(strategy) in _DUAL_WORLD:
+        descriptions = [
+            shot.get("description") if isinstance(shot.get("description"), str) else ""
+            for _, _, shot in rows
+        ]
+        if descriptions and not any(_WORLD_MARK.search(text) for text in descriptions):
+            segment_index, shot_index, shot = rows[0]
+            quote = shot.get("description") if isinstance(shot.get("description"), str) else ""
+            item = _suggestion(5, f"/segments/{segment_index}/shots/{shot_index}/description", quote[:240], _WORLD_NOTE)
+            if item:
+                suggestions.append(item)
     suggestions.sort(key=lambda item: (item["_rank"], item["target"]))
     seen, result = {}, []
     for item in suggestions:

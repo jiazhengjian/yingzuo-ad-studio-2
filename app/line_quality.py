@@ -57,7 +57,7 @@ _SOFT_CTA = re.compile(r"点下面|下方链接|链接放|去看看|小黄车")
 _OPENING_DEICTIC = re.compile(r"^(?:就这|这么|这|那|它|转)")
 _CLAIM_WORDS = ("根治", "治愈", "美白", "减肥", "抗衰", "医用", "治疗")
 _LINE_STYLES = {
-    "brand_tvc": "产品展示：画面和产品声音先承担意思，句子仍要有感官。大约15到20秒只说2到3句，一个主卖点，其余最多一个短语。可以说画面证明不了的好处。不描述镜头，不编画面上没有的人，不用痛点问句开头。旁白太密时把多出来的句子留空。",
+    "brand_tvc": "产品展示：画面和产品声音先承担意思，句子仍要有感官。说人话，大约15到20秒只说2到3句，一个主好处，不要文案腔，也不要把几个卖点排成清单。可以说画面证明不了的好处。不描述镜头，不编画面上没有的人，不用痛点问句开头。旁白太密或又报了另一个卖点时，多出来的句子留空。",
     "scene_story": "剧情：人物的短对白，要有来有回。意图、反应、对照或包袱，每句大约4到10字。不念画面上的动作，不讲口播卖点。好处最多一句，是看见结果后的反应。指定去向时用定格上的短旁白，人物不转头推销。",
     "presenter_pitch": "人物讲解：对着镜头，第一句就是钩子。每一句卖点都要有主语，用这款、它，或我用它。卖点之间用而且、还、另外、所以或关键是接上。资料短时可以补具体场合。",
 }
@@ -158,8 +158,10 @@ def type_line_score(text: str, form: str | None, role: str, hook_echo: str = "")
         score -= 4
     elif form == "scene_story" and size > 18:
         score -= 4
-    if form == "brand_tvc" and re.search(r"[光声边肩雾盖圈]", text):
-        score += 3
+    if form == "brand_tvc" and _BRAND_COPY.search(text):
+        score -= 6
+    elif form == "brand_tvc" and re.search(r"顺|不吵|听得清|就干|好用|不毛躁|不烫", text):
+        score += 4
     elif form == "scene_story" and re.search(r"[你我嘿？！]", text):
         score += 4
     elif form == "presenter_pitch":
@@ -415,6 +417,17 @@ _SCENE_NARRATION = re.compile(r"室友|同事|旁边|她在|他在|正在|拿着
 _SCENE_PITCH = re.compile(r"负离子|吹得快|吹完是顺|声音不吵|高速马达|三分钟")
 _BRAND_OFFSCREEN = re.compile(r"旁边|还在睡|还没醒|室友|同事|家人|赶时间|上班|出门")
 _BRAND_OPENING = re.compile(r"早上|赶时间|头发厚|头发多|多久")
+# Poetic triples and spec-sheet lines. A short spoken benefit stays clean.
+_BRAND_COPY = re.compile(
+    r"是它的脸|是它的声音|先到了|这一线|肩线|边角这一|先听见|再看见|"
+    r"高速马达|万转|亿负离子|负离子护发"
+)
+_BRAND_BLANKABLE = ("旁白太密", "旁白在堆卖点")
+_EXTRA_CLAIMS = (
+    ("weight", re.compile(r"很轻|机身轻|分量轻")),
+    ("grip", re.compile(r"握感|好握")),
+    ("color", re.compile(r"颜色|配色")),
+)
 
 
 def script_line_offenses(script, strategy, locked_lines=(), plan=None, duration_seconds=None):
@@ -485,6 +498,14 @@ def _benefit_dims(text):
         found.add("noise")
     if _IONS.search(text):
         found.add("ions")
+    return found
+
+
+def _claim_tags(text):
+    found = _benefit_dims(text)
+    for name, pattern in _EXTRA_CLAIMS:
+        if pattern.search(text or ""):
+            found.add(name)
     return found
 
 
@@ -641,6 +662,15 @@ def _script_line_offenses(script, strategy, locked_lines, plan=None, duration_se
         if len(content_lines) >= budget["rewrite_at"]:
             for beat in content_lines[budget["preferred_max"]:]:
                 add(beat, indexes.get(id(beat), 0), "旁白太密")
+        introduced = set()
+        for beat in content_lines:
+            text = beat["narration"]
+            if _BRAND_COPY.search(text):
+                add(beat, indexes.get(id(beat), 0), "旁白像文案")
+            tags = _claim_tags(text)
+            if tags and introduced and not tags <= introduced:
+                add(beat, indexes.get(id(beat), 0), "旁白在堆卖点")
+            introduced |= tags
         for beat in spoken:
             text = beat["narration"]
             if not _CTA_LINE.search(text) and _BRAND_OFFSCREEN.search(text):
@@ -735,9 +765,12 @@ def rewrite_schema(lines: list[dict], beat_cap: int) -> dict:
         one = deepcopy(line)
         one["properties"]["beat_id"]["const"] = item["beat_id"]
         one["properties"]["narration"]["maxLength"] = min(beat_cap, item["max_characters"])
-        if "旁白太密" in (item.get("offenses") or []):
+        offenses = item.get("offenses") or []
+        if any(name in offenses for name in _BRAND_BLANKABLE):
             one["properties"]["narration"]["minLength"] = 0
-            one["properties"]["narration"]["description"] = "这句把时长说满了。留空，表示这一拍不说话，只留产品的声音。"
+            one["properties"]["narration"]["description"] = (
+                "这句把时长说满了，或又报了另一个卖点。留空，表示这一拍不说话。"
+                "若还在说同一个好处，写成一句口语，不要加长。")
         else:
             one["properties"]["narration"]["minLength"] = 1
             one["properties"]["narration"]["description"] = f"只重写这一句，含标点最多{one['properties']['narration']['maxLength']}字"
@@ -765,7 +798,7 @@ def apply_line_rewrite(script: dict, raw, *, limits: dict, locked_lines=(), fact
         if beat is None or len(line.narration) > limits[line.beat_id]:
             return None
         if not line.narration.strip():
-            if "旁白太密" not in (named.get(line.beat_id) or []):
+            if not any(name in (named.get(line.beat_id) or []) for name in _BRAND_BLANKABLE):
                 return None
             beat["narration"] = ""
             continue
@@ -779,6 +812,15 @@ def apply_line_rewrite(script: dict, raw, *, limits: dict, locked_lines=(), fact
         if set(re.findall(r"\d+", line.narration)) - set(re.findall(r"\d+", source)):
             return None
         beat["narration"] = line.narration
+    if strategy is not None:
+        try:
+            if script_form(strategy) == "brand_tvc":
+                leftover = _script_line_offenses(revised, strategy, locked_lines, duration_seconds=duration_seconds)
+                blocked = {"旁白像文案", "旁白在堆卖点"}
+                if any(name in blocked for item in leftover for name in item["offenses"]):
+                    return None
+        except (ValidationError, TypeError, ValueError, KeyError):
+            return None
     narration = "".join(beat.get("narration") or "" for beat in _beats(revised))
     if any(isinstance(item, str) and item and item not in narration for item in locked_lines or ()):
         return None
@@ -803,9 +845,9 @@ LINE_REWRITE_SYSTEM = """你只重写列出的中文广告台词，只输出 JSO
 每句不超过该句 max_characters，标点也算。用户固定台词原样留在句子里。旁白太密的句子按 schema 留空，表示这一拍不说话。
 相邻两句不要近义重复。剧情广告全片只用一种人称，不要旁白说「她走过」同时又用「我」或「吧」。不要只复述看得见的动作。人物讲解的开场如果是问句，后面要有一句回答，而且回答的是同一个问题：问吹得久就回答快，不要顺口把安静和负离子也塞进这一句。
 一条卖点说完整再换下一条。快、安静、负离子不要在后面的句子里再报一遍，除非最后一句是有意收回来的总括。没有信息的空话删掉，例如洗完就能出门。只有人物讲解在资料只有几个词时，才补一个具体场合和体感，例如赶早上班、头发厚、旁边还有人在睡。产品片和剧情不要补画面上没有的人、地方或时间。不编数字、规格、价格或折扣。
-产品片大约15到20秒只留2到3句，一个主卖点，其余最多一个短语。不要把每个卖点念成一句直到说满。短的单句卖点不要改长。不要描述镜头里的光和动作，不要用痛点问句或场景交代开场。旁白太密时，多出来的句子 narration 留空。至少留一拍只有产品的声音。
+产品片大约15到20秒只留2到3句，整条只说一个主好处，像跟人说话。不要文案腔，不要「是它的脸」「先到了」「肩线这一圈」，也不要「十万转高速马达」「一亿负离子」这种参数清单。短的口语好处不要改长，也不要补主语。例如「吹完是顺的。」「这风不吵。」「几下就干。」不要描述镜头里的光和动作，不要用痛点问句或场景交代开场。旁白太密，或后面又报了另一个卖点，那些句子 narration 留空。至少留一拍只有产品的声音。不编价格。
 人物讲解的每一句卖点都要有主语：这款、它，或「我用它」。不要用「风大」「带负离子」这种没有主语的开头。卖点之间用而且、还、另外、所以或关键是接上。
-产品片不必每句点名。直接、短地说画面证明不了的好处，例如「十万转高速马达，三分钟吹干」。不要描述镜头里的光、银线或发丝飘起。
+产品片不必每句点名。直接、短地说画面证明不了的好处。不要描述镜头里的光、银线或发丝飘起。
 剧情对白是意图、反应、对照或包袱，每句大约4到10字。不要念室友在睡、她拿吹风机这种画面，也不要改成「带负离子，吹完是顺的」这种口播。好处最多一句，写成人物看见结果后的反应。指定了去向时用定格上的短旁白，人物不要转头对着镜头推销。数字和功效只在 facts 里已经有时才能写。
 tagline_policy.enabled 为 false 时不加独立口号字卡。为 true 时只有收束句可以是不超过10字的口播，仍然不写购买、下单、抢购。
 不输出其他字段，不解释。"""
@@ -906,7 +948,7 @@ async def rewrite_director_if_needed(stage_call, director: dict, strategy, durat
     return True, replacement
 
 
-_FOCUS_OFFENSES = ("卖点没有主语", "卖点之间缺少承接", "只描述画面", "台词贴着画面", "人物没带到商品", "开场问题没有下文")
+_FOCUS_OFFENSES = ("卖点没有主语", "卖点之间缺少承接", "只描述画面", "台词贴着画面", "人物没带到商品", "开场问题没有下文", "旁白像文案", "旁白在堆卖点")
 _FOCUS_NOTES = {
     "卖点没有主语": "这句卖点没有说清是哪件商品。要说这款、它，或我用它。",
     "卖点之间缺少承接": "这句和上一句接不上。可以用而且、所以把好处连起来。",
@@ -914,6 +956,8 @@ _FOCUS_NOTES = {
     "台词贴着画面": "这句和画面说的是同一件事。台词改说这个画面证明的好处。",
     "人物没带到商品": "整条剧情还没让人听见商品或它的好处。",
     "开场问题没有下文": "开头问了，后面还没有一句回答。",
+    "旁白像文案": "这句像文案或参数清单。改成一句口语，只说一个好处，不要加长，也不要编价格。",
+    "旁白在堆卖点": "这句又报了另一个卖点。留空，或收成还在说同一个好处。",
 }
 
 

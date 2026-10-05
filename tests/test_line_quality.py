@@ -99,6 +99,8 @@ def test_scores_follow_the_ad_type():
     assert "钩子" in line_style("presenter_pitch")
     assert type_line_score("肩线这一圈，是它的脸。", "brand_tvc", "hook") > type_line_score(
         "采用圆肩工艺，呈现高端质感。", "brand_tvc", "hook")
+    assert type_line_score("吹完是顺的。", "brand_tvc", "hook") > type_line_score(
+        "肩线这一圈，是它的脸。", "brand_tvc", "hook")
     assert type_line_score("你按这边。", "scene_story", "line") > type_line_score(
         "打造分享场景。", "scene_story", "line")
     assert type_line_score("包太满？折一下。", "presenter_pitch", "hook") > type_line_score(
@@ -187,9 +189,13 @@ def test_rewrite_accepts_only_a_complete_clean_set():
     assert apply_line_rewrite(original, {"lines": []}, limits=limits, facts_text="蓝瓶") is None
     assert original["beats"][0]["narration"] == "关注秀发护理。"
     accepted = apply_line_rewrite(
-        original, {"lines": [{"beat_id": "b0", "narration": "肩线这一圈。"}]},
+        original, {"lines": [{"beat_id": "b0", "narration": "吹完是顺的。"}]},
         limits=limits, facts_text="蓝瓶", duration_seconds=20, strategy=strategy)
-    assert accepted["beats"][0]["narration"] == "肩线这一圈。"
+    assert accepted["beats"][0]["narration"] == "吹完是顺的。"
+    literary = apply_line_rewrite(
+        original, {"lines": [{"beat_id": "b0", "narration": "肩线这一圈，是它的脸。"}]},
+        limits=limits, facts_text="蓝瓶", duration_seconds=20, strategy=strategy)
+    assert literary is None
     too_long = apply_line_rewrite(
         original, {"lines": [{"beat_id": "b0", "narration": "肩" * 31 + "。"}]},
         limits={"b0": 40}, facts_text="蓝瓶", duration_seconds=20, strategy=strategy)
@@ -202,7 +208,7 @@ def test_rewrite_accepts_only_a_complete_clean_set():
 
 def test_clean_script_does_not_call_and_a_bad_rewrite_keeps_the_original():
     strategy = typed("brand_tvc")
-    clean = script_of(beat("肩线这一圈，是它的脸。"))
+    clean = script_of(beat("吹完是顺的。"))
 
     async def forbidden(*args):
         raise AssertionError("clean script called the model")
@@ -223,11 +229,11 @@ def test_clean_script_does_not_call_and_a_bad_rewrite_keeps_the_original():
     assert calls[0]["lines"][0]["max_characters"] <= 30
 
     async def spoken(system, data, originals, max_tokens):
-        return {"lines": [{"beat_id": item["beat_id"], "narration": "肩线这一圈，是它的脸。"}
+        return {"lines": [{"beat_id": item["beat_id"], "narration": "吹完是顺的。"}
                           for item in data["lines"]]}
 
     called, result = asyncio.run(rewrite_script_if_needed(spoken, dirty, strategy, 20))
-    assert called is True and result["beats"][0]["narration"] == "肩线这一圈，是它的脸。"
+    assert called is True and result["beats"][0]["narration"] == "吹完是顺的。"
     locked = "关注秀发护理。"
     assert offending_lines(script_of(beat(locked)), locked_lines=[locked]) == []
 
@@ -352,17 +358,22 @@ def test_brand_lines_can_state_the_benefit_without_a_subject():
     assert "只描述画面" in visual
     assert "卖点没有主语" not in visual
     assert "卖点之间缺少承接" not in visual
+    plain = _focus(_lines("吹完是顺的。", "发尾是顺的。"), "brand_tvc")
+    assert plain == []
     terse = _focus(_lines(
         "十万转高速马达，三分钟吹干。",
         "一亿负离子，吹完不毛躁。",
         "机身带负离子护发。",
         "肩线这一圈，是它的脸。",
     ), "brand_tvc")
-    assert terse == []
+    assert "旁白像文案" in terse
+    assert "旁白在堆卖点" in terse
+    assert "卖点没有主语" not in terse
     copied = "肩线这一圈停在桌角这边。"
     overlap = _focus(_lines(copied), "brand_tvc", plan={"segments": [{"shots": [
         {"beat_id": "b0", "description": copied + "侧光停住。"}]}]})
-    assert overlap == ["台词贴着画面"]
+    assert "台词贴着画面" in overlap
+    assert "旁白像文案" in overlap
 
 
 def test_scene_lines_follow_the_character_and_mention_the_product_once():
@@ -389,7 +400,7 @@ def test_scene_lines_follow_the_character_and_mention_the_product_once():
 
 
 def test_brand_voiceover_stays_thin_and_does_not_invent_a_scene():
-    five = _lines("十万转，一下就干。", "负离子护发。", "机身很轻。", "握感稳。", "颜色好看。")
+    five = _lines("几下就干。", "发尾是顺的。", "就这点。", "再看一眼。", "停在这儿。")
     assert "旁白太密" in _focus(five, "brand_tvc")
     assert "旁白太密" in _focus(five, "brand_tvc", duration_seconds=18)
     assert "旁白太密" not in _focus(five, "brand_tvc", duration_seconds=45)
@@ -403,9 +414,12 @@ def test_brand_voiceover_stays_thin_and_does_not_invent_a_scene():
     assert "旁白补了画面外" in _focus(_lines("旁边的人还在睡。", "吹完不毛躁。"), "brand_tvc")
     assert "旁白开成了讲解" in _focus(_lines("头发多，早上要吹多久？", "三分钟就干。"), "brand_tvc")
     showcase = _focus(_lines("开盖的声音，先到了。", "肩线这一圈，是它的脸。", "放回桌角，还是这一只。"), "brand_tvc")
+    assert "旁白像文案" in showcase
     assert "旁白补了画面外" not in showcase
     assert "旁白开成了讲解" not in showcase
     assert "旁白太密" not in showcase
+    assert "旁白在堆卖点" in _focus(_lines("几下就干。", "这风不吵。"), "brand_tvc")
+    assert _focus(_lines("几下就干。", "发尾是顺的。"), "brand_tvc") == []
 
     strategy = typed("brand_tvc")
 
@@ -416,7 +430,7 @@ def test_brand_voiceover_stays_thin_and_does_not_invent_a_scene():
     called, result = asyncio.run(rewrite_script_if_needed(blank, five, strategy, 20))
     assert called is True
     assert [beat["narration"] for beat in result["beats"]] == [
-        "十万转，一下就干。", "负离子护发。", "机身很轻。", "", "",
+        "几下就干。", "发尾是顺的。", "就这点。", "", "",
     ]
 
     async def boom(*args, **kwargs):
@@ -424,7 +438,7 @@ def test_brand_voiceover_stays_thin_and_does_not_invent_a_scene():
 
     called, kept = asyncio.run(rewrite_script_if_needed(boom, five, strategy, 20))
     assert called is True
-    assert kept["beats"][4]["narration"] == "颜色好看。"
+    assert kept["beats"][4]["narration"] == "停在这儿。"
 
 
 def test_a_bare_selling_line_is_rewritten_once_and_the_same_words_stay():
@@ -470,10 +484,10 @@ def test_skills_and_replan_show_the_per_type_line_focus_rule(capsys):
     ], "shots": []}]}
     rows = _script_lines(plan, typed("brand_tvc"))
     assert rows[0]["flags"] == ["只描述画面"]
-    assert rows[1]["flags"] == []
+    assert rows[1]["flags"] == ["旁白像文案"]
     _print_report({
         "job_id": "job", "direction_id": "direction", "lines": rows, "shots": [],
         "review": {"ready": True, "skipped": True, "suggestions": []}, "notes": [], "prompt": "",
     })
     printed = capsys.readouterr().out
-    assert "只描述画面" in printed and "未触发" in printed
+    assert "只描述画面" in printed and "旁白像文案" in printed

@@ -133,6 +133,29 @@ def test_opening_and_short_ending_ask_for_one_narrow_refine():
     assert "人物和手都不再动" in _HOLD_LINE and "不放下" in _HOLD_LINE
 
 
+def test_dual_world_storyboard_asks_for_world_labels_without_blocking():
+    bare = _film([
+        {"duration": 3, "description": "人皱眉，吹风机还没开。", "visible": False, "camera": "中近景，镜头固定"},
+        {"duration": 3, "description": "蓝光里的颗粒贴着发丝。", "visible": True, "camera": "微距特写，镜头轻推"},
+        {"duration": 2.5, "description": "吹风机停在桌上，机位停住。", "visible": True, "camera": "中景，机位停住"},
+    ], form="scene_story")
+    bare["strategy"]["directions"][0]["film_concept"] = {
+        "structure": "world_intercut", "visual_skeleton": "world_intercut",
+    }
+    assert any("生活世界" in note and "起头" in note for note in _notes(bare))
+    labeled = _film([
+        {"duration": 3, "description": "生活世界：人皱眉。", "visible": False, "camera": "中近景，镜头固定"},
+        {"duration": 3, "description": "衔接：蓝光里的颗粒贴着发丝。", "visible": True, "camera": "微距特写，镜头轻推"},
+        {"duration": 2.5, "description": "产品世界：吹风机停在桌上，机位停住。", "visible": True, "camera": "中景，机位停住"},
+    ], form="scene_story")
+    labeled["strategy"]["directions"][0]["film_concept"] = {
+        "structure": "world_intercut", "visual_skeleton": "world_intercut",
+    }
+    assert not any("起头" in note for note in _notes(labeled))
+    plain = _film([{"duration": 3, "description": "瓶身直立在桌角，机位停住。", "visible": True}])
+    assert not any("起头" in note for note in _notes(plain))
+
+
 def test_end_hold_and_even_cuts_are_advice():
     held = _film([{"duration": 2.5, "description": "瓶身停在中轴，机位定格。", "visible": True}])
     assert not any("结尾" in note for note in _notes(held))
