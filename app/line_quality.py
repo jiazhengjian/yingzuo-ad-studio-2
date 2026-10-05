@@ -11,7 +11,7 @@ import re
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .ad_form_playbook import resolve_playbook_form, speech_profile_for_strategy
+from .ad_form_playbook import brand_voiceover_budget, resolve_playbook_form, speech_profile_for_strategy
 from .beat_timing import script_capacity_budget
 from .strategy import StrategyRecord
 
@@ -57,9 +57,9 @@ _SOFT_CTA = re.compile(r"点下面|下方链接|链接放|去看看|小黄车")
 _OPENING_DEICTIC = re.compile(r"^(?:就这|这么|这|那|它|转)")
 _CLAIM_WORDS = ("根治", "治愈", "美白", "减肥", "抗衰", "医用", "治疗")
 _LINE_STYLES = {
-    "brand_tvc": "产品展示：短句直接说卖点、好处或感受，感官、自信，不必每句点名。不要描述镜头里的光、银线和发丝。数字只在资料里已经有时才写。",
-    "scene_story": "剧情：人物当场说的短对白，要有来有回。跟着当时的处境，不套口播主语。全片一种人称，不复述看得见的动作。好处至少自然出现一次。",
-    "presenter_pitch": "人物讲解：对着镜头，第一句就是钩子。每一句卖点都要有主语，用这款、它，或我用它。卖点之间用而且、还、另外、所以或关键是接上。",
+    "brand_tvc": "产品展示：画面和产品声音先承担意思，句子仍要有感官。大约15到20秒只说2到3句，一个主卖点，其余最多一个短语。可以说画面证明不了的好处。不描述镜头，不编画面上没有的人，不用痛点问句开头。旁白太密时把多出来的句子留空。",
+    "scene_story": "剧情：人物的短对白，要有来有回。意图、反应、对照或包袱，每句大约4到10字。不念画面上的动作，不讲口播卖点。好处最多一句，是看见结果后的反应。指定去向时用定格上的短旁白，人物不转头推销。",
+    "presenter_pitch": "人物讲解：对着镜头，第一句就是钩子。每一句卖点都要有主语，用这款、它，或我用它。卖点之间用而且、还、另外、所以或关键是接上。资料短时可以补具体场合。",
 }
 _TARGET_LENGTH = {
     "brand_tvc": (8, 14),
@@ -71,7 +71,7 @@ _TARGET_LENGTH = {
 class _RewriteLine(BaseModel):
     model_config = ConfigDict(extra="forbid")
     beat_id: str = Field(min_length=1, max_length=80)
-    narration: str = Field(min_length=1, max_length=80)
+    narration: str = Field(min_length=0, max_length=80)
 
 
 class _RewriteBatch(BaseModel):
@@ -410,10 +410,15 @@ _SHOT_DESCRIPTION = re.compile(
 _STORY_PRODUCT = re.compile(
     r"它|这款|这个|这块|这只|喜欢|想要|好吃|好喝|好用|尝尝|给你|按这里|按这边|扣上|轮廓|(?<!吹)开了"
 )
+_STORY_RESULT = re.compile(r"顺了|不毛躁|终于不|安静了|听得见了|听清了")
+_SCENE_NARRATION = re.compile(r"室友|同事|旁边|她在|他在|正在|拿着|拿起|对着|还在睡|还没醒|她拿|他拿")
+_SCENE_PITCH = re.compile(r"负离子|吹得快|吹完是顺|声音不吵|高速马达|三分钟")
+_BRAND_OFFSCREEN = re.compile(r"旁边|还在睡|还没醒|室友|同事|家人|赶时间|上班|出门")
+_BRAND_OPENING = re.compile(r"早上|赶时间|头发厚|头发多|多久")
 
 
-def script_line_offenses(script, strategy, locked_lines=(), plan=None):
-    return _script_line_offenses(script, strategy, locked_lines, plan)
+def script_line_offenses(script, strategy, locked_lines=(), plan=None, duration_seconds=None):
+    return _script_line_offenses(script, strategy, locked_lines, plan, duration_seconds)
 
 
 def _lead(text):
@@ -551,9 +556,8 @@ def _line_logic_offenses(spoken, form):
             add(beat, "空话")
         if form == "brand_tvc":
             dims = _benefit_dims(text)
-            short_label = _spoken_length(text) < 8 and (dims or re.search(r"顺|毛躁", text))
             stacked = len(dims) >= 2 and re.search(r"还|、|和", text)
-            if short_label or stacked:
+            if stacked:
                 add(beat, "标签式旁白")
         dims = _benefit_dims(text)
         repeated = {item for item in dims if item in seen and item != "ions"}
@@ -566,7 +570,7 @@ def _line_logic_offenses(spoken, form):
     return rows
 
 
-def _script_line_offenses(script, strategy, locked_lines, plan=None):
+def _script_line_offenses(script, strategy, locked_lines, plan=None, duration_seconds=None):
     """Cross-line problems one rewrite should see. Locked lines stay untouched."""
     form = None
     if strategy is not None:
@@ -630,8 +634,17 @@ def _script_line_offenses(script, strategy, locked_lines, plan=None):
                 continue
             add(current, indexes.get(id(current), 0), "卖点之间缺少承接")
     if form == "brand_tvc":
+        content_lines = [beat for beat in spoken if not _CTA_LINE.search(beat["narration"])]
+        if content_lines and (_is_question(content_lines[0]["narration"]) or _BRAND_OPENING.search(content_lines[0]["narration"])):
+            add(content_lines[0], indexes.get(id(content_lines[0]), 0), "旁白开成了讲解")
+        budget = brand_voiceover_budget(duration_seconds)
+        if len(content_lines) >= budget["rewrite_at"]:
+            for beat in content_lines[budget["preferred_max"]:]:
+                add(beat, indexes.get(id(beat), 0), "旁白太密")
         for beat in spoken:
             text = beat["narration"]
+            if not _CTA_LINE.search(text) and _BRAND_OFFSCREEN.search(text):
+                add(beat, indexes.get(id(beat), 0), "旁白补了画面外")
             core = _spoken_core(text)
             bare_name = any(core and core == _spoken_core(name) for name in names)
             if _SHOT_DESCRIPTION.search(text) or bare_name:
@@ -644,8 +657,17 @@ def _script_line_offenses(script, strategy, locked_lines, plan=None):
             if any(_shares_a_long_stretch(text, description) for description in _shot_blurbs(plan, beat.get("id"))):
                 add(beat, indexes.get(id(beat), 0), "台词贴着画面")
     if form == "scene_story" and spoken:
+        for beat in spoken:
+            text = beat["narration"]
+            if _CTA_LINE.search(text):
+                continue
+            if _SCENE_NARRATION.search(text):
+                add(beat, indexes.get(id(beat), 0), "在念画面")
+            if _SCENE_PITCH.search(text):
+                add(beat, indexes.get(id(beat), 0), "口播腔")
         mentioned = any(
-            _STORY_PRODUCT.search(beat["narration"]) or _has_product_subject(beat["narration"], names)
+            _STORY_PRODUCT.search(beat["narration"]) or _STORY_RESULT.search(beat["narration"])
+            or _SCENE_PITCH.search(beat["narration"]) or _has_product_subject(beat["narration"], names)
             for beat in spoken)
         if not mentioned:
             add(spoken[-1], indexes.get(id(spoken[-1]), 0), "人物没带到商品")
@@ -663,7 +685,7 @@ def _script_line_offenses(script, strategy, locked_lines, plan=None):
 
 
 def offending_lines(script: dict, *, tagline_enabled: bool | None = None, locked_lines=(),
-                    strategy=None, plan=None) -> list[dict]:
+                    strategy=None, plan=None, duration_seconds=None) -> list[dict]:
     roles = _spoken_roles(script)
     terms = product_terms(strategy)
     facts_text = ""
@@ -685,7 +707,7 @@ def offending_lines(script: dict, *, tagline_enabled: bool | None = None, locked
             beats.append({"beat_id": beat.get("id"), "index": index, "narration": narration,
                           "offenses": offenses})
     seen = {item["beat_id"] for item in beats}
-    for item in _script_line_offenses(script, strategy, locked_lines, plan):
+    for item in _script_line_offenses(script, strategy, locked_lines, plan, duration_seconds):
         if item["beat_id"] in seen:
             current = next(row for row in beats if row["beat_id"] == item["beat_id"])
             for name in item["offenses"]:
@@ -713,14 +735,19 @@ def rewrite_schema(lines: list[dict], beat_cap: int) -> dict:
         one = deepcopy(line)
         one["properties"]["beat_id"]["const"] = item["beat_id"]
         one["properties"]["narration"]["maxLength"] = min(beat_cap, item["max_characters"])
-        one["properties"]["narration"]["description"] = f"只重写这一句，含标点最多{one['properties']['narration']['maxLength']}字"
+        if "旁白太密" in (item.get("offenses") or []):
+            one["properties"]["narration"]["minLength"] = 0
+            one["properties"]["narration"]["description"] = "这句把时长说满了。留空，表示这一拍不说话，只留产品的声音。"
+        else:
+            one["properties"]["narration"]["minLength"] = 1
+            one["properties"]["narration"]["description"] = f"只重写这一句，含标点最多{one['properties']['narration']['maxLength']}字"
         items.append(one)
     schema["properties"]["lines"].update(minItems=len(items), maxItems=len(items), items={"oneOf": items})
     return schema
 
 
 def apply_line_rewrite(script: dict, raw, *, limits: dict, locked_lines=(), facts_text: str = "",
-                       duration_seconds: int | None = None, strategy=None) -> dict | None:
+                       duration_seconds: int | None = None, strategy=None, offense_names=None) -> dict | None:
     """Accept a full set of cleaner lines, or nothing."""
     try:
         batch = _RewriteBatch.model_validate(raw)
@@ -732,10 +759,16 @@ def apply_line_rewrite(script: dict, raw, *, limits: dict, locked_lines=(), fact
         return None
     revised = deepcopy(script)
     by_id = {beat.get("id"): beat for beat in _beats(revised)}
+    named = offense_names or {}
     for line in batch.lines:
         beat = by_id.get(line.beat_id)
         if beat is None or len(line.narration) > limits[line.beat_id]:
             return None
+        if not line.narration.strip():
+            if "旁白太密" not in (named.get(line.beat_id) or []):
+                return None
+            beat["narration"] = ""
+            continue
         role = _spoken_roles(script).get(line.beat_id, "line")
         terms = product_terms(strategy)
         if line_offenses(line.narration, role=role, product_terms_list=terms, facts_text=facts_text):
@@ -762,18 +795,18 @@ def apply_line_rewrite(script: dict, raw, *, limits: dict, locked_lines=(), fact
 
 
 LINE_REWRITE_SYSTEM = """你只重写列出的中文广告台词，只输出 JSON 对象，对象里只有 schema 的 lines。
-这些句子现在像策划说明。按 line_style 改成能说出口的话：产品展示短、有感官；剧情是人物的来回；人物讲解对着镜头，钩子在第一句，带一个具体好处。
-开场句要单独听得懂：说出商品叫法或用当下动作指着它。
+这些句子现在像策划说明。按 line_style 改成能说出口的话：产品展示只留薄薄两三句；剧情是人物的短对白；人物讲解对着镜头，钩子在第一句，带一个具体好处。
+开场句要单独听得懂。产品片开场可以没有旁白。人物讲解说出商品叫法或用当下动作指着它。
 承接 big_idea 和 hook 的意思，不要照抄策划词。只使用该句和 facts 里已经有的商品信息，不新增功效、数字、体验或比较。
 不写关注、呈现、兼顾、打造、采用某技术、高端质感、赋能、满足你对、卖点，也不写最、第一、根治、国家级、绝对、永久。
 不写购买、下单、抢购。优惠、限时、活动、价格和数字只在资料里已经有时才能说。结尾去向只按 ending_policy：没有指定时不说点链接、私信或到店。
-每句不超过该句 max_characters，标点也算。用户固定台词原样留在句子里。
-相邻两句不要近义重复。剧情广告全片只用一种人称，不要旁白说「她走过」同时又用「我」或「吧」。不要只复述看得见的动作。开场如果是问句，后面要有一句回答，而且回答的是同一个问题：问吹得久就回答快，不要顺口把安静和负离子也塞进这一句。
-一条卖点说完整再换下一条。快、安静、负离子不要在后面的句子里再报一遍，除非最后一句是有意收回来的总括。没有信息的空话删掉，例如洗完就能出门。资料只有几个词时，用具体场合和体感把句子说开，例如赶早上班、头发厚、旁边还有人在睡；不编数字、规格、价格或折扣。
-产品片旁白要有节奏和好处的画面感，不要排成「快。安静。负离子。」这种标签。仍然不描述镜头里的光和动作。
+每句不超过该句 max_characters，标点也算。用户固定台词原样留在句子里。旁白太密的句子按 schema 留空，表示这一拍不说话。
+相邻两句不要近义重复。剧情广告全片只用一种人称，不要旁白说「她走过」同时又用「我」或「吧」。不要只复述看得见的动作。人物讲解的开场如果是问句，后面要有一句回答，而且回答的是同一个问题：问吹得久就回答快，不要顺口把安静和负离子也塞进这一句。
+一条卖点说完整再换下一条。快、安静、负离子不要在后面的句子里再报一遍，除非最后一句是有意收回来的总括。没有信息的空话删掉，例如洗完就能出门。只有人物讲解在资料只有几个词时，才补一个具体场合和体感，例如赶早上班、头发厚、旁边还有人在睡。产品片和剧情不要补画面上没有的人、地方或时间。不编数字、规格、价格或折扣。
+产品片大约15到20秒只留2到3句，一个主卖点，其余最多一个短语。不要把每个卖点念成一句直到说满。短的单句卖点不要改长。不要描述镜头里的光和动作，不要用痛点问句或场景交代开场。旁白太密时，多出来的句子 narration 留空。至少留一拍只有产品的声音。
 人物讲解的每一句卖点都要有主语：这款、它，或「我用它」。不要用「风大」「带负离子」这种没有主语的开头。卖点之间用而且、还、另外、所以或关键是接上。
-产品片不必每句点名。直接、短地说卖点、好处或感受，例如「十万转高速马达，三分钟吹干」。不要描述镜头里的光、银线或发丝飘起。
-剧情跟着人物当时的处境说，不套口播主语。全片至少有一句让人听见商品或它的好处。数字和功效只在 facts 里已经有时才能写。
+产品片不必每句点名。直接、短地说画面证明不了的好处，例如「十万转高速马达，三分钟吹干」。不要描述镜头里的光、银线或发丝飘起。
+剧情对白是意图、反应、对照或包袱，每句大约4到10字。不要念室友在睡、她拿吹风机这种画面，也不要改成「带负离子，吹完是顺的」这种口播。好处最多一句，写成人物看见结果后的反应。指定了去向时用定格上的短旁白，人物不要转头对着镜头推销。数字和功效只在 facts 里已经有时才能写。
 tagline_policy.enabled 为 false 时不加独立口号字卡。为 true 时只有收束句可以是不超过10字的口播，仍然不写购买、下单、抢购。
 不输出其他字段，不解释。"""
 
@@ -804,7 +837,7 @@ def _rewrite_payload(script, offenses, strategy, duration, locked_lines):
             "max_characters": max(1, min(profile.max_beat_characters, remaining)),
         })
     facts = [{"id": fact.id, "text": fact.text} for fact in strategy.brief.facts if fact.id in fact_ids]
-    return {
+    payload = {
         "stage": "ad_script",
         "task_kind": "line_jargon_rewrite",
         "schema": rewrite_schema(lines, profile.max_beat_characters),
@@ -821,7 +854,10 @@ def _rewrite_payload(script, offenses, strategy, duration, locked_lines):
         "facts": facts,
         "locked_lines": list(locked_lines or ()),
         "lines": lines,
-    }, {item["beat_id"]: item["max_characters"] for item in lines}, "".join(fact["text"] for fact in facts)
+    }
+    if form == "brand_tvc":
+        payload["voiceover_budget"] = brand_voiceover_budget(duration)
+    return payload, {item["beat_id"]: item["max_characters"] for item in lines}, "".join(fact["text"] for fact in facts)
 
 
 async def _optional_model_call(stage_call, system, payload):
@@ -835,7 +871,7 @@ async def _optional_model_call(stage_call, system, payload):
 async def rewrite_script_if_needed(stage_call, script, strategy, duration_seconds, locked_lines=()):
     """Return (called, script). Clean scripts do not call the model."""
     data = script.model_dump() if hasattr(script, "model_dump") else deepcopy(script)
-    offenses = offending_lines(data, locked_lines=locked_lines, strategy=strategy)
+    offenses = offending_lines(data, locked_lines=locked_lines, strategy=strategy, duration_seconds=duration_seconds)
     if not offenses:
         return False, script
     payload, limits, facts_text = _rewrite_payload(data, offenses, strategy, duration_seconds, locked_lines)
@@ -843,7 +879,8 @@ async def rewrite_script_if_needed(stage_call, script, strategy, duration_second
     if raw is None:
         return True, script
     revised = apply_line_rewrite(data, raw, limits=limits, locked_lines=locked_lines, facts_text=facts_text,
-                                 duration_seconds=duration_seconds, strategy=strategy)
+                                 duration_seconds=duration_seconds, strategy=strategy,
+                                 offense_names={item["beat_id"]: item["offenses"] for item in offenses})
     return True, revised if revised is not None else script
 
 
@@ -851,7 +888,7 @@ async def rewrite_director_if_needed(stage_call, director: dict, strategy, durat
                                     plan=None):
     """Return (called, replacement). No call when every spoken line is clean."""
     offenses = offending_lines(director.get("ad_script") or {}, locked_lines=locked_lines, strategy=strategy,
-                               plan=plan)
+                               plan=plan, duration_seconds=duration_seconds)
     if not offenses:
         return False, None
     payload, limits, facts_text = _rewrite_payload(
@@ -860,7 +897,8 @@ async def rewrite_director_if_needed(stage_call, director: dict, strategy, durat
     if raw is None:
         return True, None
     revised = apply_line_rewrite(director["ad_script"], raw, limits=limits, locked_lines=locked_lines,
-                                 facts_text=facts_text, duration_seconds=duration_seconds, strategy=strategy)
+                                 facts_text=facts_text, duration_seconds=duration_seconds, strategy=strategy,
+                                 offense_names={item["beat_id"]: item["offenses"] for item in offenses})
     if revised is None:
         return True, None
     replacement = deepcopy(director)
@@ -897,6 +935,12 @@ def line_focus_suggestions(plan, strategy, locked_lines=()):
     """Non-blocking notes for the criterion 台词是否对焦商品、前后连贯."""
     script = (plan or {}).get("ad_script") or {}
     flags = grouped_line_flags(script, strategy, locked_lines, plan)
+    form = None
+    if strategy is not None:
+        try:
+            form = script_form(strategy)
+        except (ValidationError, TypeError, ValueError, KeyError):
+            form = None
     suggestions = []
     for index, beat in enumerate(_beats(script)):
         names = flags.get(beat.get("id")) or []
@@ -904,7 +948,17 @@ def line_focus_suggestions(plan, strategy, locked_lines=()):
         if not names or not narration.strip():
             continue
         from .planner_recovery import clip_server_text
-        note = "台词是否对焦商品、前后连贯。" + "".join(_FOCUS_NOTES[name] for name in names if name in _FOCUS_NOTES)
+        pieces = []
+        for name in names:
+            if name not in _FOCUS_NOTES:
+                continue
+            if form == "scene_story" and name == "只描述画面":
+                pieces.append("这句在念画面上的动作。改成这个人的反应或包袱，不要改成口播卖点。")
+            elif form == "scene_story" and name == "人物没带到商品":
+                pieces.append("好处要落在动作的结果上，用人物的一句反应带出来，不要改成口播。")
+            else:
+                pieces.append(_FOCUS_NOTES[name])
+        note = "台词是否对焦商品、前后连贯。" + "".join(pieces)
         suggestions.append({
             "kind": "line_focus",
             "target": f"/ad_script/beats/{index}/narration",

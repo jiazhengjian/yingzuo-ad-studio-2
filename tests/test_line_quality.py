@@ -247,9 +247,9 @@ def test_key_line_schema_is_optional_and_rewrite_loads_only_dialogue():
     assert "speech-timing.md" not in loaded["skills"][0]["loaded_sections"]
 
 
-def _focus(script, form, plan=None):
+def _focus(script, form, plan=None, duration_seconds=None):
     found = []
-    for item in script_line_offenses(script, typed(form), plan=plan):
+    for item in script_line_offenses(script, typed(form), plan=plan, duration_seconds=duration_seconds):
         found.extend(item["offenses"])
     return found
 
@@ -378,6 +378,53 @@ def test_scene_lines_follow_the_character_and_mention_the_product_once():
     assert _focus(_lines("这块给你。"), "scene_story") == []
     assert _focus(_lines("又卡在这一步。", "你先按这里。", "嘿，开了。", "那就放这儿吧。"), "scene_story") == []
     assert "人物没带到商品" not in _focus(_lines("看轮廓。", "看桌角。", "留一处。"), "scene_story")
+    narrated = _focus(_lines("室友在睡，她拿吹风机。"), "scene_story")
+    assert "在念画面" in narrated
+    pitch = _focus(_lines("带负离子，吹完是顺的。"), "scene_story")
+    assert "口播腔" in pitch
+    assert "人物没带到商品" not in pitch
+    assert "人物没带到商品" not in _focus(_lines("终于不毛躁了。"), "scene_story")
+    assert "口播腔" not in _focus(_lines("终于不毛躁了。"), "scene_story")
+    assert "在念画面" not in _focus(_lines("太吵了。", "终于不毛躁了。"), "scene_story")
+
+
+def test_brand_voiceover_stays_thin_and_does_not_invent_a_scene():
+    five = _lines("十万转，一下就干。", "负离子护发。", "机身很轻。", "握感稳。", "颜色好看。")
+    assert "旁白太密" in _focus(five, "brand_tvc")
+    assert "旁白太密" in _focus(five, "brand_tvc", duration_seconds=18)
+    assert "旁白太密" not in _focus(five, "brand_tvc", duration_seconds=45)
+    assert "旁白太密" not in _focus(_lines(
+        "十万转高速马达，三分钟吹干。",
+        "一亿负离子，吹完不毛躁。",
+        "机身带负离子护发。",
+        "肩线这一圈，是它的脸。",
+    ), "brand_tvc")
+    assert "标签式旁白" not in _focus(_lines("吹完头发顺。"), "brand_tvc")
+    assert "旁白补了画面外" in _focus(_lines("旁边的人还在睡。", "吹完不毛躁。"), "brand_tvc")
+    assert "旁白开成了讲解" in _focus(_lines("头发多，早上要吹多久？", "三分钟就干。"), "brand_tvc")
+    showcase = _focus(_lines("开盖的声音，先到了。", "肩线这一圈，是它的脸。", "放回桌角，还是这一只。"), "brand_tvc")
+    assert "旁白补了画面外" not in showcase
+    assert "旁白开成了讲解" not in showcase
+    assert "旁白太密" not in showcase
+
+    strategy = typed("brand_tvc")
+
+    async def blank(system, data, originals, max_tokens):
+        return {"lines": [{"beat_id": item["beat_id"], "narration": "" if "旁白太密" in item["offenses"] else item["narration"]}
+                          for item in data["lines"]]}
+
+    called, result = asyncio.run(rewrite_script_if_needed(blank, five, strategy, 20))
+    assert called is True
+    assert [beat["narration"] for beat in result["beats"]] == [
+        "十万转，一下就干。", "负离子护发。", "机身很轻。", "", "",
+    ]
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("rewrite down")
+
+    called, kept = asyncio.run(rewrite_script_if_needed(boom, five, strategy, 20))
+    assert called is True
+    assert kept["beats"][4]["narration"] == "颜色好看。"
 
 
 def test_a_bare_selling_line_is_rewritten_once_and_the_same_words_stay():

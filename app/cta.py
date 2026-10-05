@@ -54,19 +54,12 @@ _TYPED = {
         "store": "到店看看，这款在。",
     },
 }
+# Spoken over the freeze. The character does not turn to the camera and sell.
 _SCENE = {
-    "character": {
-        "link": "你要是想要，点下面链接。",
-        "brand": "想看的话，去产品详情看看。",
-        "message": "想问就私信我。",
-        "store": "有空来店里看看。",
-    },
-    "vo": {
-        "link": "想带走，就点下面链接。",
-        "brand": "想了解，去产品详情看看。",
-        "message": "想问的话，私信就行。",
-        "store": "欢迎到店，看看这只。",
-    },
+    "link": "想带走，就点下面链接。",
+    "brand": "想了解，去产品详情看看。",
+    "message": "想问的话，私信就行。",
+    "store": "欢迎到店，看看这只。",
 }
 _MARKS = {
     "link": re.compile(r"点下面|下方链接|链接|小黄车"),
@@ -230,28 +223,18 @@ def cta_line(target):
     return text[:40]
 
 
-def _spoken_blob(script):
-    data = script.model_dump() if hasattr(script, "model_dump") else script
-    if not isinstance(data, dict):
-        return ""
-    return "".join((beat.get("narration") or "") for beat in data.get("beats") or [] if isinstance(beat, dict))
-
-
-def _scene_voice(script):
-    """The planner's own lines decide: a character speaking, or a closing voice-over."""
-    text = _spoken_blob(script)
-    character = text.count("我") + text.count("你")
-    narrator = text.count("她") + text.count("他")
-    return "character" if character > narrator else "vo"
-
-
 def spoken_cta_line(target, form=None, script=None):
-    """Guide to the chosen place in this ad type's voice. Failure uses the fixed line."""
+    """Guide to the chosen place in this ad type's voice. Failure uses the fixed line.
+
+    A scene film always uses the short voice-over over the freeze. The character
+    does not turn to the camera and sell. ``script`` stays in the signature so
+    callers that already pass the draft do not change.
+    """
     generic = cta_line(target)
     try:
         if target in _LINES:
             if form == "scene_story":
-                return _SCENE[_scene_voice(script)][target]
+                return _SCENE[target]
             table = _TYPED.get(form or "")
             if table and target in table:
                 return table[target]
@@ -260,8 +243,6 @@ def spoken_cta_line(target, form=None, script=None):
             return ""
         if form == "presenter_pitch" and not re.search(r"我|你|这款|它", generic):
             return f"你看，{generic}"[:40]
-        if form == "scene_story" and _scene_voice(script) == "character" and "你" not in generic and "我" not in generic:
-            return f"你听，{generic}"[:40]
         return generic
     except Exception:
         return generic

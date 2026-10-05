@@ -59,7 +59,8 @@ def test_each_ad_type_speaks_the_link_in_its_own_voice():
     assert presenter != brand != story_voice
     assert "你" in presenter and "这款" in presenter and "点下面链接" in presenter
     assert "我" not in brand and "点下面链接" in brand
-    assert story_voice != story_line
+    assert story_voice == story_line == "想带走，就点下面链接。"
+    assert "你要是想要" not in story_line
     assert "点下面链接" in story_voice and "点下面链接" in story_line
     assert spoken_cta_line("link", "unknown-form") == cta_line("link")
     assert "399" not in presenter and "折" not in brand

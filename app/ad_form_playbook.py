@@ -100,6 +100,30 @@ def speech_profile(form: str | None) -> SpeechProfile:
     return SpeechProfile(form, _rate_tenth(rate_env, rate_default), _beat_characters(beat_env, beat_default))
 
 
+def brand_voiceover_budget(duration_seconds) -> dict:
+    """How many brand lines to keep. Picture and product sound carry the rest.
+
+    A missing duration uses the 15–20 second band: two or three lines, and a
+    rewrite once a fifth non-CTA line appears. The character rate above is
+    unchanged; this only counts spoken lines.
+    """
+    duration = duration_seconds if isinstance(duration_seconds, int) and duration_seconds > 0 else 20
+    if duration <= 12:
+        preferred_max, rewrite_at = 2, 4
+    elif duration <= 22:
+        preferred_max, rewrite_at = 3, 5
+    elif duration <= 35:
+        preferred_max, rewrite_at = 4, 6
+    else:
+        preferred_max, rewrite_at = 6, 8
+    return {
+        "preferred_min": 1 if duration <= 12 else 2,
+        "preferred_max": preferred_max,
+        "rewrite_at": rewrite_at,
+        "min_silent_beats": 1,
+    }
+
+
 def speech_ceiling_tenth() -> int:
     """Widest configured rate, used only where a plan's own form is not yet known."""
     tenths = [LEGACY_TENTH, *(speech_profile(form).characters_per_tenth for form in CONCRETE_FORMS)]
@@ -244,21 +268,23 @@ def ending_policy(form: str | None, cta_target: str | None = None) -> dict:
             from .cta import cta_line
             line = cta_line(cta_target)
         instruction = (
-            f"结尾必须说出「{line}」。人物讲解由出镜的人说，产品片由旁白说，剧情由人物或收束旁白说。"
+            f"结尾必须说出「{line}」。人物讲解由出镜的人说。产品片由旁白说这句短的品牌收束。"
+            f"剧情在商品定格上用这句短旁白说完，人物不要转头对着镜头推销。"
             f"这句话要在停留之前说完。{hold}"
         )
     else:
         instructions = {
             "brand_tvc": (
-                "结尾一句不超过10字的品牌或卖点口播，加上约2秒产品英雄定格（产品不动、机位不动）。"
-                "不要说去哪里、点链接、私信或到店。"
+                "没有指定去向时不说点链接、私信或到店。结尾是约2秒产品英雄定格（产品不动、机位不动）。"
+                "可以不说话；若说话，只留一句不超过10字的品牌或卖点，不要把时长说满。"
             ),
             "presenter_pitch": (
                 "结尾用一句自然的商品收束，说清这款是什么或它怎么用，不要说去哪里、点链接、私信或到店。"
                 "然后人和商品停住。"
             ),
             "scene_story": (
-                "结尾留在剧情里，人物把这件事收住，产品定格约2秒。不要另加去哪里、点链接、私信或到店。"
+                "结尾留在剧情里，产品定格约2秒。没有指定去向时不要另加去哪里、点链接、私信或到店。"
+                "人物不要转头对着镜头推销。"
             ),
         }
         instruction = instructions.get(form or "", "结尾约2秒产品留在画面里并停住。不要另加去哪里的话。") + hold
