@@ -1543,7 +1543,7 @@ def apply_line_rewrite(script: dict, raw, *, limits: dict, locked_lines=(), fact
                 leftover = _script_line_offenses(revised, strategy, locked_lines, duration_seconds=duration_seconds)
                 blocked = {"电报体", "主轴拧了"}
                 if form_now == "brand_tvc":
-                    blocked.update({"旁白像文案", "旁白在堆卖点"})
+                    blocked.update({"旁白像文案", "旁白在堆卖点", "一句里塞了两个卖点", "标签式旁白"})
                 if any(name in blocked for item in leftover for name in item["offenses"]):
                     return None
         except (ValidationError, TypeError, ValueError, KeyError):

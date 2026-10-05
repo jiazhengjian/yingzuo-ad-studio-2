@@ -153,7 +153,9 @@ def _speech_overlaps(shot, span):
     return min(shot["end"], span["end"]) - max(shot["start"], span["start"]) > 1e-7
 
 
-_NO_FACE = re.compile(r"不露脸|看不见嘴|看不到脸|后脑|背对|手部特写|只拍手|只见手|嘴不在画面")
+_NO_FACE = re.compile(
+    r"不露脸|看不见嘴|看不到脸|后脑|背对|手部特写|只拍手|只见手|嘴不在画面|唇不在画面"
+)
 _FACE = re.compile(r"面向镜头|露脸|看镜头")
 _OTHER_PERSON = re.compile(r"室友|同事|旁边的人|另一个人|别人|好友|朋友|路人")
 _MOUTH_CLOSED = re.compile(r"嘴未张开|嘴巴未张开|未开口|闭嘴|嘴闭合|嘴巴紧闭|嘴唇紧闭")
@@ -193,7 +195,7 @@ def _other_owns_hidden_part(clause, other_names):
         return False
     for word in _other_person_words(clause, other_names):
         if re.search(
-            re.escape(word) + r".{0,12}(?:后脑|不露脸|背对|看不见嘴|看不到脸|嘴不在画面)",
+            re.escape(word) + r".{0,12}(?:后脑|不露脸|背对|看不见嘴|看不到脸|嘴不在画面|唇不在画面)",
             clause,
         ):
             return True
