@@ -5,8 +5,9 @@ import pytest
 
 from app.ad_script import derive_script_evidence, script_stage_schema
 from app.line_quality import (
-    apply_line_rewrite, line_offenses, line_style, narration_budget_ok,
-    offending_lines, prepare_script_lines, prepare_speech_draft, product_terms,
+    apply_line_rewrite, brand_stack_remaining, collapse_brand_claims, line_offenses,
+    line_style, narration_budget_ok, offending_lines, prepare_script_lines,
+    prepare_speech_draft, product_terms, rewrite_director_if_needed,
     rewrite_script_if_needed, script_line_offenses, type_line_score,
 )
 from app.runtime_skills import stage_skill_context
@@ -491,3 +492,62 @@ def test_skills_and_replan_show_the_per_type_line_focus_rule(capsys):
     })
     printed = capsys.readouterr().out
     assert "只描述画面" in printed and "旁白像文案" in printed
+
+
+def test_stacked_brand_voiceover_keeps_one_benefit_and_the_call_to_action():
+    strategy = typed("brand_tvc")
+    live = _lines(
+        "夜里吹，几下就干，这风不吵。",
+        "带负离子，吹完是顺的。",
+        "点下面链接，把它看清楚。",
+    )
+    assert brand_stack_remaining(live, strategy) is True
+    assert "旁白在堆卖点" in _focus(live, "brand_tvc")
+    assert "一句里塞了两个卖点" in _focus(live, "brand_tvc")
+    collapsed, changed = collapse_brand_claims(live)
+    assert changed is True
+    assert [beat["narration"] for beat in collapsed["beats"]] == [
+        "夜里吹，几下就干。", "", "点下面链接，把它看清楚。",
+    ]
+    assert brand_stack_remaining(collapsed, strategy) is False
+    story = typed("scene_story")
+    scene = _lines("太吵了。", "终于不毛躁了。")
+    assert brand_stack_remaining(scene, story) is False
+    pitch = typed("presenter_pitch")
+
+    async def keep_pitch(*args, **kwargs):
+        raise RuntimeError("rewrite down")
+
+    _, pitch_result = asyncio.run(rewrite_script_if_needed(
+        keep_pitch, _lines("几下就干。", "这风不吵。"), pitch, 20))
+    assert [beat["narration"] for beat in pitch_result["beats"]] == ["几下就干。", "这风不吵。"]
+
+    director = {"title": "夜里轻响", "ad_script": live, "shots": [
+        {"id": "shot_0", "description": "夜里吹，几下就干，这风不吵。产品停在桌面。"},
+        {"id": "shot_1", "description": "带负离子，吹完是顺的。发丝落下。"},
+    ]}
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("rewrite down")
+
+    called, replacement = asyncio.run(rewrite_director_if_needed(boom, director, strategy, 20))
+    assert called is True and replacement is not None
+    assert [beat["narration"] for beat in replacement["ad_script"]["beats"]] == [
+        "夜里吹，几下就干。", "", "点下面链接，把它看清楚。",
+    ]
+    assert "这风不吵" not in replacement["shots"][0]["description"]
+    assert "几下就干" in replacement["shots"][0]["description"]
+    assert "带负离子" not in replacement["shots"][1]["description"]
+    assert brand_stack_remaining(replacement["ad_script"], strategy) is False
+    locked = "带负离子，吹完是顺的。"
+    held, held_changed = collapse_brand_claims(live, [locked])
+    assert held_changed is True
+    assert held["beats"][1]["narration"] == locked
+    assert held["beats"][0]["narration"] == "夜里吹，几下就干。"
+    from pathlib import Path
+    scene_book = Path("app/skills/shared/ad-form-playbooks/scene-story.md").read_text()
+    sound = Path("app/skills/ads-video-sound-direction/SKILL.md").read_text()
+    assert "出镜人物开口说" in scene_book
+    assert "不要整条都写成画外音" in scene_book
+    assert "剧情可以用旁白" not in sound
+    assert "character_dialogue" in sound and "定格那一句" in sound

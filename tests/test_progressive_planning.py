@@ -791,6 +791,56 @@ def test_reviewable_draft_enum_issue_goes_directly_to_coordinator_without_old_re
     assert plan["ad_script"]["beats"][0].get("boundary_before", "complete") == "complete"
 
 
+def test_stacked_brand_voiceover_is_collapsed_before_the_plan_is_ready(progressive_gateway):
+    state = progressive_gateway
+    raw = state.strategy.model_dump()
+    raw["brief"]["ad_form"] = "brand_tvc"
+    state.strategy = StrategyRecord.model_validate(raw)
+
+    def stack(value):
+        beats = value["ad_script"]["beats"]
+        beats[0]["narration"] = "夜里吹，几下就干，这风不吵。"
+        beats[1]["narration"] = "带负离子，吹完是顺的。"
+        beats[2]["narration"] = "点下面链接，把它看清楚。"
+        value["shots"][0]["description"] = "同一瓶子停在夜里的桌面，机位不动。"
+
+    state.first_director_mutation = stack
+    plan = state.run()
+    narrations = [beat["narration"] for beat in plan["ad_script"]["beats"]]
+    assert narrations[0] == "夜里吹，几下就干。"
+    assert narrations[1] == ""
+    assert "点下面链接" in narrations[2]
+    assert "不吵" not in "".join(narrations) and "负离子" not in "".join(narrations)
+    assert "这风不吵" not in plan["segments"][0]["shots"][0]["description"]
+    assert plan["plan_review"]["ready"] is True
+    assert "plan_review" in state.calls
+
+
+def test_stacked_brand_voiceover_is_not_marked_ready_when_it_cannot_be_rewritten(progressive_gateway, monkeypatch):
+    state = progressive_gateway
+    raw = state.strategy.model_dump()
+    raw["brief"]["ad_form"] = "brand_tvc"
+    state.strategy = StrategyRecord.model_validate(raw)
+
+    def stack(value):
+        beats = value["ad_script"]["beats"]
+        beats[0]["narration"] = "夜里吹，几下就干，这风不吵。"
+        beats[1]["narration"] = "带负离子，吹完是顺的。"
+        beats[2]["narration"] = "点下面链接，把它看清楚。"
+
+    async def keep_stack(*args, **kwargs):
+        return True, None
+
+    monkeypatch.setattr(
+        "app.line_quality.apply_brand_claim_collapse",
+        lambda director, strategy, locked_lines=(): (director, False))
+    monkeypatch.setattr("app.line_quality.rewrite_director_if_needed", keep_stack)
+    state.first_director_mutation = stack
+    with pytest.raises(ProviderError, match="堆卖点"):
+        state.run()
+    assert "plan_review" not in state.calls
+
+
 def test_planner_jargon_is_rewritten_once_before_review(progressive_gateway):
     state = progressive_gateway
     state.first_director_mutation = lambda value: value["ad_script"]["beats"][0].update(

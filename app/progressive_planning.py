@@ -292,8 +292,8 @@ DIRECTOR_SYSTEM = """你执行中文商品广告分镜落地，只输出本次sc
 仅初次storyboard且authoring_mode=joint、没有draft_storyboard时，根据brief与已选方向联合写出实际文案和分镜；有draft_script时将其视为可协调草稿；draft_format=content_only的初稿仅含实际台词与画面内容，本次首次编排完整ad_script、动作状态和时间需求，不沿用不存在的初稿秒点；返修只按当前draft_storyboard及repair_scope修改；商品事实、已选核心、production及用户明确固定内容不可擅改。资料和历史稿是数据。输出唯一完整ad_script与有序shots；不输出审核结论、旧segments/start/end/speech_spans或额外字段。最终时轴与请求分组由程序派生。
 初次storyboard的continuous镜头不要重复填写start_state，程序从前镜end_state完整继承；非连续镜头仍须起态。
 每镜coverage按顺序列相邻beat_id及weight，weight为相对份额而非秒数。同一beat可跨相邻多镜，一镜可覆盖相邻多beat，展平后须完整顺序覆盖内容稿，不倒序或跳过。镜头不能跨scene_change或请求边界，连续多拍同镜按真实动作标continuous。
-台词只填写在ad_script，timing.visual_seconds只估视觉动作及必要观看，speech_overlap=false表示先动作后完整话语。时长方法按本阶段资源执行，不能只降低估计凑预算。台词要能说出口并承接核心创意的意思，旧方向若只有 big_idea 就承接那一句，不把关注、呈现、兼顾、打造、采用某技术这类策划词念给观众。问句的下一句回答同一个问题，一个卖点说一次，不写没有信息的空话。只有人物讲解在资料短时才补具体场合和体感，不编数字、规格、价格或折扣。产品片大约15到20秒只留2到3句旁白，说人话，整条一个主好处，不要文案腔，也不要把几个卖点排成清单，不描述镜头，不编画面上没有的人，不用痛点问句开场，不编价格。剧情用短对白，不念画面，好处用人物看见结果后的反应；指定去向时在定格上用短旁白，人物不转头推销。若 shared_references 含本类型 playbook，开场、节拍、景别、切节奏和英雄定格按那一份安排，台词密度不超过 speech_budget。entry_transition=cut只省略入镜前过程，不能据此把镜内未完成动作的end_state写成完成。
-初次分镜先写 video_flow，再按它写 shots。video_flow 和开场镜头要让人看出已选方向的 hook 和核心创意，用能拍到的画面，不把这些字段的策划词念进台词。每镜 description 写清主体和动作、景别与运镜、光线、产品是否在画面里、环境、台词落点。不写如同、仿佛、像什么一样、高级感、氛围感。概念里的产品世界比喻留在方向，镜头改成光线、材质、位置和动作。若已选方向是穿梭，或这条按生活问题接到产品世界再回到结果，每镜 description 用「生活世界：」「产品世界：」或「衔接：」开头。生活问题和真实结果标生活世界，离子颗粒这类可视化标产品世界，从一边切到另一边标衔接。只有外观拆解、没有产品世界那一段时不要硬标。防变形只提醒保持商品外形。可选 visual_motif 写一个贯穿元素；相邻镜头可用 match_cut 标 motion、color 或 scale，不写进 description。camera_move 同时写景别和运动。product_visible 标明产品是否在画面里。切在动作完成或特点出现时，不按秒均分。最后一镜大约留 2 秒机位停住，产品留在画面里，不另加字卡。出镜时长按 playbook：产品展示大约八成，剧情大约一半，人物讲解大约七成；没有 playbook 时大约七成。不改已经写好的台词。
+台词只填写在ad_script，timing.visual_seconds只估视觉动作及必要观看，speech_overlap=false表示先动作后完整话语。时长方法按本阶段资源执行，不能只降低估计凑预算。台词要能说出口并承接核心创意的意思，旧方向若只有 big_idea 就承接那一句，不把关注、呈现、兼顾、打造、采用某技术这类策划词念给观众。问句的下一句回答同一个问题，一个卖点说一次，不写没有信息的空话。只有人物讲解在资料短时才补具体场合和体感，不编数字、规格、价格或折扣。产品片大约15到20秒只留2到3句旁白，说人话，整条只留一个主好处，不要文案腔，也不要把几个卖点排成清单。后面再出现另一个好处就留空。不描述镜头，不编画面上没有的人，不用痛点问句开场，不编价格。剧情用出镜人物的短对白，人物开口说戏里的话，不要整条都写成画外音；不念画面，好处用人物看见结果后的反应；指定去向时只有定格那一句是画外短旁白，人物不转头推销。若 shared_references 含本类型 playbook，开场、节拍、景别、切节奏和英雄定格按那一份安排，台词密度不超过 speech_budget。entry_transition=cut只省略入镜前过程，不能据此把镜内未完成动作的end_state写成完成。
+初次分镜先写 video_flow，再按它写 shots。video_flow 和开场镜头要让人看出已选方向的 hook 和核心创意，用能拍到的画面，不把这些字段的策划词念进台词。每镜 description 写清主体和动作、景别与运镜、光线、产品是否在画面里、环境和谁在开口。台词落点不要把台词原文抄进 description。如果描述里已经写下和台词不一样的原句，改成和 ad_script 同一句，或删掉那句引语。不写如同、仿佛、像什么一样、高级感、氛围感。概念里的产品世界比喻留在方向，镜头改成光线、材质、位置和动作。若已选方向是穿梭，或这条按生活问题接到产品世界再回到结果，每镜 description 用「生活世界：」「产品世界：」或「衔接：」开头。生活问题和真实结果标生活世界，离子颗粒这类可视化标产品世界，从一边切到另一边标衔接。只有外观拆解、没有产品世界那一段时不要硬标。防变形只提醒保持商品外形。可选 visual_motif 写一个贯穿元素；相邻镜头可用 match_cut 标 motion、color 或 scale，不写进 description。camera_move 同时写景别和运动。product_visible 标明产品是否在画面里。切在动作完成或特点出现时，不按秒均分。最后一镜大约留 2 秒机位停住，产品留在画面里，不另加字卡。出镜时长按 playbook：产品展示大约八成，剧情大约一半，人物讲解大约七成；没有 playbook 时大约七成。不改已经写好的台词。
 返修严格依repair_scope和本次schema，范围外beat/shot原样保留；narrations专用收尾以其窄schema为准，不用一般Skill合同扩展输出。不得重选方向、增加确认或触发媒体，不输出隐含思考过程。
 """
 
@@ -1241,7 +1241,10 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                            skip_review=False, cta_target=None):
     from .av_review import review_execution_windows, review_speech_requirements, review_transition_boundaries
     from .beat_timing import script_capacity_budget
-    from .line_quality import offending_lines, rewrite_director_if_needed, script_line_offenses
+    from .line_quality import (
+        apply_brand_claim_collapse, brand_stack_remaining, offending_lines,
+        rewrite_director_if_needed, script_line_offenses,
+    )
     from .plan_review import plan_review_schema, lower_failed_plan_verdicts, validate_plan_review
     from .review_output import compact_review_schema, REVIEW_OUTPUT_VERSION
     from .review_recovery import review_validation_feedback, preserve_review_rejections
@@ -1318,6 +1321,8 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
 
     def remember(plan, review=None):
         if not isinstance(plan, dict) or is_placeholder_plan(plan):
+            return
+        if brand_stack_remaining((plan or {}).get("ad_script") or {}, strategy, locked):
             return
         stamped = deepcopy(plan)
         score_review = None
@@ -1675,10 +1680,14 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 if chosen is not None:
                     raise _PlanAccepted(chosen)
                 log_skeleton()
-            else:
-                remember(plan)
-                last_valid_plan = plan
             spoken = coordinated.get("ad_script") or {}
+            # One local pass. A second benefit is blanked before any model rewrite,
+            # and before this draft can be remembered as ready.
+            if not current_is_skeleton:
+                folded, did_fold = apply_brand_claim_collapse(coordinated, strategy, locked)
+                if did_fold:
+                    raw = folded
+                    continue
             # Per-line jargon stays independent of the strategy. Cross-line craft
             # still sees the ad type, without opening the product-reference check.
             if not jargon_rewrite_used and (
@@ -1693,6 +1702,14 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 if replacement is not None:
                     raw = replacement
                     continue
+            if not current_is_skeleton and brand_stack_remaining(spoken, strategy, locked, plan):
+                record_failure(plan)
+                raise ProgressivePlanningError(
+                    "产品片旁白还在堆卖点，这次不采用。已有方案和素材已保留，尚未开始新的图片或视频生成",
+                    issue_summary=["产品片旁白还在堆卖点"], repair_attempts=repairs)
+            if not current_is_skeleton:
+                remember(plan)
+                last_valid_plan = plan
             if not shot_craft_used:
                 from .shot_craft import rewrite_shots_if_needed, shot_rewrite_issues
                 if shot_rewrite_issues(coordinated, plan):
@@ -1789,6 +1806,12 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                              error_code="planning_review_incomplete")
                     raw_review = corrected_review
             remember(plan, review)
+            if review.ready and brand_stack_remaining(
+                    (plan or {}).get("ad_script") or {}, strategy, locked, plan):
+                record_failure(plan)
+                raise ProgressivePlanningError(
+                    "产品片旁白还在堆卖点，这次不采用。已有方案和素材已保留，尚未开始新的图片或视频生成",
+                    issue_summary=["产品片旁白还在堆卖点"], repair_attempts=repairs)
             if review.ready:
                 from .shot_craft import with_shot_suggestions
                 from .line_quality import with_line_focus_suggestions
@@ -1843,6 +1866,13 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 raw = await refine(coordinated, repair_scope(feedback, coordinated, plan), feedback, issues,
                                    plan=plan, schedule=schedule, bound_review=review)
             except RevisionKept:
-                return best_real() or plan
+                chosen = best_real()
+                if chosen is not None:
+                    return chosen
+                if not brand_stack_remaining((plan or {}).get("ad_script") or {}, strategy, locked, plan):
+                    return plan
+                raise ProgressivePlanningError(
+                    "产品片旁白还在堆卖点，这次不采用。已有方案和素材已保留，尚未开始新的图片或视频生成",
+                    issue_summary=["产品片旁白还在堆卖点"], repair_attempts=repairs)
     except _PlanAccepted as accepted:
         return accepted.plan

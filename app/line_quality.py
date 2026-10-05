@@ -749,6 +749,183 @@ def offending_lines(script: dict, *, tagline_enabled: bool | None = None, locked
     return beats
 
 
+_CLAIM_PATTERNS = (
+    ("speed", _SPEED),
+    ("noise", _NOISE),
+    ("ions", _IONS),
+    *_EXTRA_CLAIMS,
+)
+_CLAUSE_SPLIT = re.compile(r"[，,。！？!?、；;]+")
+_STACK_JOIN = re.compile(r"还|和|与")
+_BRAND_STACKS = ("旁白在堆卖点", "一句里塞了两个卖点", "标签式旁白")
+
+
+def _brand_form(strategy):
+    if strategy is None:
+        return None
+    try:
+        return script_form(strategy)
+    except (ValidationError, TypeError, ValueError, KeyError):
+        return None
+
+
+def _earliest_tag(text):
+    found = None
+    at = None
+    for name, pattern in _CLAIM_PATTERNS:
+        match = pattern.search(text or "")
+        if match and (at is None or match.start() < at):
+            at = match.start()
+            found = name
+    return found
+
+
+def _split_claim_clause(clause, depth=0):
+    """Break one clause so each piece carries at most the first benefit."""
+    if depth > 4 or not clause:
+        return [clause] if clause else []
+    if len(_claim_tags(clause)) < 2:
+        return [clause]
+    parts = [part.strip() for part in _STACK_JOIN.split(clause) if part and part.strip()]
+    if len(parts) >= 2 and all(part != clause for part in parts):
+        if sum(1 for part in parts if _claim_tags(part)) >= 2:
+            pieces = []
+            for part in parts:
+                pieces.extend(_split_claim_clause(part, depth + 1))
+            return pieces or [clause]
+    primary = _earliest_tag(clause)
+    cut = None
+    for name, pattern in _CLAIM_PATTERNS:
+        if name == primary:
+            continue
+        match = pattern.search(clause)
+        if match and (cut is None or match.start() < cut):
+            cut = match.start()
+    if not cut:
+        return [clause]
+    head = re.sub(r"[还和与及，,、\s]+$", "", clause[:cut]).strip()
+    tail = clause[cut:].strip()
+    if not head or head == clause:
+        return [clause]
+    pieces = [head]
+    if tail and tail != clause:
+        pieces.extend(_split_claim_clause(tail, depth + 1))
+    return pieces
+
+
+def _spoken_pieces(text):
+    pieces = []
+    for clause in _CLAUSE_SPLIT.split(text or ""):
+        clause = clause.strip()
+        if clause:
+            pieces.extend(_split_claim_clause(clause))
+    return pieces
+
+
+def _terminal_mark(text):
+    match = re.search(r"[。！？!?]$", (text or "").strip())
+    return match.group(0) if match else "。"
+
+
+def collapse_brand_claims(script, locked_lines=()):
+    """Keep the first benefit in a product-ad voiceover. Later benefits go blank.
+
+    A call-to-action line and any user-locked line stay as written. The same
+    benefit may repeat. A result with no new claim, such as 吹完是顺的, stays
+    when it is not riding on a second claim in that line.
+    """
+    revised = deepcopy(script) if isinstance(script, dict) else {"beats": []}
+    primary = None
+    changed = False
+    for beat in _beats(revised):
+        if not isinstance(beat, dict):
+            continue
+        text = beat.get("narration")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        if _locked(text, locked_lines) or _CTA_LINE.search(text):
+            continue
+        kept = []
+        dropped_foreign = False
+        for piece in _spoken_pieces(text):
+            tags = _claim_tags(piece)
+            if primary is None:
+                if not tags:
+                    kept.append(piece)
+                    continue
+                primary = _earliest_tag(piece) or next(iter(tags))
+                if tags <= {primary}:
+                    kept.append(piece)
+                else:
+                    dropped_foreign = True
+                continue
+            if tags and not tags <= {primary}:
+                dropped_foreign = True
+                continue
+            kept.append(piece)
+        if dropped_foreign and not any(_claim_tags(piece) for piece in kept):
+            kept = []
+        new = ("，".join(kept) + _terminal_mark(text)) if kept else ""
+        if new != text:
+            beat["narration"] = new
+            changed = True
+    return revised, changed
+
+
+def brand_stack_remaining(script, strategy, locked_lines=(), plan=None, duration_seconds=None):
+    """True when a product ad still states a second benefit the checker can see."""
+    if _brand_form(strategy) != "brand_tvc":
+        return False
+    for item in script_line_offenses(script, strategy, locked_lines, plan, duration_seconds):
+        if any(name in _BRAND_STACKS for name in item.get("offenses") or []):
+            return True
+    return False
+
+
+def _sync_quoted_narration(director, before, after):
+    """Drop a shot sentence that still quotes the voiceover we just rewrote."""
+    pairs = []
+    for left, right in zip(_beats(before), _beats(after)):
+        old = left.get("narration") if isinstance(left, dict) else ""
+        new = right.get("narration") if isinstance(right, dict) else ""
+        old = old.strip() if isinstance(old, str) else ""
+        new = new.strip() if isinstance(new, str) else ""
+        if old and old != new:
+            pairs.append((old, new))
+    if not pairs or not isinstance(director, dict):
+        return
+    for shot in director.get("shots") or []:
+        if not isinstance(shot, dict):
+            continue
+        description = shot.get("description")
+        if not isinstance(description, str) or not description:
+            continue
+        updated = description
+        for old, new in pairs:
+            if old in updated:
+                updated = updated.replace(old, new)
+                continue
+            bare = old.rstrip("。！？!?")
+            if bare and bare in updated:
+                updated = updated.replace(bare, new.rstrip("。！？!?") if new else "")
+        if updated != description:
+            shot["description"] = updated
+
+
+def apply_brand_claim_collapse(director, strategy, locked_lines=()):
+    """Return (director, changed). Only product-ad voiceover is rewritten."""
+    if not isinstance(director, dict) or _brand_form(strategy) != "brand_tvc":
+        return director, False
+    script = director.get("ad_script") or {}
+    revised, changed = collapse_brand_claims(script, locked_lines)
+    if not changed:
+        return director, False
+    replacement = deepcopy(director)
+    replacement["ad_script"] = revised
+    _sync_quoted_narration(replacement, script, revised)
+    return replacement, True
+
+
 def narration_budget_ok(script: dict, strategy, duration_seconds: int) -> bool:
     profile = speech_profile_for_strategy(strategy)
     narrations = [beat.get("narration") or "" for beat in _beats(script)]
@@ -910,41 +1087,78 @@ async def _optional_model_call(stage_call, system, payload):
         return None
 
 
+def _narration_text(script):
+    return [beat.get("narration") if isinstance(beat, dict) else "" for beat in _beats(script)]
+
+
 async def rewrite_script_if_needed(stage_call, script, strategy, duration_seconds, locked_lines=()):
-    """Return (called, script). Clean scripts do not call the model."""
+    """Return (called, script). Clean scripts do not call the model.
+
+    A product ad that stacks benefits is collapsed locally even when the model
+    call fails, so the original multi-claim lines are not kept.
+    """
     data = script.model_dump() if hasattr(script, "model_dump") else deepcopy(script)
-    offenses = offending_lines(data, locked_lines=locked_lines, strategy=strategy, duration_seconds=duration_seconds)
-    if not offenses:
+    brand = _brand_form(strategy) == "brand_tvc"
+    collapsed, changed = collapse_brand_claims(data, locked_lines) if brand else (data, False)
+    working = collapsed if changed else data
+    offenses = offending_lines(working, locked_lines=locked_lines, strategy=strategy,
+                               duration_seconds=duration_seconds)
+    if not offenses and not changed:
         return False, script
-    payload, limits, facts_text = _rewrite_payload(data, offenses, strategy, duration_seconds, locked_lines)
-    raw = await _optional_model_call(stage_call, LINE_REWRITE_SYSTEM, payload)
-    if raw is None:
+    if offenses:
+        payload, limits, facts_text = _rewrite_payload(
+            working, offenses, strategy, duration_seconds, locked_lines)
+        raw = await _optional_model_call(stage_call, LINE_REWRITE_SYSTEM, payload)
+        revised = None
+        if raw is not None:
+            revised = apply_line_rewrite(working, raw, limits=limits, locked_lines=locked_lines,
+                                         facts_text=facts_text, duration_seconds=duration_seconds,
+                                         strategy=strategy,
+                                         offense_names={item["beat_id"]: item["offenses"] for item in offenses})
+        chosen = revised if revised is not None else working
+    else:
+        revised = None
+        chosen = working
+    if brand:
+        chosen, _ = collapse_brand_claims(chosen, locked_lines)
+    if revised is None and not changed:
         return True, script
-    revised = apply_line_rewrite(data, raw, limits=limits, locked_lines=locked_lines, facts_text=facts_text,
-                                 duration_seconds=duration_seconds, strategy=strategy,
-                                 offense_names={item["beat_id"]: item["offenses"] for item in offenses})
-    return True, revised if revised is not None else script
+    return True, chosen
 
 
 async def rewrite_director_if_needed(stage_call, director: dict, strategy, duration_seconds, locked_lines=(),
                                     plan=None):
-    """Return (called, replacement). No call when every spoken line is clean."""
-    offenses = offending_lines(director.get("ad_script") or {}, locked_lines=locked_lines, strategy=strategy,
+    """Return (called, replacement). No call when every spoken line is clean.
+
+    Product-ad stacking is collapsed before the model is trusted. A failed or
+    rejected rewrite still returns that one-benefit script.
+    """
+    script = director.get("ad_script") or {}
+    brand = _brand_form(strategy) == "brand_tvc"
+    collapsed, changed = collapse_brand_claims(script, locked_lines) if brand else (script, False)
+    working = collapsed if changed else script
+    offenses = offending_lines(working, locked_lines=locked_lines, strategy=strategy,
                                plan=plan, duration_seconds=duration_seconds)
-    if not offenses:
+    if not offenses and not changed:
         return False, None
-    payload, limits, facts_text = _rewrite_payload(
-        director["ad_script"], offenses, strategy, duration_seconds, locked_lines)
-    raw = await _optional_model_call(stage_call, LINE_REWRITE_SYSTEM, payload)
-    if raw is None:
-        return True, None
-    revised = apply_line_rewrite(director["ad_script"], raw, limits=limits, locked_lines=locked_lines,
-                                 facts_text=facts_text, duration_seconds=duration_seconds, strategy=strategy,
-                                 offense_names={item["beat_id"]: item["offenses"] for item in offenses})
-    if revised is None:
+    revised = None
+    if offenses:
+        payload, limits, facts_text = _rewrite_payload(
+            working, offenses, strategy, duration_seconds, locked_lines)
+        raw = await _optional_model_call(stage_call, LINE_REWRITE_SYSTEM, payload)
+        if raw is not None:
+            revised = apply_line_rewrite(working, raw, limits=limits, locked_lines=locked_lines,
+                                         facts_text=facts_text, duration_seconds=duration_seconds,
+                                         strategy=strategy,
+                                         offense_names={item["beat_id"]: item["offenses"] for item in offenses})
+    chosen = revised if revised is not None else working
+    if brand:
+        chosen, _ = collapse_brand_claims(chosen, locked_lines)
+    if revised is None and not changed and _narration_text(chosen) == _narration_text(script):
         return True, None
     replacement = deepcopy(director)
-    replacement["ad_script"] = revised
+    replacement["ad_script"] = chosen
+    _sync_quoted_narration(replacement, script, chosen)
     return True, replacement
 
 
