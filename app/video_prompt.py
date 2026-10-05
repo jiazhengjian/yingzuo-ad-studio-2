@@ -120,7 +120,8 @@ def _voice_lines(production, director, spans, characters, *, ad_form=None):
             raise ValueError("无人声方案不能包含台词时间表")
         return ["声音方式：无人声，只保留已确认环境声与音乐。"]
     voice = production["voice_description"]
-    if mode == "voiceover":
+    if mode == "voiceover" or (mode == "character_dialogue" and ad_form == "brand_tvc"):
+        # A product film never asks the picture to lip-sync a sales line.
         return [f"声音方式：画外旁白；{voice}。画面里的人物不说台词、不张嘴念词。"]
     if mode == "character_dialogue":
         speaker = next((item for item in production["characters"] if item["id"] == production["speaker_id"]), None)
@@ -135,8 +136,8 @@ def _voice_lines(production, director, spans, characters, *, ad_form=None):
                     "声线保持连贯是执行要求，不是已验证的声纹。"
                 ]
             return [
-                f"声音方式：同一人物{name}说全部台词。只要她的脸在画面里，就看着镜头亲口说，嘴型与字同步；"
-                f"只有切到看不见嘴的商品特写时，才由她本人在画外接着说。其余角色不说话。声音：{voice}。"
+                f"声音方式：同一人物{name}用第一人称对观众说全部台词。只要她的脸在画面里，就看着镜头亲口说，嘴型与字同步；"
+                f"只有切到看不见嘴的商品特写时，才由她本人在画外接着说，不是另配旁白。其余角色不说话。声音：{voice}。"
                 "声线保持连贯是执行要求，不是已验证的声纹。"
             ]
         return [
@@ -255,7 +256,9 @@ def _compile_grouped_video(segment, template):
     last_index = len(shots) - 1
     first_speaking_shot = None
     spans = segment.get("speech_spans") or []
-    if production and production.get("speech_mode") == "character_dialogue" and spans:
+    lip_sync = (production and production.get("speech_mode") == "character_dialogue" and spans
+                and segment.get("ad_form") != "brand_tvc")
+    if lip_sync:
         for candidate in shots:
             if _speech_overlaps(candidate, spans[0]):
                 first_speaking_shot = candidate["id"]
@@ -269,7 +272,7 @@ def _compile_grouped_video(segment, template):
             if not set(shot["character_ids"]).issubset(characters):
                 raise ValueError("镜头引用了未绑定参考图的角色")
             lines.append("  出镜角色：" + "、".join(characters[cid] for cid in shot["character_ids"]))
-        if production and production.get("speech_mode") == "character_dialogue" and spans:
+        if lip_sync:
             speaker_id = production.get("speaker_id")
             speaking_here = any(_speech_overlaps(shot, span) for span in spans)
             name = characters.get(speaker_id, "")
@@ -293,7 +296,7 @@ def _compile_grouped_video(segment, template):
             lines.append("  仅局部出镜、不增加露脸：" + "、".join(characters[cid] for cid in partial)
                          + "；依实际镜头拍摄其手、头发或其他已确认局部，不把身份参考的组合版式当成本镜构图。")
         continuity = shot.get("continuity")
-        speaking_face = (production and production.get("speech_mode") == "character_dialogue" and spans
+        speaking_face = (lip_sync
                          and any(_speech_overlaps(shot, span) for span in spans)
                          and production.get("speaker_id") in shot.get("character_ids", [])
                          and _speaker_face_visible(shot, *_cast_names(production, production.get("speaker_id"))))

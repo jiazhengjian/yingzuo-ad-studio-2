@@ -47,9 +47,11 @@ def video_submission_spec(plan, segment, assets=None):
         spec["speech_characters_per_tenth"] = tenth
     brief = strategy.get("brief") if isinstance(strategy, dict) else getattr(strategy, "brief", None)
     form = brief.get("ad_form") if isinstance(brief, dict) else getattr(brief, "ad_form", None)
-    # Story prompts use this to avoid telling the character to look at the camera.
-    # Other forms keep the previous request shape.
-    if form == "scene_story":
+    # Story prompts avoid telling the character to look at the camera.
+    # Presenter and product films use it to keep the voice track on the right person.
+    # A presenter plan with no production must stay unmarked: the compiler
+    # refuses a presenter request that never named its speaker.
+    if form == "scene_story" or (form in ("presenter_pitch", "brand_tvc") and plan.get("production")):
         spec["ad_form"] = form
     director = direction_context(plan)
     if director is not None:

@@ -89,7 +89,11 @@ def test_noneligible_paths_keep_existing_contracts(speech_gateway, settings, exc
     elif excluded in ("scene", "presenter", "auto", "missing_form"):
         raw["brief"]["ad_form"] = {"scene": "scene_story", "presenter": "presenter_pitch",
             "auto": "auto", "missing_form": None}[excluded]
+        if excluded in ("scene", "presenter"):
+            selected["production"].update(
+                speech_mode="character_dialogue", speaker_id="char_worker", voice_description="自然介绍。")
     elif excluded in ("dialogue", "silent"):
+        raw["brief"]["ad_form"] = "scene_story" if excluded == "dialogue" else "brand_tvc"
         selected["production"].update(speech_mode="character_dialogue" if excluded == "dialogue" else "none",
             speaker_id="char_worker" if excluded == "dialogue" else "",
             voice_description="自然介绍。" if excluded == "dialogue" else "")

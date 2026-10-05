@@ -821,6 +821,99 @@ def test_stacked_brand_voiceover_is_collapsed_before_the_plan_is_ready(progressi
     assert "plan_review" in state.calls
 
 
+def _lock_speech(strategy_record, mode):
+    raw = strategy_record.model_dump()
+    production = next(item for item in raw["directions"] if item["id"] == raw["selected_direction_id"])["production"]
+    production.update(
+        speech_mode=mode,
+        speaker_id="char_worker" if mode == "character_dialogue" else "",
+        voice_description="" if mode == "none" else "自然普通话，平缓介绍。",
+    )
+    return StrategyRecord.model_validate(raw)
+
+
+def test_voice_identity_mixup_is_not_marked_ready(progressive_gateway):
+    state = progressive_gateway
+    raw = state.strategy.model_dump()
+    raw["brief"]["ad_form"] = "brand_tvc"
+    state.strategy = _lock_speech(StrategyRecord.model_validate(raw), "character_dialogue")
+    with pytest.raises(ProviderError, match="对不上"):
+        state.run()
+    assert "plan_review" not in state.calls
+
+
+def test_presenter_voiceover_is_not_marked_ready(progressive_gateway):
+    state = progressive_gateway
+    raw = state.strategy.model_dump()
+    raw["brief"]["ad_form"] = "presenter_pitch"
+    state.strategy = StrategyRecord.model_validate(raw)
+    with pytest.raises(ProviderError, match="对不上"):
+        state.run()
+    assert "plan_review" not in state.calls
+
+
+def test_story_voiceover_is_not_marked_ready(progressive_gateway):
+    state = progressive_gateway
+    raw = state.strategy.model_dump()
+    raw["brief"]["ad_form"] = "scene_story"
+    state.strategy = StrategyRecord.model_validate(raw)
+    with pytest.raises(ProviderError, match="对不上"):
+        state.run()
+    assert "plan_review" not in state.calls
+
+
+def test_story_explainer_is_rewritten_before_the_plan_is_ready(progressive_gateway, monkeypatch):
+    state = progressive_gateway
+    raw = state.strategy.model_dump()
+    raw["brief"]["ad_form"] = "scene_story"
+    state.strategy = _lock_speech(StrategyRecord.model_validate(raw), "character_dialogue")
+
+    def explain(value):
+        beats = value["ad_script"]["beats"]
+        beats[0]["narration"] = "不敢开，怕吵醒她。"
+        beats[1]["narration"] = "太吵了。"
+        beats[2]["narration"] = "终于不毛躁了。"
+        value["shots"][0]["description"] = "夜里，室友侧躺在床上睡着。她站在镜前，手指停在开关上。"
+
+    async def speak_as_the_character(stage_call, director, strategy, duration_seconds, locked_lines=(), plan=None):
+        revised = deepcopy(director)
+        for beat in revised["ad_script"]["beats"]:
+            if beat.get("narration") == "不敢开，怕吵醒她。":
+                beat["narration"] = "太响了。"
+        return True, revised
+
+    monkeypatch.setattr("app.line_quality.rewrite_director_if_needed", speak_as_the_character)
+    state.first_director_mutation = explain
+    plan = state.run()
+    narrations = [beat["narration"] for beat in plan["ad_script"]["beats"]]
+    assert narrations[0] == "太响了。"
+    assert "不敢开" not in "".join(narrations)
+    assert plan["plan_review"]["ready"] is True
+
+
+def test_story_explainer_is_not_marked_ready_when_the_rewrite_stays(progressive_gateway, monkeypatch):
+    state = progressive_gateway
+    raw = state.strategy.model_dump()
+    raw["brief"]["ad_form"] = "scene_story"
+    state.strategy = _lock_speech(StrategyRecord.model_validate(raw), "character_dialogue")
+
+    def explain(value):
+        beats = value["ad_script"]["beats"]
+        beats[0]["narration"] = "不敢开，怕吵醒她。"
+        beats[1]["narration"] = "太吵了。"
+        beats[2]["narration"] = "终于不毛躁了。"
+        value["shots"][0]["description"] = "夜里，室友侧躺在床上睡着。她站在镜前，手指停在开关上。"
+
+    async def keep_explainer(*args, **kwargs):
+        return True, None
+
+    monkeypatch.setattr("app.line_quality.rewrite_director_if_needed", keep_explainer)
+    state.first_director_mutation = explain
+    with pytest.raises(ProviderError, match="解说画面"):
+        state.run()
+    assert "plan_review" not in state.calls
+
+
 def test_stacked_brand_voiceover_is_not_marked_ready_when_it_cannot_be_rewritten(progressive_gateway, monkeypatch):
     state = progressive_gateway
     raw = state.strategy.model_dump()
@@ -880,7 +973,7 @@ def test_craft_refine_that_still_fails_is_accepted_and_the_job_continues(progres
     state = progressive_gateway
     raw = state.strategy.model_dump()
     raw["brief"]["ad_form"] = "presenter_pitch"
-    state.strategy = StrategyRecord.model_validate(raw)
+    state.strategy = _lock_speech(StrategyRecord.model_validate(raw), "character_dialogue")
 
     def show_product_late(value):
         value["video_flow"] = "先看见吹风机，再讲完停住。"
@@ -907,7 +1000,7 @@ def test_scene_story_revision_keeps_a_long_skill_trace_valid(progressive_gateway
     state = progressive_gateway
     raw = state.strategy.model_dump()
     raw["brief"]["ad_form"] = "scene_story"
-    state.strategy = StrategyRecord.model_validate(raw)
+    state.strategy = _lock_speech(StrategyRecord.model_validate(raw), "character_dialogue")
     state.ad_form = "scene_story"
     state.inherited_skill_trace = [
         {"stage": "strategy", "id": f"legacy-{index}", "version": "1", "content_sha256": f"{index:064x}"}

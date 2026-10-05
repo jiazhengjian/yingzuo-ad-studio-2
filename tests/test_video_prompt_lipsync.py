@@ -89,8 +89,17 @@ def test_roommate_back_of_head_does_not_mark_the_speaker_off_camera():
     hidden["shots"][0]["description"] = "她背对镜头，只露后脑。"
     hidden_opening = compile_grouped_video(hidden).split("镜头1 |", 1)[1].split("镜头2 |", 1)[0]
     assert "画外接着说" in hidden_opening
-    presenter = compile_grouped_video(_segment(delivery="on_and_off_screen"))
+    presenter = compile_grouped_video(_segment(delivery="on_and_off_screen", ad_form="presenter_pitch"))
     assert "看着镜头亲口说" in presenter
+    assert "第一人称" in presenter
+    assert "不是另配旁白" in presenter
+    product = presenter.split("镜头2 |", 1)[1]
+    assert "同一人物画外延续" in product
+    brand = compile_grouped_video(_segment(ad_form="brand_tvc"))
+    assert "声音方式：画外旁白" in brand
+    assert "不张嘴念词" in brand
+    assert "面向镜头说话" not in brand
+    assert "嘴型与台词同步" not in brand
 
 
 def test_character_dialogue_never_uses_the_legacy_voiceover_prompt():

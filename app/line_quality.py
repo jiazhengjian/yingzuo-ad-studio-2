@@ -57,9 +57,9 @@ _SOFT_CTA = re.compile(r"点下面|下方链接|链接放|去看看|小黄车")
 _OPENING_DEICTIC = re.compile(r"^(?:就这|这么|这|那|它|转)")
 _CLAIM_WORDS = ("根治", "治愈", "美白", "减肥", "抗衰", "医用", "治疗")
 _LINE_STYLES = {
-    "brand_tvc": "产品展示：画面和产品声音先承担意思，句子仍要有感官。大约15秒整条只围绕一个主好处，旁白、节拍和画面都说这一件。大约30秒可以在主好处之后加一个配角好处，分清主次。45秒以上可以再展开，仍然不要并列清单，不要文案腔。不描述镜头，不编画面上没有的人，不用痛点问句开头。多出来的卖点留空。口播不受这条限制。",
-    "scene_story": "剧情：人物的短对白，要有来有回。意图、反应、对照或包袱，每句大约4到10字。不念画面上的动作，也不把这一镜已经看见的事再说一遍。抱怨、态度或一句提醒可以，口播卖点不行。好处最多一句，是看见结果后的反应。指定去向时用定格上的短旁白，人物不转头推销。",
-    "presenter_pitch": "人物讲解：对着镜头，第一句就是钩子。每一句卖点都要有主语，用这款、它，或我用它。卖点之间用而且、还、另外、所以或关键是接上。资料短时可以补具体场合。",
+    "brand_tvc": "产品展示：画外旁白，画面里的人不对口型念卖点。可以有不说话、只给画面证明的一拍，不规定那一拍占几秒。画面和产品声音先承担意思，句子仍要有感官。大约15秒整条只围绕一个主好处，旁白、节拍和画面都说这一件。大约30秒可以在主好处之后加一个配角好处，分清主次。45秒以上可以再展开，仍然不要并列清单，不要文案腔。不描述镜头，不编画面上没有的人，不用痛点问句开头。多出来的卖点留空。口播不受这条限制。",
+    "scene_story": "剧情：戏里的人用自己的第一人称说短对白，要有来有回。意图、反应、对照或包袱，每句大约4到10字。不念画面上的动作，也不把这一镜已经看见的事再说一遍，不用她、他做第三人称解说。抱怨、态度或一句提醒可以，口播卖点不行。好处最多一句，是看见结果后的反应。指定去向时只有定格上的短旁白可以画外说，人物不转头推销。",
+    "presenter_pitch": "人物讲解：出镜的人用第一人称对着观众说，第一句就是钩子。脸在画面里就对口型；切到商品特写时仍是这个人接着说，不是另配旁白。每一句卖点都要有主语，用这款、它，或我用它。卖点之间用而且、还、另外、所以或关键是接上。资料短时可以补具体场合。可以连着说多个卖点。",
 }
 _TARGET_LENGTH = {
     "brand_tvc": (8, 14),
@@ -518,6 +518,20 @@ def _bigram_restates(line, picture):
     return hit / len(grams) >= 0.75
 
 
+def _announcer_explainer(text):
+    """Third-person narration explaining the picture, not the character talking.
+
+    A freeze call-to-action may stay off-screen. A line that also says 我 or 咱们
+    is the character, and the mixed-person check handles that separately.
+    """
+    if not isinstance(text, str) or _CTA_LINE.search(text) or _SCENE_FREEZE_CTA.search(text):
+        return False
+    if _FIRST_PERSON.search(text):
+        return False
+    core = _spoken_core(text)
+    return bool(re.match(r"^(?:然后|于是|接着)?(?:她|他)", core))
+
+
 def _restates_visible_situation(line, picture):
     """True when character dialogue mostly retells what this shot already shows.
 
@@ -801,6 +815,8 @@ def _script_line_offenses(script, strategy, locked_lines, plan=None, duration_se
                 _visual_texts_for_beat(script, plan, beat, indexes.get(id(beat), 0)), text)
             if _SCENE_NARRATION.search(text) or _restates_visible_situation(text, picture):
                 add(beat, indexes.get(id(beat), 0), "在念画面")
+            if _announcer_explainer(text):
+                add(beat, indexes.get(id(beat), 0), "第三人称解说")
             if _SCENE_PITCH.search(text):
                 add(beat, indexes.get(id(beat), 0), "口播腔")
         mentioned = any(
@@ -1000,6 +1016,48 @@ def brand_stack_remaining(script, strategy, locked_lines=(), plan=None, duration
         if any(name in _BRAND_STACKS for name in item.get("offenses") or []):
             return True
     return False
+
+
+_EXPLAINER_OFFENSES = ("在念画面", "第三人称解说")
+
+
+def story_explainer_remaining(script, strategy, locked_lines=(), plan=None):
+    """True when a story line still explains the picture or talks about the character.
+
+    A freeze call-to-action is not this. 口播 and 产品展示 are not checked here.
+    """
+    if _brand_form(strategy) != "scene_story":
+        return False
+    for item in script_line_offenses(script, strategy, locked_lines, plan):
+        if any(name in _EXPLAINER_OFFENSES for name in item.get("offenses") or []):
+            return True
+    return False
+
+
+def _speech_mode_of(production):
+    if production is None:
+        return None
+    if isinstance(production, dict):
+        return production.get("speech_mode")
+    return getattr(production, "speech_mode", None)
+
+
+def voice_identity_issues(strategy, production):
+    """Speech track that belongs to another ad type.
+
+    口播 is the person speaking to the camera. 产品展示 is off-screen voiceover.
+    剧情 is the character in the scene. Silent picture-proof beats are allowed
+    on a product film; a whole story told as voiceover is not.
+    """
+    form = _brand_form(strategy)
+    mode = _speech_mode_of(production)
+    if form == "presenter_pitch" and mode in ("voiceover", "none"):
+        return ["口播被写成了旁白"]
+    if form == "brand_tvc" and mode == "character_dialogue":
+        return ["产品展示被写成了对口型推销"]
+    if form == "scene_story" and mode == "voiceover":
+        return ["剧情被写成了整条旁白"]
+    return []
 
 
 _PIECE_HOLD = "产品留在画面里。"
@@ -1388,11 +1446,12 @@ def rewrite_schema(lines: list[dict], beat_cap: int) -> dict:
             one["properties"]["narration"]["description"] = (
                 "这句把时长说满了，或又报了另一个卖点。留空，表示这一拍不说话。"
                 "若还在说同一个好处，写成一句口语，不要加长。")
-        elif "在念画面" in offenses:
+        elif "在念画面" in offenses or "第三人称解说" in offenses:
             one["properties"]["narration"]["minLength"] = 1
             one["properties"]["narration"]["description"] = (
-                "这句在复述镜头里已经看见的事。改成反应、态度，或画面带不走的一句提醒。"
-                "不要再讲画面上的人和动作，也不要改成口播卖点。定格上的去向旁白不要改。")
+                "这句在解说画面，或在用她、他讲这个人。改成这个人自己会说的话："
+                "反应、态度，或画面带不走的一句。不要再讲画面上的人和动作，也不要改成口播卖点。"
+                "定格上的去向旁白不要改。")
         else:
             one["properties"]["narration"]["minLength"] = 1
             one["properties"]["narration"]["description"] = f"只重写这一句，含标点最多{one['properties']['narration']['maxLength']}字"
@@ -1470,7 +1529,7 @@ LINE_REWRITE_SYSTEM = """你只重写列出的中文广告台词，只输出 JSO
 产品展示大约15秒整条只围绕一个主好处，像跟人说话。大约30秒可以在这一个主好处之后再留一个配角好处，分清主次。45秒以上可以再展开一句，仍然不要并列清单。不要文案腔，不要「是它的脸」「先到了」「肩线这一圈」，也不要「十万转高速马达」「一亿负离子」这种参数清单。短的口语好处不要改长，也不要补主语。例如「吹完是顺的。」「这风不吵。」「几下就干。」不要描述镜头里的光和动作，不要用痛点问句或场景交代开场。旁白太密，或超过本片时长还能说的卖点，那些句子 narration 留空。至少留一拍只有产品的声音。不编价格。口播不受这条限制，卖点之间仍用而且接上。
 人物讲解的每一句卖点都要有主语：这款、它，或「我用它」。不要用「风大」「带负离子」这种没有主语的开头。卖点之间用而且、还、另外、所以或关键是接上。
 产品片不必每句点名。直接、短地说画面证明不了的好处。不要描述镜头里的光、银线或发丝飘起。
-剧情对白是意图、反应、对照或包袱，每句大约4到10字。不要把这一镜已经看见的事再说一遍。画面是室友在睡、她没按开关时，不要说「不敢开，怕吵醒她。」改成画面带不走的反应或提醒，例如「声音也太大了。」或「风口转开一点。」不要念室友在睡、她拿吹风机，也不要改成「带负离子，吹完是顺的」这种口播。好处最多一句，写成人物看见结果后的反应。指定了去向时用定格上的短旁白，人物不要转头对着镜头推销，这句不要改。数字和功效只在 facts 里已经有时才能写。若某句带了 picture，那就是这一镜已经拍到的内容。
+剧情对白是意图、反应、对照或包袱，每句大约4到10字，用这个人自己的第一人称。不要把这一镜已经看见的事再说一遍，也不要用她、他做第三人称解说。画面是室友在睡、她没按开关时，不要说「不敢开，怕吵醒她。」改成这个人自己会说的反应、态度，或一句画面带不走的话。不要念室友在睡、她拿吹风机，也不要改成口播卖点。好处最多一句，写成人物看见结果后的反应。指定了去向时用定格上的短旁白，人物不要转头对着镜头推销，这句不要改。数字和功效只在 facts 里已经有时才能写。若某句带了 picture，那就是这一镜已经拍到的内容。口播是出镜的人用第一人称对观众说，商品特写仍是这个人接着说，不是另配旁白，卖点可以连着说。产品展示是画外旁白，不要对口型念卖点，可以留不说话的画面，不规定那一拍占几秒。
 tagline_policy.enabled 为 false 时不加独立口号字卡。为 true 时只有收束句可以是不超过10字的口播，仍然不写购买、下单、抢购。
 不输出其他字段，不解释。"""
 

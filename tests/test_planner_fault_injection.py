@@ -154,7 +154,7 @@ def test_rewrite_rejection_keeps_the_original_line_and_reaches_creative(source, 
     from app.strategy import StrategyRecord
     from test_pipeline import PNG
 
-    strategy = chosen_strategy(source)
+    strategy = chosen_strategy(source, "character_dialogue")
     raw_strategy = strategy.model_dump()
     raw_strategy["brief"]["ad_form"] = "presenter_pitch"
     strategy = StrategyRecord.model_validate(raw_strategy)

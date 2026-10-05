@@ -128,7 +128,8 @@ def test_structure_failure_resume_reruns_storyboard(tmp_path):
 
 
 def _form_strategy(source, form):
-    strategy = chosen_strategy(source)
+    mode = "character_dialogue" if form in ("presenter_pitch", "scene_story") else "voiceover"
+    strategy = chosen_strategy(source, mode)
     raw = strategy.model_dump()
     raw["brief"]["ad_form"] = form
     return StrategyRecord.model_validate(raw)

@@ -5,10 +5,11 @@ import pytest
 
 from app.ad_script import derive_script_evidence, script_stage_schema
 from app.line_quality import (
-    apply_brand_claim_collapse, apply_line_rewrite, brand_stack_remaining, collapse_brand_claims, line_offenses,
-    line_style, narration_budget_ok, offending_lines, prepare_script_lines,
-    prepare_speech_draft, product_terms, rewrite_director_if_needed,
-    rewrite_script_if_needed, script_line_offenses, type_line_score,
+    LINE_REWRITE_SYSTEM, apply_brand_claim_collapse, apply_line_rewrite, brand_stack_remaining,
+    collapse_brand_claims, line_offenses, line_style, narration_budget_ok, offending_lines,
+    prepare_script_lines, prepare_speech_draft, product_terms, rewrite_director_if_needed,
+    rewrite_script_if_needed, script_line_offenses, story_explainer_remaining, type_line_score,
+    voice_identity_issues,
 )
 from app.runtime_skills import stage_skill_context
 from app.strategy import StrategyRecord
@@ -403,8 +404,8 @@ def test_scene_lines_follow_the_character_and_mention_the_product_once():
 def test_scene_dialogue_does_not_restate_the_shot():
     """A line that only retells the sleeper already on screen is rewritten once.
 
-    A complaint, a tip, and the freeze call-to-action stay. If the rewrite
-    fails, the original line stays and the job is not blocked.
+    A complaint and the freeze call-to-action stay. If the rewrite fails, this
+    helper keeps the original line. The planner then refuses to mark that plan ready.
     """
     from pathlib import Path
 
@@ -452,6 +453,38 @@ def test_scene_dialogue_does_not_restate_the_shot():
         boom, director, strategy, 20, plan=plan))
     assert called is True and kept is None
     assert director["ad_script"]["beats"][0]["narration"] == opening
+    assert story_explainer_remaining(script, strategy, plan=plan) is True
+    assert "再轻点" not in LINE_REWRITE_SYSTEM
+    assert "风口转开一点" not in LINE_REWRITE_SYSTEM
+    assert "声音也太大了" not in LINE_REWRITE_SYSTEM
+
+
+def test_voice_track_identity_follows_the_ad_type():
+    presenter = typed("presenter_pitch")
+    brand = typed("brand_tvc")
+    story = typed("scene_story")
+    voice = {"speech_mode": "voiceover"}
+    talk = {"speech_mode": "character_dialogue", "speaker_id": "char_host"}
+    assert voice_identity_issues(presenter, voice) == ["口播被写成了旁白"]
+    assert voice_identity_issues(presenter, {"speech_mode": "none"}) == ["口播被写成了旁白"]
+    assert voice_identity_issues(presenter, talk) == []
+    assert voice_identity_issues(brand, talk) == ["产品展示被写成了对口型推销"]
+    assert voice_identity_issues(brand, voice) == []
+    assert voice_identity_issues(story, voice) == ["剧情被写成了整条旁白"]
+    assert voice_identity_issues(story, talk) == []
+    assert voice_identity_issues(story, {"speech_mode": "none"}) == []
+    held, changed = apply_brand_claim_collapse(
+        {"ad_script": _lines("几下就干。", "这风不吵。")}, presenter, (), 15)
+    assert changed is False
+    assert [beat["narration"] for beat in held["ad_script"]["beats"]] == ["几下就干。", "这风不吵。"]
+    third = _lines("她打开了开关。", "终于不毛躁了。")
+    assert "第三人称解说" in _focus(third, "scene_story")
+    assert "第三人称解说" not in _focus(third, "presenter_pitch")
+    assert story_explainer_remaining(third, story) is True
+    assert story_explainer_remaining(_lines("太吵了。", "终于不毛躁了。"), story) is False
+    assert story_explainer_remaining(
+        _lines("想带走，就点下面链接。", "终于不毛躁了。"), story) is False
+    assert "再轻点" not in line_style("scene_story")
 
 
 def test_brand_voiceover_stays_thin_and_does_not_invent_a_scene():
