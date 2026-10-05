@@ -42,13 +42,13 @@ _LINES = {
 # Spoken in each ad's own voice. The fixed sentence above is only the fallback.
 _TYPED = {
     "presenter_pitch": {
-        "link": "你想要的话，点下面链接看看这款。",
+        "link": "你要的话，点下面链接，看看这款。",
         "brand": "你想了解的话，去产品详情看看这款。",
         "message": "你想问的话，私信我。",
         "store": "你想来的话，到店看看这款。",
     },
     "brand_tvc": {
-        "link": "点下面链接，看看这款。",
+        "link": "点下面链接，把它看清楚。",
         "brand": "去产品详情，看看这款。",
         "message": "想问，就私信。",
         "store": "到店看看，这款在。",
@@ -56,13 +56,13 @@ _TYPED = {
 }
 _SCENE = {
     "character": {
-        "link": "你要的话，点下面链接看看。",
+        "link": "你要是想要，点下面链接。",
         "brand": "想看的话，去产品详情看看。",
         "message": "想问就私信我。",
         "store": "有空来店里看看。",
     },
     "vo": {
-        "link": "想要这只，点下面链接看看。",
+        "link": "想带走，就点下面链接。",
         "brand": "想了解，去产品详情看看。",
         "message": "想问的话，私信就行。",
         "store": "欢迎到店，看看这只。",

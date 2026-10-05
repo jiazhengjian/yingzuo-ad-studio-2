@@ -198,14 +198,14 @@ def test_only_the_films_last_segment_holds():
         _shot("a", 0, 2, "瓶口先入画。"),
         _shot("b", 2, 4, "手把瓶身转向窗光。"),
     ], closes_film=False, duration=4)
-    head, _, tail = _picture(opened).partition("b | 2–4秒")
+    head, _, tail = _picture(opened).partition("镜头2 | 2–4秒")
     assert "下一段" not in head and "段末" not in head
     assert "下一段" in tail and not any(word in tail for word in _HOLD_WORDS)
     closed = _compile_segment([
         _shot("a", 0, 2, "瓶口先入画。"),
         _shot("b", 2, 5, "瓶身留在窗光里。"),
     ], closes_film=True, duration=5)
-    head, _, tail = _picture(closed).partition("b | 2–5秒")
+    head, _, tail = _picture(closed).partition("镜头2 | 2–5秒")
     assert "停住" not in head and "下一段" not in head
     assert "停住" in tail and "下一段" not in tail
 

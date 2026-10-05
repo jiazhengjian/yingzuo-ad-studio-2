@@ -182,7 +182,8 @@ def test_transport_retries_current_stage_only_while_invalid_json_stops(
     assert_redacted(error.value)
     assert PRIVATE_REASONING not in "".join(traceback.format_exception(error.value))
     expected = NORMAL_STAGES + (["storyboard_repair"] if failed_stage == "storyboard_repair" else [])
-    assert calls == expected + ([failed_stage] * 2 if failure == "timeout" else [])
+    # A timeout retries the transport twice. Broken JSON gets one syntax repair, then stops.
+    assert calls == expected + [failed_stage] * (2 if failure == "timeout" else 1)
 
 
 @pytest.mark.parametrize("invalid", ["title", "fact", "speech", "asset", "duration", "mixed"])

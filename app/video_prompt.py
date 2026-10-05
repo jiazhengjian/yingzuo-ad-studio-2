@@ -205,6 +205,11 @@ def _compile_grouped_video(segment, template):
     lines.extend(_voice_lines(production, director, segment["speech_spans"], characters,
                               ad_form=segment.get("ad_form")))
     from .shot_craft import shot_prompt_lines
+    labels = {shot["id"]: f"镜头{index + 1}" for index, shot in enumerate(shots)}
+
+    def shot_names(ids):
+        return ", ".join(labels.get(item, "镜头") for item in ids or [])
+
     lines.append("画面镜头（切镜不打断连续表达）：")
     closes_film = segment.get("closes_film", True) is not False
     last_index = len(shots) - 1
@@ -218,7 +223,8 @@ def _compile_grouped_video(segment, template):
     for index, shot in enumerate(shots):
         last = index == last_index
         lines.extend(shot_prompt_lines(
-            shot, hold_tail=last and closes_film, continue_tail=last and not closes_film))
+            shot, hold_tail=last and closes_film, continue_tail=last and not closes_film,
+            label=labels.get(shot.get("id"))))
         if shot.get("character_ids"):
             if not set(shot["character_ids"]).issubset(characters):
                 raise ValueError("镜头引用了未绑定参考图的角色")
@@ -255,13 +261,13 @@ def _compile_grouped_video(segment, template):
             lines.append(hand_line)
     lines.append("台词时间（每句仅说一次，同一表达可以连续跨越关联镜头）：")
     for span in segment["speech_spans"]:
-        lines.append(f"{span['start']:g}–{span['end']:g}秒 | 关联镜头 {', '.join(span['shot_ids'])} | "
+        lines.append(f"{span['start']:g}–{span['end']:g}秒 | 关联镜头 {shot_names(span['shot_ids'])} | "
                      + json.dumps(span["text"], ensure_ascii=False))
         cursor = 0
         anchors = []
         for anchor in span["anchors"]:
             end = cursor + len(anchor["text"])
-            anchors.append(f"第{cursor + 1}–{end}字符 {anchor['start']:g}–{anchor['end']:g}秒→{', '.join(anchor['shot_ids'])}")
+            anchors.append(f"第{cursor + 1}–{end}字符 {anchor['start']:g}–{anchor['end']:g}秒→{shot_names(anchor['shot_ids'])}")
             cursor = end
         redundant = (len(span["anchors"]) == 1 and span["anchors"][0]["start"] == span["start"]
                      and span["anchors"][0]["end"] == span["end"]

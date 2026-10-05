@@ -41,11 +41,11 @@ from app.planner_transport import (INTERRUPTED_STATUSES, apply_route_effort, fal
 from app.evidence_references import EVIDENCE_REFERENCE_VERSION, strategy_evidence_request, restore_merchant_references
 from app.progressive_planning import (MAX_PLAN_REFINEMENTS, PROGRESSIVE_REFINEMENT_POLICY_VERSION,
                                      ProgressivePlanningError, progressive_plan, fixed_speech)
-from app.content_draft import (CONTENT_DRAFT_SYSTEM, CONTENT_DRAFT_VERSION,
+from app.content_draft import (CONTENT_DRAFT_SYSTEM, CONTENT_DRAFT_VERSION, ContentDraft,
                                content_draft_schema, validate_content_draft)
 from app.line_quality import (offending_lines, prepare_script_lines, prepare_speech_draft,
                               rewrite_script_if_needed)
-from app.speech_draft import (SPEECH_DRAFT_SYSTEM, SPEECH_DRAFT_VERSION,
+from app.speech_draft import (SPEECH_DRAFT_SYSTEM, SPEECH_DRAFT_VERSION, SpeechDraft,
                               speech_draft_context, validate_speech_draft)
 from app.planning_session import PlanningSession, PlanningSessionError, fingerprint
 from app.video_prompt import compiled_video_request, _reference_lines
@@ -162,26 +162,44 @@ def _mark_stream_unreliable(provider):
 
 
 def _decode_planner_json(output_content):
-    """Accept one object, a redundant closing brace, or a brace the model omitted.
+    """Accept one object, extra closers, a fence, prose, or a brace the model omitted.
 
     Stage schemas still validate the object. A wrapped ``content`` envelope is unwrapped.
     """
-    from app.planner_recovery import repair_planner_json, unwrap_planner_object
+    from app.planner_recovery import repair_planner_json, tolerant_planner_object, unwrap_planner_object
+    if not isinstance(output_content, str):
+        return unwrap_planner_object(json.loads(output_content))
     try:
         parsed = json.loads(output_content)
     except json.JSONDecodeError as error:
-        if error.msg == "Extra data" and isinstance(output_content, str):
+        if error.msg == "Extra data":
             start = len(output_content) - len(output_content.lstrip(" \t\r\n"))
-            result, end = json.JSONDecoder().raw_decode(output_content, start)
+            try:
+                result, end = json.JSONDecoder().raw_decode(output_content, start)
+            except json.JSONDecodeError:
+                result, end = None, None
             if isinstance(result, dict) and output_content[end:].strip(" \t\r\n") == "}":
                 logger.warning("Planner JSON boundary normalized: %s", json.dumps({
                     "correction": "single_redundant_closing_brace",
                     "content_characters": len(output_content)}))
                 return unwrap_planner_object(result)
-        if isinstance(output_content, str):
+        try:
+            parsed, correction = tolerant_planner_object(output_content)
+        except json.JSONDecodeError:
             return repair_planner_json(output_content)
-        raise
+        if correction:
+            logger.warning("Planner JSON boundary normalized: %s", json.dumps({
+                "correction": correction, "content_characters": len(output_content)}))
+        return unwrap_planner_object(parsed)
     return unwrap_planner_object(parsed)
+
+
+def _normalized_planner_output(model, data):
+    """Drop or merge extras before a stage schema sees the model object."""
+    from app.planner_recovery import normalize_model_payload
+    if isinstance(data, dict):
+        return normalize_model_payload(model, data)
+    return data
 
 
 def _planner_content_blank(value):
@@ -562,6 +580,19 @@ class PlannerInvalidResponse(ProviderError):
     error_code = "planning_invalid_response"
     retryable = True
     retry_action = "retry_planning"
+
+
+class PlannerSyntaxResponse(PlannerInvalidResponse):
+    """The reply was not JSON after a tolerant read, one repair, and fallback.
+
+    There is no session-level retry on top of that. Callers keep the current
+    plan instead of stopping the merchant.
+    """
+
+    syntax = True
+
+    def __init__(self):
+        ProviderError.__init__(self, "策划回复不是完整 JSON，已有成果仍保留。")
 
 
 class PlannerInterruptedResponse(ProviderError):
@@ -1178,6 +1209,36 @@ class Gateway:
                 allow_fallback=False, recovery="fallback")
         raise PlannerContentlessResponse()
 
+    async def _recover_json_syntax(self, system, context, sources, max_tokens, route, on_first_token,
+                                   allow_fallback, recovery):
+        """One repair retry, then one other model. Not a third identical call."""
+        from app.planner_transport import fallback_route, route_api_key
+        self._emit_planner_phase("retrying_planner")
+        retried = {**context, "json_syntax_retried": True,
+            "json_syntax_note": "上一份不是完整 JSON。请只输出一个 JSON 对象，不要加解释或多余括号。"}
+        try:
+            return await self._planner_json(
+                system, retried, sources, max_tokens, route=route, on_first_token=on_first_token,
+                allow_fallback=False, recovery=recovery)
+        except PlannerSyntaxResponse:
+            pass
+        alternate = None
+        if allow_fallback:
+            try:
+                policy = fallback_route(self.settings)
+            except ValueError:
+                policy = None
+            if policy is not None and route_api_key(self.settings, policy[0]):
+                candidate = policy[0]
+                if (candidate.provider, candidate.model) != (route.provider, route.model):
+                    alternate = candidate
+        if alternate is not None:
+            self._emit_planner_phase("using_backup_planner")
+            return await self._planner_json(
+                system, retried, sources, max_tokens, route=alternate, on_first_token=on_first_token,
+                allow_fallback=False, recovery="fallback")
+        raise PlannerSyntaxResponse()
+
     def _record_interrupted_attempt(self, route, context, elapsed, error_class):
         stage = context.get("stage") if isinstance(context, dict) else None
         elapsed_ms = _finite_elapsed_ms(elapsed)
@@ -1673,6 +1734,11 @@ class Gateway:
                 result.pop("type")
             return restore_merchant_references(result, evidence_aliases)
         except (KeyError, IndexError, ValueError, TypeError, AttributeError) as error:
+            is_syntax = isinstance(error, json.JSONDecodeError)
+            if (is_syntax and isinstance(output_content, str) and isinstance(context, dict)
+                    and not context.get("json_syntax_retried")):
+                return await self._recover_json_syntax(
+                    system, context, sources, max_tokens, route, on_first_token, allow_fallback, recovery)
             logger.warning("Planner response parse failed: %s", json.dumps({
                 "stage": context.get("stage") if context.get("stage") in PLANNER_STAGES else "unknown",
                 "content_characters": len(output_content) if isinstance(output_content, str) else None,
@@ -1683,6 +1749,8 @@ class Gateway:
                     "model": getattr(route, "model", None),
                     "raw_output": {"unparsed_content": output_content},
                     "request_summary": self._transport_summary(context, sources, max_tokens, route, payload, response)})
+            if is_syntax:
+                raise PlannerSyntaxResponse() from None
             raise PlannerInvalidResponse("策划回复未通过结构校验；已有成果仍保留，尚未开始图片或视频生成") from None
 
     async def decide(self, project, assets, messages, gates, current_plan, *, force_plan=False, on_progress=None,
@@ -1987,7 +2055,11 @@ class Gateway:
             }
 
         def checked_strategy_response(raw):
-            decision = StrategyDecision.model_validate(derive_authored_production_metadata(intake_strategy_response(raw, project, ask_preference=choice_enabled)))
+            from app.planner_recovery import normalize_model_payload
+            prepared = derive_authored_production_metadata(intake_strategy_response(raw, project, ask_preference=choice_enabled))
+            if isinstance(prepared, dict):
+                prepared = normalize_model_payload(StrategyDecision, prepared)
+            decision = StrategyDecision.model_validate(prepared)
             if choice_enabled and decision.kind in ("plan", "directions") and any(
                     direction.production is None for direction in decision.directions):
                 raise ValueError("新方向须确定商品形态、出镜角色和声音形式")
@@ -2106,7 +2178,7 @@ class Gateway:
                                 "character_reference_images_each": 1}}
                         try:
                             raw_review = await stage_call(DIRECTION_REVIEW_SYSTEM, review_input, sources)
-                        except PlannerContentlessResponse:
+                        except (PlannerContentlessResponse, PlannerSyntaxResponse):
                             raw_review = None
                         try:
                             if raw_review is None:
@@ -2168,7 +2240,7 @@ class Gateway:
                 if isinstance(raw_draft, dict):
                     raw_draft = prepare_speech_draft(raw_draft, strategy, duration,
                                                      script_input["source_context"]["fixed_speech"])
-                draft = validate_speech_draft(raw_draft).model_dump()
+                draft = validate_speech_draft(_normalized_planner_output(SpeechDraft, raw_draft)).model_dump()
             elif lean_enabled:
                 if on_progress:
                     on_progress("writing_script")
@@ -2185,7 +2257,8 @@ class Gateway:
                 raw_draft = await stage_call(CONTENT_DRAFT_SYSTEM, script_input, [], max_tokens=4500)
                 if isinstance(raw_draft, dict):
                     raw_draft = prepare_script_lines(raw_draft, strategy, duration, script_input["fixed_speech"])
-                draft = validate_content_draft(raw_draft, strategy).model_dump()
+                draft = validate_content_draft(
+                    _normalized_planner_output(ContentDraft, raw_draft), strategy).model_dump()
             elif not joint_authoring:
                 # The callback checks cancellation/current revision before another request.
                 if on_progress:
@@ -2291,7 +2364,7 @@ class Gateway:
                         server_skill_version=review_input["runtime_skill"]["version"],
                         duration_seconds=duration,
                         locked_lines=fixed_speech(initial_brief, context["conversation"], current_plan))
-                review = ScriptReview.model_validate(raw_review)
+                review = ScriptReview.model_validate(_normalized_planner_output(ScriptReview, raw_review))
                 validate_script_execution(review, required=choice_enabled)
                 action_capacity_failed = bool(choice_enabled and not review.ready and review.execution_check is not None
                     and not review.execution_check.action_capacity and review.execution_check.state_continuity
@@ -2437,6 +2510,7 @@ class Gateway:
                                 if selected.production and selected.production.speech_mode == "character_dialogue" else "")
                         segment["narration"] = "".join(span["text"] for span in segment.get("speech_spans", []))
                     try:
+                        candidate = _normalized_planner_output(Plan, candidate)
                         return Plan.model_validate(candidate, context={"require_shot_narration": True,
                             "require_beat_ids": choice_enabled,
                             "require_directing_contract": generation_strategy == "continuity_v1"}).model_dump()
@@ -2515,7 +2589,8 @@ class Gateway:
                     raw_alignment = await stage_call(AV_REVIEW_STAGE_SYSTEM if choice_enabled else AV_REVIEW_SYSTEM, alignment_input, [], max_tokens=4500)
                     last_stage_result["validation_candidate"] = copy.deepcopy(plan)
                     candidate_alignment = lower_failed_av_verdicts(raw_alignment, plan) if choice_enabled else raw_alignment
-                    alignment_review = validate_av_review(candidate_alignment, plan, require_pacing=choice_enabled)
+                    alignment_review = validate_av_review(
+                        _normalized_planner_output(AVReview, candidate_alignment), plan, require_pacing=choice_enabled)
                     if not alignment_review.ready:
                         save_failed_planner_output(self.settings, last_stage_result)
                     return alignment_review
@@ -2600,12 +2675,38 @@ class Gateway:
                     context={"require_shot_narration": True}).model_dump()
         except StaleRevision:
             raise
+        except PlannerSyntaxResponse:
+            salvaged = current_plan if isinstance(current_plan, dict) and current_plan.get("segments") else None
+            if salvaged is None:
+                raise
+            salvaged = copy.deepcopy(salvaged)
+            salvaged.pop("plan_review", None)
+            brief = salvaged.get("strategy", {}).get("brief") if isinstance(salvaged.get("strategy"), dict) else None
+            return AgentDecision.model_validate({
+                "kind": "plan",
+                "message": "广告方案已准备好，创意摘要和分镜见下方。需要修改，直接告诉我；确认后再准备图片。",
+                "plan": salvaged, "planning_brief": brief,
+                "skill_trace": skill_trace if choice_enabled else None,
+            }, context={"require_shot_narration": True}).model_dump()
         except PlanningSessionError as exc:
             error = ProviderError(str(exc))
             for field in ("error_code", "retryable", "retry_action"):
                 setattr(error, field, getattr(exc, field))
             raise error from None
         except ProgressivePlanningError as exc:
+            salvaged = getattr(exc, "compiled_plan", None)
+            if (exc.error_code == "planning_review_incomplete" and isinstance(salvaged, dict)
+                    and salvaged.get("segments")):
+                try:
+                    brief = salvaged.get("strategy", {}).get("brief") if isinstance(salvaged.get("strategy"), dict) else None
+                    return AgentDecision.model_validate({
+                        "kind": "plan",
+                        "message": "广告方案已准备好，创意摘要和分镜见下方。需要修改，直接告诉我；确认后再准备图片。",
+                        "plan": salvaged, "planning_brief": brief,
+                        "skill_trace": skill_trace if choice_enabled else None,
+                    }, context={"require_shot_narration": True}).model_dump()
+                except (ValidationError, ValueError, KeyError, TypeError):
+                    pass
             if (last_stage_result is not None and not last_stage_result.get("_diagnostic_saved")
                     and "validation_candidate" not in last_stage_result):
                 save_failed_planner_output(self.settings, last_stage_result)

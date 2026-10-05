@@ -386,10 +386,15 @@ class Plan(BaseModel):
             # A model response must first pass validate_plan_review, which binds
             # the reviewed content on the server. Never auto-bind an attached
             # record here: that would silently reuse it after a content edit.
-            from .plan_review import validate_plan_review
-            if self.plan_review.get("reviewed_plan_sha256") is None:
-                raise ValueError("综合审核记录须先由服务端绑定最终方案")
-            self.plan_review = validate_plan_review(self.plan_review, self).model_dump(mode="json")
+            # A record that is not a review at all is dropped. A hash mismatch
+            # with the current plan still rejects the plan.
+            from .plan_review import review_record_incomplete, validate_plan_review
+            if review_record_incomplete(self.plan_review):
+                self.plan_review = None
+            else:
+                if self.plan_review.get("reviewed_plan_sha256") is None:
+                    raise ValueError("综合审核记录须先由服务端绑定最终方案")
+                self.plan_review = validate_plan_review(self.plan_review, self).model_dump(mode="json")
         return self
 
 

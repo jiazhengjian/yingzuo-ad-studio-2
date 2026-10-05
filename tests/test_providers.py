@@ -749,7 +749,8 @@ def test_ad_script_review_failure_stops_before_storyboard_with_bounded_transport
     def handle(request):
         _, context = request_context(request)
         calls.append(context["stage"])
-        assert context["stage"] != "storyboard"
+        if failure != "extra_fields":
+            assert context["stage"] != "storyboard"
         if context["stage"] != "script_review":
             return chat_output(outputs[context["stage"]])
         if failure == "transport":
@@ -766,10 +767,18 @@ def test_ad_script_review_failure_stops_before_storyboard_with_bounded_transport
         if failure == "failed_check": review["checks"][0]["passed"] = False
         return chat_output(review)
     install_transport(handle)
+    if failure == "extra_fields":
+        result = asyncio.run(Gateway(settings).decide({"brief": "蓝瓶商品"}, [source], [], [], None))
+        assert result["kind"] == "plan"
+        assert SECRET not in json.dumps(result, ensure_ascii=False)
+        assert calls == ["strategy", "ad_script", "script_review", "storyboard", "alignment_review"]
+        assert plan == before
+        return
     with pytest.raises(ProviderError) as exc:
         asyncio.run(Gateway(settings).decide({"brief": "蓝瓶商品"}, [source], [], [], None))
     assert_redacted(exc.value)
-    assert plan == before and calls == ["strategy", "ad_script"] + ["script_review"] * (3 if failure in ("transport", "http") else 1)
+    review_calls = 3 if failure in ("transport", "http") else 2 if failure == "invalid_json" else 1
+    assert plan == before and calls == ["strategy", "ad_script"] + ["script_review"] * review_calls
 
 
 @pytest.mark.parametrize("failure", ["expression_rejected", "span_rejected", "missing_span", "unknown_span", "inconsistent_verdict"])

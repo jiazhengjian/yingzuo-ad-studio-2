@@ -162,6 +162,12 @@ def test_nonempty_or_non_success_failures_do_not_trigger_retry(env, monkeypatch,
         assert calls == ["strategy", "direction_review", "direction_review"]
         assert progresses.count("retrying_planner") == 1
         return
+    if failure == "malformed_json":
+        result = run_decision(env, on_progress=progresses.append)
+        assert result["kind"] == "directions" and result.get("plan") is None
+        assert calls == ["strategy", "direction_review", "direction_review"]
+        assert progresses.count("retrying_planner") == 1
+        return
     with pytest.raises(ProviderError) as error:
         run_decision(env, on_progress=progresses.append)
     assert calls == ["strategy"] + ["direction_review"] * (3 if failure == "http" else 1)

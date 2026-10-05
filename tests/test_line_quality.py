@@ -280,6 +280,44 @@ def test_presenter_selling_lines_need_a_subject_and_a_connective():
     assert _focus(_lines("看轮廓。", "看桌角。", "留一处。"), "presenter_pitch") == []
 
 
+def test_thin_brief_lines_flag_mismatch_repetition_filler_and_label_voiceover():
+    presenter = _focus(_lines(
+        "头发多吹得久？这台徕芬吹风机，吹得快还安静。",
+        "你看，它吹得快，而且我说话你还听得清。",
+        "它还带负离子，吹完头发顺。",
+        "洗完头，吹完就能出门。",
+        "你想要的话，点下面链接看看这款。",
+    ), "presenter_pitch")
+    assert "问句答非所问" in presenter
+    assert "一句里塞了两个卖点" in presenter
+    assert "卖点重复" in presenter
+    assert "空话" in presenter
+    brand = _focus(_lines(
+        "徕芬高速吹风机，吹得快。",
+        "声音不吵，还带负离子。",
+        "吹完头发顺。",
+        "点下面链接，看看这款。",
+    ), "brand_tvc")
+    assert "标签式旁白" in brand
+    assert "一句里塞了两个卖点" in brand
+
+
+def test_line_logic_rewrite_failure_keeps_the_original_lines():
+    strategy = typed("presenter_pitch")
+    script = _lines(
+        "头发多吹得久？这台徕芬吹风机，吹得快还安静。",
+        "洗完头，吹完就能出门。",
+    )
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("rewrite down")
+
+    called, result = asyncio.run(rewrite_script_if_needed(boom, script, strategy, 20))
+    assert called is True
+    assert result["beats"][0]["narration"] == script["beats"][0]["narration"]
+    assert result["beats"][1]["narration"] == script["beats"][1]["narration"]
+
+
 def test_brand_visual_narration_and_a_bare_name_are_flagged():
     strategy = typed("brand_tvc")
     raw = strategy.model_dump()

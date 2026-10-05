@@ -553,16 +553,18 @@ def _motion_sentence(clause: str, *, index: int) -> str:
     return f"{lead}，变化限于本镜允许变化。"
 
 
-def shot_prompt_lines(shot, *, hold_tail: bool, continue_tail: bool = False) -> list[str]:
+def shot_prompt_lines(shot, *, hold_tail: bool, continue_tail: bool = False, label: str | None = None) -> list[str]:
     """Same request, more specific time. Shots of 4 seconds or less stay one line.
 
     hold_tail is the film's last shot. continue_tail is the last shot of an
     earlier generation segment: it names the cut into the next segment and
-    does not add a hold.
+    does not add a hold. ``label`` replaces the internal shot id in the header
+    sent to a video model.
     """
     start = _tenths(shot["start"])
     end = _tenths(shot["end"])
-    header = f"{shot['id']} | {shot['start']:g}–{shot['end']:g}秒 | {shot['description']}"
+    name = label if isinstance(label, str) and label else shot["id"]
+    header = f"{name} | {shot['start']:g}–{shot['end']:g}秒 | {shot['description']}"
     lines = [header]
     windows = _phase_windows(start, end, hold_tail=hold_tail)
     if windows:

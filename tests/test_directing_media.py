@@ -53,8 +53,9 @@ def test_video_compiles_owned_direction_facts_and_each_shot_state(directed_plan_
         assert directed_plan_data["visual_direction"][key] in prompt
     assert "多层切面" in prompt
     assert "source_kind" not in prompt and "source_id" not in prompt and '"layers"' not in prompt
-    for shot in segment["shots"]:
-        assert f"{shot['id']} | {shot['start']:g}–{shot['end']:g}秒" in prompt
+    for index, shot in enumerate(segment["shots"]):
+        assert f"镜头{index + 1} | {shot['start']:g}–{shot['end']:g}秒" in prompt
+        assert f"{shot['id']} | " not in prompt
         for key in ("start_state", "allowed_changes", "end_state", "camera_move"):
             assert shot["continuity"][key] in prompt
         assert shot["continuity"]["entry_reason"] not in prompt
@@ -75,7 +76,8 @@ def test_video_uses_only_directing_fields_and_final_speech_not_old_freeform_prom
     segment["speech_spans"][0]["anchors"][0]["visual_evidence"] = "SELF_ASSERTION_NOT_INSTRUCTIONS"
     prompt = compile_grouped_video(segment)
     assert not any(value in prompt for value in ("OBSOLETE_", "SECRET_DEBUG", "UNOWNED_FEATURE", "SELF_ASSERTION"))
-    assert "0–7秒 | 关联镜头 desk, detail" in prompt
+    assert "0–7秒 | 关联镜头 镜头1, 镜头2" in prompt
+    assert "关联镜头 desk" not in prompt
     assert segment["speech_spans"][0]["text"] in prompt
     assert prompt.count(segment["speech_spans"][0]["text"]) == 1
 

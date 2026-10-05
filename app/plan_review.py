@@ -161,6 +161,19 @@ def plan_review_fingerprint(plan: Plan | dict) -> str:
     return _fingerprint_validated_plan(_validated_review_subject(plan), references)
 
 
+def review_record_incomplete(raw) -> bool:
+    """True when this dict cannot be a finished review.
+
+    A bound review with the wrong hash is complete and must still be rejected.
+    A reply that only says ready, or that omits the check lists, is not.
+    """
+    if not isinstance(raw, dict):
+        return True
+    alignment = raw.get("alignment")
+    return (not isinstance(raw.get("checks"), list) or not raw["checks"]
+            or not isinstance(alignment, dict) or "execution_check" not in raw)
+
+
 def validate_plan_review(raw: PlanReview | dict, plan: Plan | dict, *,
                          require_speaker_visibility: bool = False,
                          require_temporal_omission: bool = False,

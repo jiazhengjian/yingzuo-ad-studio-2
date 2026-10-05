@@ -9,8 +9,10 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 import re
+import types
+from typing import Union, get_args, get_origin
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 
 # Markers that still stop the job and show a plain-Chinese card.
@@ -39,10 +41,10 @@ RECOVERY_PATHS = (
      "handling": "修一次、重写一次，然后用本地可编译分镜"},
     {"path": "extra_fields", "klass": "b",
      "where": "模型多写了 schema 没有的字段",
-     "handling": "丢掉多余字段再校验"},
+     "handling": "校验前把重复字段并回原位，未知字段丢掉，再校验"},
     {"path": "broken_json", "klass": "b",
      "where": "策划回复不是完整 JSON",
-     "handling": "补上括号、再请求这一步一次"},
+     "handling": "先取第一个完整对象，再补括号；仍不行就重试这一步一次，然后换备用模型，不把商家停住"},
     {"path": "wrapped_envelope", "klass": "b",
      "where": "审核被包在 content 里",
      "handling": "取出 content 再校验"},
@@ -66,7 +68,7 @@ RECOVERY_PATHS = (
      "handling": "结束状态改回这一镜实际做了的事，连续镜头跟着改，然后收下"},
     {"path": "review_incomplete", "klass": "b",
      "where": "综合审核记录不完整",
-     "handling": "修一次审核记录，仍不行就收下已编译的方案"},
+     "handling": "修一次审核记录，仍不行就去掉这份记录，收下已编译的方案"},
     {"path": "review_not_converged", "klass": "b",
      "where": "审核问题反复出现",
      "handling": "返修一轮后收下目前的方案"},
@@ -236,11 +238,96 @@ def _delete_path(data, loc):
         cursor.pop(last, None)
 
 
+def _blank_payload(value):
+    return value is None or value == "" or value == [] or value == {}
+
+
+def _unwrap_annotation(annotation):
+    origin = get_origin(annotation)
+    if origin is not None and getattr(origin, "__name__", "") == "Annotated" or str(origin) == "typing.Annotated":
+        args = get_args(annotation)
+        if args:
+            return _unwrap_annotation(args[0])
+    return annotation
+
+
+def _field_model(field):
+    """Return (model, is_list) for one schema field, else (None, False)."""
+    annotation = _unwrap_annotation(field.annotation)
+    origin = get_origin(annotation)
+    if origin is Union or origin is types.UnionType:
+        found = []
+        for arg in get_args(annotation):
+            if arg is type(None):
+                continue
+            nested, is_list = _field_model(type("_F", (), {"annotation": arg})())
+            if nested is not None:
+                found.append((nested, is_list))
+        if len(found) == 1:
+            return found[0]
+        return None, False
+    if origin is list:
+        args = get_args(annotation)
+        if not args:
+            return None, False
+        nested, _ = _field_model(type("_F", (), {"annotation": args[0]})())
+        if nested is not None:
+            return nested, True
+        return None, False
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation, False
+    return None, False
+
+
+def normalize_model_payload(model, data):
+    """Move a duplicated field into its one canonical object, and drop the rest.
+
+    Models sometimes repeat ``key_visual`` on the direction and inside
+    ``film_concept``. The copy is merged when the canonical value is empty,
+    and discarded when it is already filled. An unknown field that cannot be
+    placed is dropped. A missing parent object is not invented, and a list is
+    not sprayed with a parent extra.
+    """
+    if not isinstance(data, dict) or not isinstance(model, type) or not issubclass(model, BaseModel):
+        return data
+    current = deepcopy(data)
+    singular = {}
+    for name, field in model.model_fields.items():
+        nested, is_list = _field_model(field)
+        if nested is None:
+            continue
+        value = current.get(name)
+        if is_list:
+            if isinstance(value, list):
+                current[name] = [
+                    normalize_model_payload(nested, item) if isinstance(item, dict) else item
+                    for item in value]
+            continue
+        singular[name] = nested
+        if isinstance(value, dict):
+            current[name] = normalize_model_payload(nested, value)
+    if model.model_config.get("extra") != "forbid":
+        return current
+    for key in [item for item in current if item not in model.model_fields]:
+        homes = [name for name, nested in singular.items() if key in nested.model_fields]
+        if len(homes) == 1:
+            home = homes[0]
+            nested = current.get(home)
+            if isinstance(nested, dict):
+                extra_value = current.get(key)
+                if key not in nested or _blank_payload(nested.get(key)):
+                    if not _blank_payload(extra_value):
+                        nested[key] = extra_value
+                        current[home] = normalize_model_payload(singular[home], nested)
+        current.pop(key, None)
+    return current
+
+
 def drop_extra_forbidden(model, data):
     """Remove fields the model forbids. Other validation errors stay for the caller."""
     if not isinstance(data, dict):
         return data
-    current = deepcopy(data)
+    current = normalize_model_payload(model, data)
     for _ in range(12):
         try:
             model.model_validate(current)
@@ -269,6 +356,154 @@ def unwrap_planner_object(value):
                                       and not ({"ready", "kind", "checks"} & set(value))):
         return content
     return value
+
+
+def _strip_trailing_commas(text):
+    out = []
+    in_string = False
+    escape = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if in_string:
+            out.append(char)
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            out.append(char)
+            index += 1
+            continue
+        if char == ",":
+            look = index + 1
+            while look < len(text) and text[look] in " \t\r\n":
+                look += 1
+            if look < len(text) and text[look] in "}]":
+                index += 1
+                continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def _top_level_object_start(text, start):
+    """Index of a `{` that is not inside a string or an array."""
+    in_string = False
+    escape = False
+    brackets = 0
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char == "[":
+            brackets += 1
+        elif char == "]" and brackets:
+            brackets -= 1
+        elif char == "{" and brackets == 0:
+            return index
+    return None
+
+
+def _object_end(text, start):
+    """Index just after the `}` that closes text[start], or None."""
+    if start >= len(text) or text[start] != "{":
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return None
+
+
+def _json_correction(used_fence, used_comma, prefix, remainder):
+    lead = prefix.strip()
+    tail = remainder.strip()
+    only_closers = bool(tail) and set(tail) <= set("}]")
+    if used_fence:
+        return "code_fence"
+    if used_comma and not lead and not tail:
+        return "trailing_comma"
+    if not lead and tail == "}":
+        return "single_redundant_closing_brace"
+    if not lead and only_closers:
+        return "trailing_extra_closers"
+    if used_comma:
+        return "trailing_comma"
+    return "first_balanced_object"
+
+
+def tolerant_planner_object(text):
+    """First balanced object, after fences, trailing commas, extra closers and prose.
+
+    A value that is already valid JSON is not handled here. An array, null or
+    other non-object stays a failure, including an object nested only inside
+    that array. Unterminated strings are not invented.
+    """
+    if not isinstance(text, str):
+        raise json.JSONDecodeError("策划回复不是文本", "", 0)
+    original = text.replace("\ufeff", "").replace("\u00a0", " ").replace("\v", " ").replace("\f", " ")
+    cleaned = re.sub(r"```(?:json)?", "", original, flags=re.IGNORECASE)
+    used_fence = cleaned != original
+    cursor = 0
+    while True:
+        start = _top_level_object_start(cleaned, cursor)
+        if start is None:
+            break
+        end = _object_end(cleaned, start)
+        if end is None:
+            # A truncated outer object must be closed, not replaced by an inner one.
+            raise json.JSONDecodeError("策划回复不是完整 JSON", cleaned, start)
+        slice_text = cleaned[start:end]
+        parsed = None
+        used_comma = False
+        for candidate in (slice_text, _strip_trailing_commas(slice_text)):
+            try:
+                value = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                parsed = value
+                used_comma = candidate != slice_text
+                break
+        if parsed is None:
+            cursor = start + 1
+            continue
+        correction = _json_correction(used_fence, used_comma, cleaned[:start], cleaned[end:])
+        return parsed, correction
+    raise json.JSONDecodeError("策划回复不是完整 JSON", cleaned, 0)
 
 
 def repair_planner_json(text):

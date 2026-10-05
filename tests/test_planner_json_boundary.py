@@ -69,18 +69,57 @@ def test_truncated_object_is_closed_without_inventing_fields(raw, closed):
     assert _decode_planner_json(raw) == closed
 
 
+@pytest.mark.parametrize("raw,value", [
+    ('{} {}', {}),
+    ('{} []', {}),
+    ('{} null', {}),
+    ('{} second text', {}),
+    ('{} }}', {}),
+    ('{} } }', {}),
+    ('{"a":1,}}', {"a": 1}),
+    ('```json\n{"a":1}\n```', {"a": 1}),
+    ('```json\n{}\n```}', {}),
+    ('\ufeff{}}', {}),
+    ('\u00a0{}}', {}),
+    ('{}\u00a0}', {}),
+    ('说明如下：{"ready":false} 以上。', {"ready": False}),
+    ('{"nested":{"a":1}', {"nested": {"a": 1}}),
+])
+def test_tolerant_parser_takes_the_first_object(raw, value):
+    assert _decode_planner_json(raw) == value
+
+
 @pytest.mark.parametrize("raw", [
-    '{} {}', '{} []', '{} null', '{} true', '{} 3', '{} "second"',
-    '{} second text', '{} } text', '{} } {}', '{} }}', '{} } }',
     '[]}', '[{"a":1}]}', 'null}', 'true}', '3}', '"value"}',
     '{"a":', '{"a":"unterminated}',
-    '{"a":1,}}', '{"a":]}', '```json\n{}\n```}',
-    '\ufeff{}}', '\u00a0{}}', '{}\u00a0}', '{} }\u00a0', '{}\v}', '{} }\f',
+    '{"a":]}',
 ])
-def test_boundary_recovery_never_discards_second_values_or_repairs_incomplete_json(raw, caplog):
+def test_boundary_recovery_rejects_non_objects_and_unterminated_text(raw, caplog):
     with pytest.raises(json.JSONDecodeError):
         _decode_planner_json(raw)
     assert "boundary normalized" not in caplog.text
+
+
+@pytest.mark.parametrize("raw", [
+    '{"ready":false}}',
+    '{"ready":false',
+    '```json\n{"ready":false}\n```',
+    '结果如下 {"ready":false} 完。',
+])
+def test_extra_brace_missing_brace_fence_and_prose_do_not_retry_or_stop(
+        isolated_settings, install_transport, raw):
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        return stopped_output(raw)
+
+    install_transport(respond)
+    actual = asyncio.run(Gateway(isolated_settings)._planner_json(
+        "json", {"stage": "plan_refinement"}, []))
+    assert actual == {"ready": False}
+    assert len(calls) == 1
+    assert not (isolated_settings.data_root / "diagnostics").exists()
 
 
 def test_gateway_accepts_redundant_brace_without_storing_successful_output(
@@ -103,8 +142,8 @@ def test_gateway_accepts_redundant_brace_without_storing_successful_output(
 
 
 @pytest.mark.parametrize("raw", ['[]', 'null', 'true', '3', '"PRIVATE_SCALAR"', '[]}',
-    '{"PRIVATE_KEY":"PRIVATE_VALUE"} {"second":true}', '{"PRIVATE_KEY":"PRIVATE_VALUE"}}}'])
-def test_gateway_still_rejects_non_objects_and_unsupported_boundaries_safely(
+    '{"a":', '{"a":"unterminated}'])
+def test_gateway_still_rejects_non_objects_and_unterminated_json_safely(
         isolated_settings, install_transport, caplog, raw):
     install_transport(lambda request: stopped_output(raw))
     with caplog.at_level(logging.WARNING, logger="app.providers.gateway"):
@@ -130,14 +169,10 @@ def test_even_complete_object_with_redundant_brace_requires_stopped_response(
     assert "boundary normalized" not in caplog.text and "PRIVATE" not in caplog.text
 
 
-@pytest.mark.parametrize("failure", ["schema", "foreign_source"])
-def test_recovered_object_still_passes_through_strategy_schema_and_fact_guards(
-        isolated_settings, install_transport, source, strategy_stage, caplog, failure):
+def test_recovered_object_still_passes_through_strategy_fact_guards(
+        isolated_settings, install_transport, source, strategy_stage, caplog):
     value = deepcopy(strategy_stage)
-    if failure == "schema":
-        value["unexpected"] = "PRIVATE_INVALID_FIELD"
-    else:
-        value["brief"]["facts"][0].update(source_kind="image", source_id="PRIVATE_FOREIGN_IMAGE")
+    value["brief"]["facts"][0].update(source_kind="image", source_id="PRIVATE_FOREIGN_IMAGE")
     calls = []
     def respond(request):
         calls.append(request_context(request)[1])
@@ -149,7 +184,7 @@ def test_recovered_object_still_passes_through_strategy_schema_and_fact_guards(
     # This legacy fixture has no direction-selection correction loop; an invalid
     # recovered object must stop before any script, storyboard or media stage.
     assert [context["stage"] for context in calls] == ["strategy"]
-    assert ("extra_forbidden" if failure == "schema" else "validate_brief") in caplog.text
+    assert "validate_brief" in caplog.text
     files = list((isolated_settings.data_root / "diagnostics").glob("*.json"))
     assert len(files) == 1 and json.loads(files[0].read_text())["raw_output"] == value
     assert "PRIVATE" not in str(error.value) and "PRIVATE" not in caplog.text

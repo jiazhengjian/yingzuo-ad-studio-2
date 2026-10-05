@@ -188,6 +188,17 @@ def test_invalid_appliance_response_can_be_corrected_but_still_requires_directio
     if first_error == "schema":
         case.first = deepcopy(case.valid)
         case.first["directions"][2]["unexpected_field"] = "not part of direction schema"
+        result = case.execute()
+        assert result["status"] == "awaiting_input", result.get("error")
+        assert case.stages() == ["strategy", "direction_review"]
+        assert all(context.get("task_kind") != "strategy_response_repair" for context in case.contexts)
+        saved = result["payload"]["direction_candidates"]
+        assert "unexpected_field" not in json.dumps(saved["directions"], ensure_ascii=False)
+        assert saved["direction_review"]["ready"] is True
+        assert saved["brief"]["category"] == "appliance"
+        assert case.store.pending_gate(case.pid)["kind"] == "direction"
+        assert_no_plan_or_media(case, result)
+        return
     result = case.execute()
     assert result["status"] == "awaiting_input", result.get("error")
     assert case.stages() == ["strategy", "strategy", "direction_review"]

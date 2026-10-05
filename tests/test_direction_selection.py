@@ -831,23 +831,22 @@ def test_private_schema_diagnostic_has_only_bounded_locations_and_types(env, mon
     directions[1][invalid_key] = private_value
     directions[2]["X" * 200] = private_value
     async def planned(self, system, context, originals, max_tokens=7000):
+        if context.get("stage") == "direction_review":
+            return approved_direction_review(context["directions"])
         return {"kind": "directions", "message": "选择方向", "brief": candidate.brief.model_dump(),
             "directions": directions, "concept_pool": concept_pool_for(candidate.directions)}
     monkeypatch.setattr(Gateway, "_planner_json", planned)
     with caplog.at_level(logging.WARNING, logger="app.providers.gateway"):
-        with pytest.raises(ProviderError, match="结构校验") as error:
-            asyncio.run(Gateway(app.state.settings).decide(app.state.store.get_project(pid), [asset], [], [], None))
-    records = [record.getMessage() for record in caplog.records if record.name == "app.providers.gateway"]
-    assert len(records) == 1
-    diagnostics = json.loads(records[0].split(": ", 1)[1])
-    assert diagnostics == [
-        {"loc": ["directions", 0, "recommended"], "type": "extra_forbidden"},
-        {"loc": ["directions", 1, "field"], "type": "extra_forbidden"},
-        {"loc": ["directions", 2, "field"], "type": "extra_forbidden"},
-    ]
-    assert "recommended" not in str(error.value)
+        result = asyncio.run(Gateway(app.state.settings).decide(
+            app.state.store.get_project(pid), [asset], [], [], None))
+    assert result["kind"] == "directions"
+    saved = result["direction_candidates"]["directions"]
+    assert "recommended" not in saved[0]
+    assert invalid_key not in saved[1]
+    assert "X" * 200 not in saved[2]
+    blob = json.dumps(result, ensure_ascii=False) + caplog.text
     for sensitive in (private_value, invalid_key, "X" * 200):
-        assert sensitive not in records[0] and sensitive not in str(error.value)
+        assert sensitive not in blob
 
 
 @pytest.mark.parametrize("kind", ["reply", "clarify"])

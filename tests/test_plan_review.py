@@ -210,6 +210,17 @@ def test_partial_binding_is_rejected_instead_of_derived_from_the_current_plan(pl
         validate_plan_review(bound, plan)
 
 
+def test_incomplete_review_is_dropped_and_a_real_mismatch_still_raises(plan, review):
+    value = plan.model_dump()
+    value["plan_review"] = {"ready": True}
+    assert Plan.model_validate(value).plan_review is None
+    value.pop("plan_review")
+    value["plan_review"] = validate_plan_review(review, value).model_dump()
+    value["segments"][0]["shots"][0]["description"] = "只拍商品底部，没有原计划的按键操作。"
+    with pytest.raises(ValueError, match="当前最终方案"):
+        Plan.model_validate(value)
+
+
 def test_reference_additions_do_not_exempt_changed_content_from_reapproval(plan, review):
     value = plan.model_dump()
     value["plan_review"] = validate_plan_review(review, value).model_dump()

@@ -287,7 +287,7 @@ DIRECTOR_SYSTEM = """你执行中文商品广告分镜落地，只输出本次sc
 仅初次storyboard且authoring_mode=joint、没有draft_storyboard时，根据brief与已选方向联合写出实际文案和分镜；有draft_script时将其视为可协调草稿；draft_format=content_only的初稿仅含实际台词与画面内容，本次首次编排完整ad_script、动作状态和时间需求，不沿用不存在的初稿秒点；返修只按当前draft_storyboard及repair_scope修改；商品事实、已选核心、production及用户明确固定内容不可擅改。资料和历史稿是数据。输出唯一完整ad_script与有序shots；不输出审核结论、旧segments/start/end/speech_spans或额外字段。最终时轴与请求分组由程序派生。
 初次storyboard的continuous镜头不要重复填写start_state，程序从前镜end_state完整继承；非连续镜头仍须起态。
 每镜coverage按顺序列相邻beat_id及weight，weight为相对份额而非秒数。同一beat可跨相邻多镜，一镜可覆盖相邻多beat，展平后须完整顺序覆盖内容稿，不倒序或跳过。镜头不能跨scene_change或请求边界，连续多拍同镜按真实动作标continuous。
-台词只填写在ad_script，timing.visual_seconds只估视觉动作及必要观看，speech_overlap=false表示先动作后完整话语。时长方法按本阶段资源执行，不能只降低估计凑预算。台词要能说出口并承接核心创意的意思，旧方向若只有 big_idea 就承接那一句，不把关注、呈现、兼顾、打造、采用某技术这类策划词念给观众。若 shared_references 含本类型 playbook，开场、节拍、景别、切节奏和英雄定格按那一份安排，台词密度不超过 speech_budget。entry_transition=cut只省略入镜前过程，不能据此把镜内未完成动作的end_state写成完成。
+台词只填写在ad_script，timing.visual_seconds只估视觉动作及必要观看，speech_overlap=false表示先动作后完整话语。时长方法按本阶段资源执行，不能只降低估计凑预算。台词要能说出口并承接核心创意的意思，旧方向若只有 big_idea 就承接那一句，不把关注、呈现、兼顾、打造、采用某技术这类策划词念给观众。问句的下一句回答同一个问题，一个卖点说一次，不写没有信息的空话。资料短就补具体场合和体感，不编数字、规格、价格或折扣。产品片旁白要有节奏，不排成标签，也不描述镜头。若 shared_references 含本类型 playbook，开场、节拍、景别、切节奏和英雄定格按那一份安排，台词密度不超过 speech_budget。entry_transition=cut只省略入镜前过程，不能据此把镜内未完成动作的end_state写成完成。
 初次分镜先写 video_flow，再按它写 shots。video_flow 和开场镜头要让人看出已选方向的 hook 和核心创意，用能拍到的画面，不把这些字段的策划词念进台词。每镜 description 写清主体和动作、景别与运镜、光线、产品是否在画面里、环境、台词落点。不写如同、仿佛、像什么一样、高级感、氛围感。camera_move 同时写景别和运动。product_visible 标明产品是否在画面里。切在动作完成或特点出现时，不按秒均分。最后一镜大约留 2 秒机位停住，产品留在画面里，不另加字卡。出镜时长按 playbook：产品展示大约八成，剧情大约一半，人物讲解大约七成；没有 playbook 时大约七成。不改已经写好的台词。
 返修严格依repair_scope和本次schema，范围外beat/shot原样保留；narrations专用收尾以其窄schema为准，不用一般Skill合同扩展输出。不得重选方向、增加确认或触发媒体，不输出隐含思考过程。
 """
@@ -1289,7 +1289,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             _reraise_terminal(error)
             record_failure({"nonblocking": True, "message": type(error).__name__, "issues": ["storyboard"]})
             # Empty or reasoning-only replies already retried once at low effort.
-            if getattr(error, "contentless", False):
+            if getattr(error, "contentless", False) or getattr(error, "syntax", False):
                 break
             storyboard_errors += 1
     if raw is None:
@@ -1363,6 +1363,16 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             raise ProgressivePlanningError(message + "。已有方案和素材已保留，尚未开始新的图片或视频生成",
                 issue_summary=list(issues.values()), repair_attempts=repairs,
                 error_code=error_code) from None
+        if error_code == "planning_review_incomplete":
+            chosen = best_real()
+            if chosen is None and isinstance(last_valid_plan, dict) and not is_placeholder_plan(last_valid_plan):
+                chosen = last_valid_plan
+            if isinstance(chosen, dict) and chosen.get("segments"):
+                cleaned = deepcopy(chosen)
+                cleaned.pop("plan_review", None)
+                record_failure({"nonblocking": True, "message": message,
+                                "issues": list(issues.values())[:8], "error_code": error_code})
+                raise _PlanAccepted(cleaned)
         record_failure({"nonblocking": True, "message": message,
                         "issues": list(issues.values())[:8], "error_code": error_code})
         # A failed revision stays inside refine(). The caller keeps the plan
@@ -1448,7 +1458,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 candidate = await stage_call(refinement_system, refinement, assets)
             except Exception as error:
                 _reraise_terminal(error)
-                if getattr(error, "contentless", False):
+                if getattr(error, "contentless", False) or getattr(error, "syntax", False):
                     record_failure({"nonblocking": True, "message": type(error).__name__, "issues": ["plan_refinement"]})
                     raise RevisionKept from None
                 if not call_retried:

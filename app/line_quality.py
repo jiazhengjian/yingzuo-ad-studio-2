@@ -463,6 +463,109 @@ def _shares_a_long_stretch(line, description):
     return best >= 6 and best / len(spoken) >= 0.6
 
 
+_SPEED = re.compile(r"快|几下|吹干|迅速")
+_NOISE = re.compile(r"安静|不吵|声音小|听得清|听得见")
+_IONS = re.compile(r"负离子")
+_DURATION_Q = re.compile(r"多久|吹得久|费时|太慢|好慢")
+_NOISE_Q = re.compile(r"吵|安静|声音")
+_FILLER = re.compile(r"就能出门|就可以出门|吹完就能走|用完就好|这样就行|就能走了")
+_LOGIC_NAMES = ("问句答非所问", "一句里塞了两个卖点", "卖点重复", "空话", "标签式旁白")
+
+
+def _benefit_dims(text):
+    found = set()
+    if _SPEED.search(text):
+        found.add("speed")
+    if _NOISE.search(text):
+        found.add("noise")
+    if _IONS.search(text):
+        found.add("ions")
+    return found
+
+
+def _spoken_length(text):
+    return len(re.sub(r"[，。！？、,.!?\s]", "", text or ""))
+
+
+def _line_logic_offenses(spoken, form):
+    """Pain, then the matching benefit, then the result. One point at a time."""
+    rows = []
+    indexes = {}
+    seen = set()
+    audible = [beat for beat in spoken if not _CTA_LINE.search(beat.get("narration") or "")]
+    last_id = audible[-1].get("id") if audible else None
+
+    def add(beat, name):
+        beat_id = beat.get("id")
+        if beat_id not in indexes:
+            indexes[beat_id] = len(rows)
+            rows.append({"beat_id": beat_id, "index": 0, "narration": beat.get("narration"), "offenses": []})
+        if name not in rows[indexes[beat_id]]["offenses"]:
+            rows[indexes[beat_id]]["offenses"].append(name)
+
+    for previous, current in zip(spoken, spoken[1:]):
+        current_text = current.get("narration") or ""
+        if _CTA_LINE.search(current_text):
+            continue
+        question = previous.get("narration") or ""
+        if not _is_question(question):
+            continue
+        answer = current_text
+        if "？" in question:
+            _, _, after = question.partition("？")
+            if after.strip():
+                continue
+        allowed = set()
+        if _DURATION_Q.search(question) or "慢" in question:
+            allowed.add("speed")
+        if _NOISE_Q.search(question):
+            allowed.add("noise")
+        if _IONS.search(question):
+            allowed.add("ions")
+        got = _benefit_dims(answer)
+        if allowed and got and not got <= allowed:
+            add(current, "问句答非所问")
+    for beat in spoken:
+        text = beat.get("narration") or ""
+        if _CTA_LINE.search(text):
+            continue
+        body = text
+        if "？" in text:
+            _, _, after = text.partition("？")
+            if after.strip():
+                body = after
+                question = text.split("？", 1)[0]
+                allowed = set()
+                if _DURATION_Q.search(question) or "慢" in question:
+                    allowed.add("speed")
+                if _NOISE_Q.search(question):
+                    allowed.add("noise")
+                if _IONS.search(question):
+                    allowed.add("ions")
+                got = _benefit_dims(body)
+                if allowed and got and not got <= allowed:
+                    add(beat, "问句答非所问")
+        if len(_benefit_dims(body)) >= 2:
+            add(beat, "一句里塞了两个卖点")
+        if _FILLER.search(text):
+            add(beat, "空话")
+        if form == "brand_tvc":
+            dims = _benefit_dims(text)
+            short_label = _spoken_length(text) < 8 and (dims or re.search(r"顺|毛躁", text))
+            stacked = len(dims) >= 2 and re.search(r"还|、|和", text)
+            if short_label or stacked:
+                add(beat, "标签式旁白")
+        dims = _benefit_dims(text)
+        repeated = {item for item in dims if item in seen and item != "ions"}
+        if repeated and beat.get("id") != last_id:
+            add(beat, "卖点重复")
+        if "ions" in dims and "ions" in seen and beat.get("id") != last_id:
+            if "还" in text or _spoken_length(text) < 8:
+                add(beat, "卖点重复")
+        seen |= dims
+    return rows
+
+
 def _script_line_offenses(script, strategy, locked_lines, plan=None):
     """Cross-line problems one rewrite should see. Locked lines stay untouched."""
     form = None
@@ -546,6 +649,16 @@ def _script_line_offenses(script, strategy, locked_lines, plan=None):
             for beat in spoken)
         if not mentioned:
             add(spoken[-1], indexes.get(id(spoken[-1]), 0), "人物没带到商品")
+    try:
+        logic = _line_logic_offenses(spoken, form)
+    except (TypeError, ValueError, KeyError, IndexError, re.error):
+        logic = []
+    for item in logic:
+        beat = next((candidate for candidate in spoken if candidate.get("id") == item["beat_id"]), None)
+        if beat is None:
+            continue
+        item["index"] = indexes.get(id(beat), 0)
+        extra.append(item)
     return extra
 
 
@@ -655,7 +768,9 @@ LINE_REWRITE_SYSTEM = """你只重写列出的中文广告台词，只输出 JSO
 不写关注、呈现、兼顾、打造、采用某技术、高端质感、赋能、满足你对、卖点，也不写最、第一、根治、国家级、绝对、永久。
 不写购买、下单、抢购。优惠、限时、活动、价格和数字只在资料里已经有时才能说。结尾去向只按 ending_policy：没有指定时不说点链接、私信或到店。
 每句不超过该句 max_characters，标点也算。用户固定台词原样留在句子里。
-相邻两句不要近义重复。剧情广告全片只用一种人称，不要旁白说「她走过」同时又用「我」或「吧」。不要只复述看得见的动作。开场如果是问句，后面要有一句回答。
+相邻两句不要近义重复。剧情广告全片只用一种人称，不要旁白说「她走过」同时又用「我」或「吧」。不要只复述看得见的动作。开场如果是问句，后面要有一句回答，而且回答的是同一个问题：问吹得久就回答快，不要顺口把安静和负离子也塞进这一句。
+一条卖点说完整再换下一条。快、安静、负离子不要在后面的句子里再报一遍，除非最后一句是有意收回来的总括。没有信息的空话删掉，例如洗完就能出门。资料只有几个词时，用具体场合和体感把句子说开，例如赶早上班、头发厚、旁边还有人在睡；不编数字、规格、价格或折扣。
+产品片旁白要有节奏和好处的画面感，不要排成「快。安静。负离子。」这种标签。仍然不描述镜头里的光和动作。
 人物讲解的每一句卖点都要有主语：这款、它，或「我用它」。不要用「风大」「带负离子」这种没有主语的开头。卖点之间用而且、还、另外、所以或关键是接上。
 产品片不必每句点名。直接、短地说卖点、好处或感受，例如「十万转高速马达，三分钟吹干」。不要描述镜头里的光、银线或发丝飘起。
 剧情跟着人物当时的处境说，不套口播主语。全片至少有一句让人听见商品或它的好处。数字和功效只在 facts 里已经有时才能写。

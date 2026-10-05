@@ -173,10 +173,10 @@ def test_hand_closeup_does_not_ask_for_lip_sync():
     }
     segment["speech_spans"][0]["shot_ids"] = ["s0", "s4"]
     prompt = compile_grouped_video(segment)
-    hand = prompt.split("s4 |", 1)[1].split("台词时间", 1)[0]
+    hand = prompt.split("镜头2 |", 1)[1].split("台词时间", 1)[0]
     assert "面向镜头说话，嘴型与台词同步" not in hand
     assert "画外接着说" in hand
-    assert "面向镜头说话，嘴型与台词同步" in prompt.split("s0 |", 1)[1].split("s4 |", 1)[0]
+    assert "面向镜头说话，嘴型与台词同步" in prompt.split("镜头1 |", 1)[1].split("镜头2 |", 1)[0]
 
 
 def test_quoted_period_does_not_split_the_action():

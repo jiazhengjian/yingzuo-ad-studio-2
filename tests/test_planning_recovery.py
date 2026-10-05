@@ -159,7 +159,8 @@ def test_schema_failure_can_be_retried_and_configuration_failure_cannot(run_case
     result = execute()
     if failure == "invalid":
         assert result["status"] == "ready"
-        assert calls == ["ad_script", "storyboard", "plan_review"]
+        # Unreadable review JSON is repaired once, then the compiled plan is kept.
+        assert calls == ["ad_script", "storyboard", "plan_review", "plan_review"]
         assert result["submission_count"] == 0
     else:
         assert result["status"] == "failed" and result["progress"]["error_code"] == code

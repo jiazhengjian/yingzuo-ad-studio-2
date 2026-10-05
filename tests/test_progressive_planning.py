@@ -94,7 +94,8 @@ def progressive_gateway(settings, source, install_transport, tmp_path):
         duration=20, brief="蓝瓶商品", conversation=[], current_plan=None, first_director_mutation=None,
         draft_mutation=None, refinement_mutation=None, first_review_mutation=None,
         second_review_mutation=None, third_review_mutation=None, refinement_mutations=[], empty_stage=None, empty_count=0,
-        empty_finish="stop", empty_forever=False, inherited_skill_trace=(), ad_form=None)
+        empty_finish="stop", empty_forever=False, inherited_skill_trace=(), ad_form=None,
+        review_suffix=None)
 
     def handler(request):
         assert str(request.url) == "https://api.deepseek.com/chat/completions"
@@ -134,6 +135,9 @@ def progressive_gateway(settings, source, install_transport, tmp_path):
         reviews = sum(item["stage"] == "plan_review" for item in state.contexts)
         mutation = {1: state.first_review_mutation, 2: state.second_review_mutation}.get(reviews, state.third_review_mutation)
         if mutation: mutation(value)
+        if state.review_suffix:
+            text = json.dumps(value, ensure_ascii=False) + state.review_suffix
+            return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": text}}]})
         return chat_output(value)
 
     install_transport(handler)
@@ -876,6 +880,28 @@ def test_review_that_burns_its_budget_on_reasoning_retries_low_and_can_pass(prog
     assert len(reviews) == 2
     assert "上一轮没有返回正文" in json.dumps(reviews[1], ensure_ascii=False)
     assert "contentless_retried" not in reviews[1]
+    assert plan["plan_review"]["ready"] is True
+
+
+def test_incomplete_review_record_returns_the_compiled_plan(progressive_gateway):
+    state = progressive_gateway
+
+    def incomplete(value):
+        value.clear()
+        value["ready"] = True
+
+    state.first_review_mutation = state.second_review_mutation = state.third_review_mutation = incomplete
+    plan = state.run()
+    assert plan["segments"]
+    assert plan.get("plan_review", {}).get("ready") is not True
+    assert "看这里" not in "".join(beat.get("narration") or "" for beat in plan["ad_script"]["beats"])
+
+
+def test_review_json_with_an_extra_brace_is_accepted_on_the_first_call(progressive_gateway):
+    state = progressive_gateway
+    state.review_suffix = "}"
+    plan = state.run()
+    assert state.calls == ["ad_script", "storyboard", "plan_review"]
     assert plan["plan_review"]["ready"] is True
 
 

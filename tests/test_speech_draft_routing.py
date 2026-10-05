@@ -107,8 +107,7 @@ def test_noneligible_paths_keep_existing_contracts(speech_gateway, settings, exc
         assert state.contexts[0]["draft_format"] == "content_only"
 
 
-@pytest.mark.parametrize("bad", [{}, {"narration": " "}, {"narration": 4},
-    {"narration": "字" * 501}, {"narration": "有效话语。", "beats": []}])
+@pytest.mark.parametrize("bad", [{}, {"narration": " "}, {"narration": 4}, {"narration": "字" * 501}])
 def test_invalid_speech_output_stops_before_director(speech_gateway, bad):
     state = speech_gateway
     def invalid(value):
@@ -118,6 +117,17 @@ def test_invalid_speech_output_stops_before_director(speech_gateway, bad):
     with pytest.raises(ProviderError):
         state.run()
     assert state.calls == ["ad_script"]
+
+
+def test_extra_speech_field_is_dropped_before_the_director(speech_gateway):
+    state = speech_gateway
+    def invalid(value):
+        value.clear()
+        value.update({"narration": "有效话语。", "beats": []})
+    state.draft_mutation = invalid
+    state.run()
+    assert state.calls == ["ad_script", "storyboard", "plan_review"]
+    assert state.contexts[1]["draft_speech"] == {"narration": "有效话语。"}
 
 
 def test_fixed_speech_remains_guarded_after_new_handoff(speech_gateway):

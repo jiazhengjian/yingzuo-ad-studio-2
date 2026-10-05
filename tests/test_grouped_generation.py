@@ -45,7 +45,8 @@ def test_real_video_submit_compiles_one_cross_shot_speech_schedule_without_stale
         prompt = payload["prompt"]
         assert "切镜不打断连续表达" in prompt
         assert "同一表达可以连续跨越关联镜头" in prompt
-        assert "0.5–6.5秒 | 关联镜头 wide, detail" in prompt
+        assert "0.5–6.5秒 | 关联镜头 镜头1, 镜头2" in prompt
+        assert "wide" not in prompt and "detail" not in prompt
         assert "每句台词仅按原文说一次" in prompt
         assert prompt.count(segment["narration"]) == 1
         assert segment["narration"] in prompt
