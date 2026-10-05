@@ -368,7 +368,8 @@ class Store:
             revision, jid, now = accepted_revision + 1, identifier("job"), time.time()
             run_plan = copy.deepcopy(plan)
             for segment in run_plan["segments"]:
-                segment["reference_asset_ids"] = list(dict.fromkeys([*segment["reference_asset_ids"], *scene_ids]))
+                from app.planner_recovery import append_reference_ids
+                segment["reference_asset_ids"] = append_reference_ids(segment["reference_asset_ids"], scene_ids)
             payload = {"plan": run_plan, "source_job_id": source_job_id, "accepted_revision": accepted_revision,
                        "base_render_id": base["id"], "context_version": p["context_version"],
                        "duration_seconds": p["duration_seconds"], "video_submission_budget": len(plan["segments"]),
@@ -1350,7 +1351,8 @@ class Store:
                 payload["design_asset_ids"] = scene_ids
                 if design_ids:
                     for segment in payload["plan"]["segments"]:
-                        segment["reference_asset_ids"] = list(dict.fromkeys(segment["reference_asset_ids"] + list(design_ids)))
+                        from app.planner_recovery import append_reference_ids
+                        segment["reference_asset_ids"] = append_reference_ids(segment["reference_asset_ids"], design_ids)
                 jid = job["id"]
                 c.execute("UPDATE jobs SET revision=?,payload=?,status='queued',phase='queued',error=NULL,lease_until=0,started_at=NULL,updated_at=? WHERE id=?", (revision, encoded(payload), now, jid))
                 self._event(c, project_id, jid, "status", "已确认，等待制作视频", "waiting")

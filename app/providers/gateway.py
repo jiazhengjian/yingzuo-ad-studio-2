@@ -184,6 +184,10 @@ def _decode_planner_json(output_content):
     return unwrap_planner_object(parsed)
 
 
+def _planner_content_blank(value):
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
 def current_merchant_request(project, messages):
     """Use the frozen turn's latest user text without discarding its history."""
     return next((message["content"] for message in reversed(messages)
@@ -521,6 +525,22 @@ class EmptyPlannerResponse(ProviderError):
 
     def __init__(self):
         super().__init__("策划服务暂未返回内容，已有成果仍保留。")
+
+
+class PlannerContentlessResponse(ProviderError):
+    """Empty text, or a length stop whose tokens were all reasoning.
+
+    One low-effort retry and any configured other model already ran. Callers
+    keep the current plan instead of asking the merchant to resume.
+    """
+
+    error_code = "planning_contentless"
+    retryable = True
+    retry_action = "retry_planning"
+    contentless = True
+
+    def __init__(self):
+        super().__init__("策划服务暂未返回正文，已有成果仍保留。")
 
 
 class PlannerRequestError(ProviderError):
@@ -1127,6 +1147,37 @@ class Gateway:
         if notice:
             notice(phase)
 
+    async def _recover_contentless(self, system, context, sources, max_tokens, route, on_first_token,
+                                   allow_fallback, recovery):
+        """One low-effort retry, then one other model. Never a second identical call."""
+        from app.planner_transport import fallback_route, route_api_key
+        # The phase callback checks cancellation before another paid request.
+        self._emit_planner_phase("retrying_planner")
+        retried = {**context, "contentless_retried": True, "reasoning_effort_override": "low",
+            "contentless_note": "上一轮没有返回正文。请直接输出完整 JSON，推理从简。"}
+        try:
+            return await self._planner_json(
+                system, retried, sources, max_tokens, route=route, on_first_token=on_first_token,
+                allow_fallback=False, recovery=recovery)
+        except PlannerContentlessResponse:
+            pass
+        alternate = None
+        if allow_fallback:
+            try:
+                policy = fallback_route(self.settings)
+            except ValueError:
+                policy = None
+            if policy is not None and route_api_key(self.settings, policy[0]):
+                candidate = policy[0]
+                if (candidate.provider, candidate.model) != (route.provider, route.model):
+                    alternate = candidate
+        if alternate is not None:
+            self._emit_planner_phase("using_backup_planner")
+            return await self._planner_json(
+                system, retried, sources, max_tokens, route=alternate, on_first_token=on_first_token,
+                allow_fallback=False, recovery="fallback")
+        raise PlannerContentlessResponse()
+
     def _record_interrupted_attempt(self, route, context, elapsed, error_class):
         stage = context.get("stage") if isinstance(context, dict) else None
         elapsed_ms = _finite_elapsed_ms(elapsed)
@@ -1200,6 +1251,11 @@ class Gateway:
             payload["reasoning_effort"] = route.effort
         payload = transport_options(route_settings(self.settings, route), payload, stage=context.get("stage"))
         payload = apply_route_effort(payload, route)
+        # A contentless retry lowers effort after the stage profile, so high
+        # reasoning cannot spend the whole completion budget again.
+        override = context.get("reasoning_effort_override") if isinstance(context, dict) else None
+        if override in ("low", "high", "max"):
+            payload["reasoning_effort"] = override
         return payload, evidence_aliases
 
     def _transport_summary(self, context, sources, max_tokens, route, payload, response):
@@ -1572,6 +1628,12 @@ class Gateway:
                     "max_tokens": payload.get("max_completion_tokens", payload.get("max_tokens")),
                     "content_characters": len(final_text) if isinstance(final_text, str) else None,
                     "usage": safe_usage}))
+                if choice.get("finish_reason") == "length" and _planner_content_blank(final_text):
+                    if isinstance(context, dict) and not context.get("contentless_retried"):
+                        return await self._recover_contentless(
+                            system, context, sources, max_tokens, route, on_first_token,
+                            allow_fallback, recovery)
+                    raise PlannerContentlessResponse()
                 if choice.get("finish_reason") == "length":
                     stage_name = context.get("stage") if isinstance(context, dict) else None
                     if (stage_name == "plan_review" and isinstance(context, dict)
@@ -1597,7 +1659,11 @@ class Gateway:
                 logger.warning("Planner empty response: %s", json.dumps({
                     "stage": stage if stage in PLANNER_STAGES else "unknown",
                     "finish_reason": "stop", "content_characters": 0}))
-                raise EmptyPlannerResponse()
+                if isinstance(context, dict) and not context.get("contentless_retried"):
+                    return await self._recover_contentless(
+                        system, context, sources, max_tokens, route, on_first_token,
+                        allow_fallback, recovery)
+                raise PlannerContentlessResponse()
             result = _decode_planner_json(output_content)
             if not isinstance(result, dict):
                 raise ValueError()
@@ -2038,8 +2104,13 @@ class Gateway:
                             "reference_capacity": {"max_total_images": 10, "product_reference_count": len(sources),
                                 "scene_reference_count": 1, "max_characters": max_characters,
                                 "character_reference_images_each": 1}}
-                        raw_review = await stage_call(DIRECTION_REVIEW_SYSTEM, review_input, sources)
                         try:
+                            raw_review = await stage_call(DIRECTION_REVIEW_SYSTEM, review_input, sources)
+                        except PlannerContentlessResponse:
+                            raw_review = None
+                        try:
+                            if raw_review is None:
+                                raise ValueError("策划没有返回方向审核正文")
                             review, reasons = salvage_direction_review(
                                 derive_authored_production_metadata(raw_review), candidates,
                                 context["strategy_rules"], product_reference_count=len(sources))

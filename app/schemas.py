@@ -224,6 +224,13 @@ class Facts(BaseModel):
     claims: list[str] = Field(default_factory=list, max_length=12)
 
 
+def _bound_skill_trace(value):
+    from .planner_recovery import SKILL_TRACE_LIMIT, bound_server_list
+    if value is None or not isinstance(value, list):
+        return value
+    return bound_server_list(value, SKILL_TRACE_LIMIT)
+
+
 class Plan(BaseModel):
     production: ProductionPlan | None = Field(default=None, exclude_if=lambda value: value is None)
     skill_trace: list[dict] | None = Field(default=None, max_length=30, exclude_if=lambda value: value is None)
@@ -244,6 +251,11 @@ class Plan(BaseModel):
     script_review: ScriptReview | None = None
     video_flow: str = Field(default="", max_length=400, exclude_if=lambda value: not value,
         description="整条成片的观看顺序，供分镜对照；历史方案可缺省")
+
+    @field_validator("skill_trace", mode="before")
+    @classmethod
+    def cap_skill_trace(cls, value):
+        return _bound_skill_trace(value)
 
     @model_validator(mode="wrap")
     @classmethod
@@ -476,6 +488,11 @@ class AgentDecision(ConversationModel):
     planning_brief: ProductBrief | None = None
     direction_candidates: DirectionCandidates | None = Field(default=None, exclude_if=lambda value: value is None)
     skill_trace: list[dict] | None = Field(default=None, max_length=30, exclude_if=lambda value: value is None)
+
+    @field_validator("skill_trace", mode="before")
+    @classmethod
+    def cap_skill_trace(cls, value):
+        return _bound_skill_trace(value)
 
     @model_validator(mode="after")
     def decision_shape(self, info: ValidationInfo):

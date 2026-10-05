@@ -371,16 +371,17 @@ def _bind_spoken_destination(draft, strategy, cta_target, locked):
         data = script.model_dump()
         spoken = [beat for beat in data["beats"] if (beat.get("narration") or "").strip()] or data["beats"]
         last = spoken[-1]
+        from .planner_recovery import EVIDENCE_LIST_LIMIT, bound_server_list
         have = list(last.get("evidence_ids") or [])
         for fact_id in facts:
             if fact_id not in have:
                 have.append(fact_id)
-        last["evidence_ids"] = have
+        last["evidence_ids"] = bound_server_list(have, EVIDENCE_LIST_LIMIT)
         top = list(data.get("evidence_ids") or [])
         for fact_id in facts:
             if fact_id not in top:
                 top.append(fact_id)
-        data["evidence_ids"] = top
+        data["evidence_ids"] = bound_server_list(top, EVIDENCE_LIST_LIMIT)
         script = AdScript.model_validate(data)
         beat_id = last["id"]
         for shot in draft.shots:
@@ -389,7 +390,7 @@ def _bind_spoken_destination(draft, strategy, cta_target, locked):
                 for fact_id in facts:
                     if fact_id not in covered:
                         covered.append(fact_id)
-                shot.evidence_ids = covered
+                shot.evidence_ids = bound_server_list(covered, EVIDENCE_LIST_LIMIT)
     elif is_open_cta(cta_target):
         waived = tuple(facts)
     draft.ad_script = script
@@ -1016,16 +1017,17 @@ def _restore_selected_evidence(draft, strategy):
         return None
     spoken = [beat for beat in beats if isinstance(beat, dict) and (beat.get("narration") or "").strip()]
     last = (spoken or [beat for beat in beats if isinstance(beat, dict)])[-1]
+    from .planner_recovery import EVIDENCE_LIST_LIMIT, bound_server_list
     have = list(last.get("evidence_ids") or [])
     for fact_id in required:
         if fact_id not in have:
             have.append(fact_id)
-    last["evidence_ids"] = have
+    last["evidence_ids"] = bound_server_list(have, EVIDENCE_LIST_LIMIT)
     top = list(script.get("evidence_ids") or [])
     for fact_id in required:
         if fact_id not in top:
             top.append(fact_id)
-    script["evidence_ids"] = top
+    script["evidence_ids"] = bound_server_list(top, EVIDENCE_LIST_LIMIT)
     return seal_director_evidence(data)
 
 
@@ -1071,11 +1073,12 @@ def seal_director_evidence(draft):
             for fact_id in beats.get(part.get("beat_id"), []):
                 if fact_id not in needed:
                     needed.append(fact_id)
+        from .planner_recovery import EVIDENCE_LIST_LIMIT, bound_server_list
         have = list(shot.get("evidence_ids") or [])
         for fact_id in needed:
             if fact_id not in have:
                 have.append(fact_id)
-        shot["evidence_ids"] = have
+        shot["evidence_ids"] = bound_server_list(have, EVIDENCE_LIST_LIMIT)
     return data
 
 
@@ -1284,8 +1287,11 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             raw = await stage_call(director_system, data, assets)
         except Exception as error:
             _reraise_terminal(error)
-            storyboard_errors += 1
             record_failure({"nonblocking": True, "message": type(error).__name__, "issues": ["storyboard"]})
+            # Empty or reasoning-only replies already retried once at low effort.
+            if getattr(error, "contentless", False):
+                break
+            storyboard_errors += 1
     if raw is None:
         limit = profile.max_beat_characters
         kept_lines = [line for line in (_draft_lines(draft) or list(locked)) if len(line) <= limit]
@@ -1442,6 +1448,9 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 candidate = await stage_call(refinement_system, refinement, assets)
             except Exception as error:
                 _reraise_terminal(error)
+                if getattr(error, "contentless", False):
+                    record_failure({"nonblocking": True, "message": type(error).__name__, "issues": ["plan_refinement"]})
+                    raise RevisionKept from None
                 if not call_retried:
                     call_retried = True
                     repairs -= 1

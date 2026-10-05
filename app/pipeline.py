@@ -880,8 +880,9 @@ class Pipeline:
             if not stale or payload.get("creative_confirmed") or video_submitted:
                 saved_ids = [asset["id"] for asset in complete]
                 resumed = copy.deepcopy(plan)
+                from app.planner_recovery import append_reference_ids
                 for segment in resumed["segments"]:
-                    segment["reference_asset_ids"] = list(dict.fromkeys([*segment["reference_asset_ids"], *saved_ids]))
+                    segment["reference_asset_ids"] = append_reference_ids(segment["reference_asset_ids"], saved_ids)
                 self._payload(job["id"], plan=resumed, design_asset_ids=saved_ids)
                 progress = dict(self.store.get_job(job["id"]).get("progress") or {})
                 self.store.update_job(job["id"], progress={**progress, "design_asset_ids": saved_ids})
@@ -983,7 +984,8 @@ class Pipeline:
         design_ids = [asset["id"] for asset in validate_design_assets(plan, [self.store.get_asset(aid) for aid in design_ids])]
         plan = copy.deepcopy(plan)
         for segment in plan["segments"]:
-            segment["reference_asset_ids"] = list(dict.fromkeys([*segment["reference_asset_ids"], *design_ids]))
+            from app.planner_recovery import append_reference_ids
+            segment["reference_asset_ids"] = append_reference_ids(segment["reference_asset_ids"], design_ids)
         self._payload(job["id"], design_asset_ids=design_ids, plan=plan)
         progress = dict(self.store.get_job(job["id"]).get("progress") or {})
         self.store.update_job(job["id"], progress={**progress, "design_asset_ids": design_ids})

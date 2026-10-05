@@ -93,7 +93,8 @@ def progressive_gateway(settings, source, install_transport, tmp_path):
     state = SimpleNamespace(strategy=chosen_strategy(source), calls=[], contexts=[], phases=[], traces=[],
         duration=20, brief="蓝瓶商品", conversation=[], current_plan=None, first_director_mutation=None,
         draft_mutation=None, refinement_mutation=None, first_review_mutation=None,
-        second_review_mutation=None, third_review_mutation=None, refinement_mutations=[], empty_stage=None, empty_count=0)
+        second_review_mutation=None, third_review_mutation=None, refinement_mutations=[], empty_stage=None, empty_count=0,
+        empty_finish="stop", empty_forever=False, inherited_skill_trace=(), ad_form=None)
 
     def handler(request):
         assert str(request.url) == "https://api.deepseek.com/chat/completions"
@@ -101,9 +102,14 @@ def progressive_gateway(settings, source, install_transport, tmp_path):
         stage = context["stage"]
         state.calls.append(stage)
         state.contexts.append(deepcopy(context))
-        if stage == state.empty_stage and state.empty_count == 0:
-            state.empty_count += 1
-            return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": ""}}]})
+        if stage == state.empty_stage and (state.empty_forever or state.empty_count == 0):
+            if not state.empty_forever:
+                state.empty_count += 1
+            body = {"choices": [{"finish_reason": state.empty_finish, "message": {"content": ""}}]}
+            if state.empty_finish == "length":
+                body["usage"] = {"completion_tokens": 32768,
+                    "completion_tokens_details": {"reasoning_tokens": 32766}}
+            return httpx.Response(200, json=body)
         if stage == "ad_script" and context.get("task_kind") == "line_jargon_rewrite":
             value = {"lines": [{"beat_id": item["beat_id"], "narration": "肩线这一圈，是它的脸。"}
                                for item in context["lines"]]}
@@ -136,9 +142,13 @@ def progressive_gateway(settings, source, install_transport, tmp_path):
         def report(phase):
             state.phases.append(phase)
             if progress: progress(phase)
+        project = {"brief": state.brief, "duration_seconds": state.duration}
+        if state.ad_form:
+            project["ad_form"] = state.ad_form
         return asyncio.run(Gateway(settings).decide(
-            {"brief": state.brief, "duration_seconds": state.duration}, [source], state.conversation, [],
+            project, [source], state.conversation, [],
             state.current_plan, selected_strategy=state.strategy.model_dump(), on_progress=report,
+            inherited_skill_trace=state.inherited_skill_trace,
             on_skill_trace=lambda trace: state.traces.append(deepcopy(trace))))["plan"]
     state.run = run
     state.records = lambda: [json.loads(path.read_text()) for path in (settings.data_root / "diagnostics").glob("*.json")]
@@ -832,3 +842,50 @@ def test_craft_refine_that_still_fails_is_accepted_and_the_job_continues(progres
     assert "请重新策划" not in json.dumps(plan, ensure_ascii=False)
     notes = [item.get("note", "") for item in plan["plan_review"].get("suggestions") or []]
     assert any("建议" in note for note in notes)
+
+
+def test_scene_story_revision_keeps_a_long_skill_trace_valid(progressive_gateway):
+    state = progressive_gateway
+    raw = state.strategy.model_dump()
+    raw["brief"]["ad_form"] = "scene_story"
+    state.strategy = StrategyRecord.model_validate(raw)
+    state.ad_form = "scene_story"
+    state.inherited_skill_trace = [
+        {"stage": "strategy", "id": f"legacy-{index}", "version": "1", "content_sha256": f"{index:064x}"}
+        for index in range(18)]
+    state.first_review_mutation = reject_first_shot
+    state.refinement_mutation = lambda value: value["shots"][0].update(
+        description=value["shots"][0]["description"] + "只保留静置。")
+    plan = state.run()
+    produced = len(state.inherited_skill_trace) + len(state.traces)
+    assert produced > 30
+    assert len(plan["skill_trace"]) <= 30
+    assert plan["skill_trace"][-1]["id"] == state.traces[-1]["id"]
+    assert plan["skill_trace"][0]["id"] != "legacy-0"
+    Plan.model_validate(plan)
+    assert any(item["id"] == "ad-form-playbook-scene-story" for item in plan["skill_trace"])
+    assert plan["plan_review"]["ready"] is True
+
+
+def test_review_that_burns_its_budget_on_reasoning_retries_low_and_can_pass(progressive_gateway):
+    state = progressive_gateway
+    state.empty_stage = "plan_review"
+    state.empty_finish = "length"
+    plan = state.run()
+    reviews = [item for item in state.contexts if item["stage"] == "plan_review"]
+    assert len(reviews) == 2
+    assert "上一轮没有返回正文" in json.dumps(reviews[1], ensure_ascii=False)
+    assert "contentless_retried" not in reviews[1]
+    assert plan["plan_review"]["ready"] is True
+
+
+def test_review_with_no_content_keeps_the_compiled_plan(progressive_gateway):
+    state = progressive_gateway
+    state.empty_stage = "plan_review"
+    state.empty_finish = "length"
+    state.empty_forever = True
+    plan = state.run()
+    assert [item["stage"] for item in state.contexts].count("plan_review") == 2
+    assert plan["segments"]
+    assert plan.get("plan_review", {}).get("ready") is not True
+    assert "看这里" not in "".join(beat.get("narration") or "" for beat in plan["ad_script"]["beats"])

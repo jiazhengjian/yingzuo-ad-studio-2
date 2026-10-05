@@ -88,6 +88,12 @@ RECOVERY_PATHS = (
     {"path": "fallback_skeleton", "klass": "b",
      "where": "分镜阶段没有留下任何可用稿",
      "handling": "先再请求一次完整分镜；仍没有就记下占位稿，不把它当成完成的方案，也不用它替换已有稿"},
+    {"path": "skill_trace_cap", "klass": "b",
+     "where": "服务端累积的 skill_trace 超过方案上限",
+     "handling": "去重后只保留最近的记录，校验前截断，记账不能停任务"},
+    {"path": "contentless_reply", "klass": "b",
+     "where": "策划停在空正文，或推理用光输出上限后没有正文",
+     "handling": "同一模型用低推理再试一次，有备用模型再用一次；审核阶段收下目前的方案"},
 )
 
 
@@ -144,6 +150,66 @@ def _flatten_text(value):
 def text_mentions_json(*parts):
     blob = "\n".join(_flatten_text(part) for part in parts)
     return re.search(r"json", blob, re.IGNORECASE) is not None
+
+
+SKILL_TRACE_LIMIT = 30
+EVIDENCE_LIST_LIMIT = 12
+REFERENCE_LIST_LIMIT = 10
+NOTE_TEXT_LIMIT = 300
+
+
+def bound_server_list(items, limit):
+    """Drop duplicate bookkeeping and keep the most recent entries.
+
+    Server-owned lists such as skill traces grow across stages. A schema
+    max_length is not a reason to fail the job.
+    """
+    if not isinstance(items, list) or type(limit) is not int or limit < 1:
+        return items
+    seen = {}
+    order = []
+    for item in items:
+        if isinstance(item, dict):
+            try:
+                key = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+            except (TypeError, ValueError):
+                key = repr(item)
+        elif isinstance(item, (str, int)):
+            key = item
+        else:
+            key = repr(item)
+        if key in seen:
+            order.remove(key)
+        seen[key] = item
+        order.append(key)
+    kept = [seen[key] for key in order]
+    if len(kept) > limit:
+        kept = kept[-limit:]
+    return kept
+
+
+def append_reference_ids(existing, additions, limit=REFERENCE_LIST_LIMIT):
+    """Dedupe image ids. Keep ids already on the segment, then the newest additions."""
+    base = []
+    for item in existing or []:
+        if isinstance(item, str) and item and item not in base:
+            base.append(item)
+    extra = []
+    for item in additions or []:
+        if isinstance(item, str) and item and item not in base and item not in extra:
+            extra.append(item)
+    if len(base) >= limit:
+        return base[:limit]
+    room = limit - len(base)
+    if len(extra) <= room:
+        return base + extra
+    return base + extra[-room:]
+
+
+def clip_server_text(value, limit=NOTE_TEXT_LIMIT):
+    if isinstance(value, str) and type(limit) is int and limit >= 0 and len(value) > limit:
+        return value[:limit]
+    return value
 
 
 def ensure_json_prompt(system, *rest):

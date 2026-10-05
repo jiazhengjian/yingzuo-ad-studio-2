@@ -788,12 +788,13 @@ def line_focus_suggestions(plan, strategy, locked_lines=()):
         narration = beat.get("narration") if isinstance(beat.get("narration"), str) else ""
         if not names or not narration.strip():
             continue
+        from .planner_recovery import clip_server_text
         note = "台词是否对焦商品、前后连贯。" + "".join(_FOCUS_NOTES[name] for name in names if name in _FOCUS_NOTES)
         suggestions.append({
             "kind": "line_focus",
             "target": f"/ad_script/beats/{index}/narration",
             "quote": narration[:240],
-            "note": note[:300],
+            "note": clip_server_text(note),
         })
     return suggestions
 

@@ -272,9 +272,10 @@ def shot_suggestions(plan, strategy=None) -> list[dict]:
         identity = (item["kind"], item["target"], item["quote"])
         if identity in seen:
             previous = seen[identity]
+            from .planner_recovery import clip_server_text
             extra = item["note"]
             if extra and extra not in previous["note"] and len(previous["note"]) + len(extra) <= 300:
-                previous["note"] = previous["note"] + extra
+                previous["note"] = clip_server_text(previous["note"] + extra)
             continue
         kept = {key: value for key, value in item.items() if key != "_rank"}
         seen[identity] = kept

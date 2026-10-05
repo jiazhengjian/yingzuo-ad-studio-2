@@ -125,6 +125,9 @@ def planner_model_context(context: dict) -> dict:
     even though those bookkeeping fields no longer consume model input.
     """
     result = planner_wire_context(context)
+    # Transport flags stay off the model prompt. The recovery note itself remains.
+    result.pop("contentless_retried", None)
+    result.pop("reasoning_effort_override", None)
     if result.get("stage") == "ad_script" and result.get("draft_format") == "speech_only":
         # The signed source context retains the complete selected strategy.
         # This experiment renders its explicit copy brief once, without also
