@@ -14,6 +14,73 @@ from .story_logic import (
 from .runtime_skills import compiler_template
 
 
+_ID_LIKE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,79}$")
+
+
+def _character_id_tokens(character_id):
+    if not isinstance(character_id, str):
+        return []
+    token = character_id.strip()
+    if not token:
+        return []
+    tokens = [token]
+    if token.startswith("char_") and len(token) > 9:
+        bare = token[5:]
+        if bare not in tokens:
+            tokens.append(bare)
+    return tokens
+
+
+def character_prose_name(person):
+    """Name a person in prose. A role id is not a name."""
+    if not isinstance(person, dict):
+        return "角色"
+    name = person.get("name").strip() if isinstance(person.get("name"), str) else ""
+    tokens = _character_id_tokens(person.get("id"))
+    if name and name not in tokens and not _ID_LIKE.fullmatch(name):
+        return name
+    description = person.get("description") if isinstance(person.get("description"), str) else ""
+    for clause in re.split(r"[，。；、]", description):
+        clause = clause.strip()
+        if not clause or _ID_LIKE.fullmatch(clause) or any(token in clause for token in tokens):
+            continue
+        return clause[:24]
+    return "角色"
+
+
+def replace_character_ids(text, characters):
+    """Swap a raw character id left in prose for the display name or description."""
+    if not isinstance(text, str) or not text:
+        return text
+    pairs = []
+    for person in characters or []:
+        if not isinstance(person, dict):
+            continue
+        label = character_prose_name(person)
+        for token in _character_id_tokens(person.get("id")):
+            if token and token != label and token not in label:
+                pairs.append((token, label))
+    pairs.sort(key=lambda item: len(item[0]), reverse=True)
+    updated = text
+    for token, label in pairs:
+        updated = re.sub(rf"(?<![A-Za-z0-9_]){re.escape(token)}(?![A-Za-z0-9_])", label, updated)
+    return updated
+
+
+def _scrub_shot(shot, characters):
+    if not isinstance(shot, dict) or not characters:
+        return shot
+    revised = {**shot, "description": replace_character_ids(shot.get("description") or "", characters)}
+    continuity = shot.get("continuity")
+    if isinstance(continuity, dict):
+        continuity = {**continuity}
+        for key in ("start_state", "allowed_changes", "end_state", "camera_move"):
+            if isinstance(continuity.get(key), str):
+                continuity[key] = replace_character_ids(continuity[key], characters)
+        revised["continuity"] = continuity
+    return revised
+
+
 def _director_lines(context, production=None):
     """Compile approved, shared directing data; never forward unrelated fields."""
     if not context:
@@ -95,13 +162,14 @@ def _reference_lines(segment, spoken=""):
             else:
                 # Saved 2×2 sheets predate the horizontal contact sheet.
                 sheet = "统一其外貌与服装；四格版式不进入视频。"
-            description = unlock_wet_identity(character.get("description") or "", spoken)
+            description = unlock_wet_identity(
+                replace_character_ids(character.get("description") or "", list(characters.values())), spoken)
             clause = cast_appearance_clause(description)
             if clause.rstrip("。") in description or ("日常大陆长相" in description and "日常大陆长相" in clause):
                 appearance = description
             else:
                 appearance = f"{clause}{description}"
-            duty = f"角色“{character['name']}”的四视图，{sheet}{appearance}"
+            duty = f"角色“{character_prose_name(character)}”的四视图，{sheet}{appearance}"
         else:
             raise ValueError("不支持的视频参考图片职责")
         lines.append(re.sub(r"。{2,}", "。", f"参考图{index}：{duty}。"))
@@ -145,7 +213,7 @@ def _character_labels(segment):
         if (role.get("role") == "state" and role.get("phase") == "start" and isinstance(cid, str)
                 and cid not in indexes and type(role.get("index")) is int):
             indexes[cid] = role["index"]
-    return {person["id"]: f"{person['name']}（参考图{indexes[person['id']]}）"
+    return {person["id"]: f"{character_prose_name(person)}（参考图{indexes[person['id']]}）"
             for person in (segment.get("production") or {}).get("characters", [])}
 
 
@@ -229,9 +297,12 @@ def _cast_names(production, speaker_id):
     for person in (production or {}).get("characters") or []:
         if not isinstance(person, dict):
             continue
-        name = person.get("name") or ""
-        if not isinstance(name, str) or not name:
-            continue
+        name = character_prose_name(person)
+        if not name or name == "角色":
+            raw = person.get("name") if isinstance(person.get("name"), str) else ""
+            if not raw:
+                continue
+            name = raw
         if person.get("id") == speaker_id:
             speaker = name
         else:
@@ -390,7 +461,9 @@ def _compile_grouped_video(segment, template):
             if _speech_overlaps(candidate, spans[0]):
                 first_speaking_shot = candidate["id"]
                 break
+    people_list = list(people.values())
     for index, shot in enumerate(shots):
+        shot = _scrub_shot(shot, people_list)
         last = index == last_index
         speaking_here = bool(spans) and any(_speech_overlaps(shot, span) for span in spans)
         if inner:
@@ -412,7 +485,7 @@ def _compile_grouped_video(segment, template):
                 person = people.get(cid)
                 identity = _identity_index(roles, cid, shot.get("id"), shot_ids)
                 if person and identity is not None:
-                    shot_labels[cid] = f"{person['name']}（参考图{identity}）"
+                    shot_labels[cid] = f"{character_prose_name(person)}（参考图{identity}）"
                 else:
                     shot_labels[cid] = characters[cid]
             lines.append("  出镜角色：" + "、".join(shot_labels[cid] for cid in shot["character_ids"]))

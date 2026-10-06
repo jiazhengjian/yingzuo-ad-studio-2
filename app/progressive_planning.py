@@ -1479,6 +1479,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     state_warnings_recorded = False
     wardrobe_warnings_recorded = False
     clothing_notes_recorded = False
+    product_sheet_notes_recorded = False
 
     class _PlanAccepted(Exception):
         def __init__(self, plan):
@@ -1917,6 +1918,15 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                     record_failure({"nonblocking": True,
                                     "message": sheet_notes[0],
                                     "issues": sheet_notes[:8]})
+            if not product_sheet_notes_recorded:
+                from .design import character_sheet_product_notes
+                product_notes = character_sheet_product_notes(plan)
+                if product_notes:
+                    product_sheet_notes_recorded = True
+                    record_failure({"nonblocking": True,
+                                    "message": product_notes[0],
+                                    "issues": product_notes[:8],
+                                    "error_code": "character_sheet_product"})
             progress("reviewing_plan")
             review_input = {"stage": "plan_review", "schema": compact_review_schema(plan_review_schema(plan)),
                 "review_output_version": REVIEW_OUTPUT_VERSION, "review_policy_version": REVIEW_POLICY_VERSION,

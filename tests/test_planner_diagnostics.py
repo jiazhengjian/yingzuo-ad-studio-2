@@ -172,7 +172,7 @@ def test_diagnostic_write_failure_preserves_original_provider_error(env, monkeyp
 
 def test_plan_warnings_keep_the_full_list_in_one_file(env):
     settings = env[1].state.settings
-    holder = {}
+    holder = {"project_id": "proj_r23", "job_id": "job_r23"}
     remember_plan_warning(settings, holder, {"nonblocking": True, "message": "第一条",
                                              "issues": ["外套"], "error_code": "wardrobe"})
     remember_plan_warning(settings, holder, {"nonblocking": True, "message": "第二条",
@@ -180,8 +180,11 @@ def test_plan_warnings_keep_the_full_list_in_one_file(env):
     files = list((settings.data_root / "diagnostics" / "plan-warnings").glob("*.json"))
     assert len(files) == 1
     assert files[0].stat().st_mode & 0o777 == 0o600
+    assert files[0].name.startswith("proj_r23_job_r23_")
     saved = json.loads(files[0].read_text())
     assert saved["kind"] == "plan_warnings"
+    assert saved["project_id"] == "proj_r23" and saved["job_id"] == "job_r23"
+    assert saved["timestamp"] and saved["timestamp"] in files[0].name
     assert [item["message"] for item in saved["warnings"]] == ["第一条", "第二条"]
     assert list((settings.data_root / "diagnostics").glob("*.json")) == []
 

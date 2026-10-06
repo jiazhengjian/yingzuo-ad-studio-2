@@ -118,7 +118,7 @@ class OfflineGateway:
         self.submissions = []
         self.on_decide = None
 
-    async def decide(self, project, assets, messages, gates, current_plan):
+    async def decide(self, project, assets, messages, gates, current_plan, **kwargs):
         self.contexts.append(copy.deepcopy({"project": project, "assets": assets, "messages": messages,
                                             "gates": gates, "current_plan": current_plan}))
         if self.on_decide:

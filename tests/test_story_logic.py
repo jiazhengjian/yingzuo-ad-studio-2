@@ -5,7 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from app.design import character_design_request, state_design_request, state_sheet_clothing_notes
+from app.design import (
+    character_design_request, character_sheet_product_notes, state_design_request, state_sheet_clothing_notes,
+)
 from app.line_quality import apply_line_rewrite, script_line_offenses, voice_identity_issues
 from app.picture_rules import action_issues, state_change_issues
 from app.production import required_designs, validate_design_assets
@@ -1066,7 +1068,9 @@ def test_state_sheet_wears_only_this_shots_clothes():
     person = plan["production"]["characters"][0]
     sheet = character_design_request({}, plan, person)
     assert "薄外套" in sheet["prompt"]
-    assert "手里拿吹风机" in sheet["prompt"]
+    assert "手里拿吹风机" not in sheet["prompt"]
+    assert "双手空手，不要商品" in sheet["prompt"]
+    assert person["description"].count("手里拿吹风机") == 1
     start = state_design_request({}, plan, {
         "phase": "start", "label": "湿", "subject": "头发", "shot_id": "s3",
         "character_id": "char_xia", "state_text": "湿，发梢成缕"})
@@ -1122,6 +1126,29 @@ def test_asleep_company_becomes_inner_monologue_and_awake_company_stays_dialogue
     segment["reference_roles"].append({"index": 4, "role": "character", "character_id": "room"})
     prompt = compile_grouped_video(segment)
     assert "嘴型与台词同步" in _shot_block(prompt, "镜头1 |")
+
+
+def test_character_sheet_does_not_wear_the_product():
+    person = {"id": "char_host", "name": "小夏",
+              "description": "二十多岁，穿浅色针织衫，全程佩戴银色头戴式耳机，手里拿着银色头戴式耳机。"}
+    plan = {"facts": {"name": "头戴式耳机"}, "production": {"characters": [person]}, "segments": [{"shots": [
+        {"id": "s1", "description": "她手里拿着银色头戴式耳机。", "character_ids": ["char_host"]},
+    ]}]}
+    prompt = character_design_request({}, plan, person)["prompt"]
+    assert "浅色针织衫" in prompt
+    assert "全程佩戴" not in prompt and "头戴式耳机" not in prompt
+    assert "手里拿" not in prompt
+    assert "不要画在身上或手里" in prompt
+    assert "全程佩戴银色头戴式耳机" in person["description"]
+    assert character_sheet_product_notes(plan) == [
+        "角色设定图不画商品。全程佩戴和镜头里拿在手里对不上，已记下，不因此停下。"]
+    worn = {"production": {"characters": [{**person, "description": "二十多岁，全程佩戴银色头戴式耳机。"}]},
+            "segments": [{"shots": [{"id": "s1", "description": "她戴着银色头戴式耳机看向窗外。",
+                                     "character_ids": ["char_host"]}]}]}
+    assert character_sheet_product_notes(worn) == []
+
+
+def test_asleep_company_selling_point_still_fails():
     selling = story_plan_issues(_board(_shot("室友还在睡着。"), script=_lines("太安静了。")), _dryer())
     assert "剧情对白还在说卖点" in selling
     quiet = story_plan_issues(_board(_shot("室友还在睡着。"), script=_lines("这风不吵。")), _dryer())

@@ -86,7 +86,7 @@ async def _run(store, gateway, settings, job_id):
         await gateway.decide(frozen["project"], frozen["assets"], messages, frozen["gates"],
             frozen["project"].get("plan"), selected_strategy=strategy.model_dump(),
             stage_result_cache=existing, stage_cache_sink=sink, abandon_check=abandon,
-            on_checkpoint=lambda _checkpoint: None)
+            on_checkpoint=lambda _checkpoint: None, job_id=job_id)
     except asyncio.CancelledError:
         # Selection, supersede, or shutdown cancelled this task. Do not write a
         # status here: a newer run or an abandoned record owns the payload.

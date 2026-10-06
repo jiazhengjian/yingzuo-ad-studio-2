@@ -45,6 +45,81 @@ def scene_design_request(project, plan):
             "prompt": instructions + "\n已确认的场景与视觉方案：\n" + json.dumps(context, ensure_ascii=False)}
 
 
+def _product_terms(plan):
+    terms = []
+    if not isinstance(plan, dict):
+        return terms
+    facts = plan.get("facts") if isinstance(plan.get("facts"), dict) else {}
+    name = facts.get("name") if isinstance(facts.get("name"), str) else ""
+    if name.strip():
+        terms.append(name.strip())
+    brief = ((plan.get("strategy") or {}).get("brief") or {}) if isinstance(plan.get("strategy"), dict) else {}
+    product = brief.get("product_name") if isinstance(brief, dict) and isinstance(brief.get("product_name"), str) else ""
+    if product.strip() and product.strip() not in terms:
+        terms.append(product.strip())
+    return terms
+
+
+def _clause_draws_product(clause, terms):
+    """Identity sheets leave the product off the body. Clothes stay."""
+    if not clause or not _HOLD_OR_WEAR.search(clause):
+        return False
+    if _HANDHELD_CLAUSE.search(clause):
+        return True
+    wears = re.search(r"佩戴|戴着|戴上|头戴", clause)
+    if not wears:
+        return False
+    if "全程" in clause:
+        return True
+    return any(term and term in clause for term in terms)
+
+
+def character_sheet_description(description, plan):
+    """Prompt copy. The stored appearance still lists every garment."""
+    description = (description or "").strip()
+    if not description:
+        return description
+    terms = _product_terms(plan)
+    kept = []
+    for clause in re.split(r"[，。；]", description):
+        clause = clause.strip()
+        if not clause or _clause_draws_product(clause, terms):
+            continue
+        kept.append(clause)
+    return "，".join(kept)
+
+
+def character_sheet_product_notes(plan):
+    """Soft note when a sheet would wear the product the whole film but a shot holds it."""
+    if not isinstance(plan, dict):
+        return []
+    from .story_logic import iter_plan_shots
+    people = [person for person in ((plan.get("production") or {}).get("characters") or []) if isinstance(person, dict)]
+    shots = list(iter_plan_shots(plan))
+    for person in people:
+        description = person.get("description") if isinstance(person.get("description"), str) else ""
+        match = _THROUGHOUT_WEAR.search(description)
+        if not match:
+            continue
+        worn = match.group(1)
+        tokens = [run for run in re.findall(r"[\u4e00-\u9fff]{2,}", worn)]
+        extras = [run[-2:] for run in tokens if len(run) > 2]
+        tokens.extend(item for item in extras if item not in tokens)
+        own = person.get("id")
+        name = person.get("name") if isinstance(person.get("name"), str) else ""
+        for shot in shots:
+            ids = shot.get("character_ids") if isinstance(shot.get("character_ids"), list) else []
+            blob = shot.get("description") if isinstance(shot.get("description"), str) else ""
+            if own and ids and own not in ids and (not name or name not in blob):
+                continue
+            if not tokens or not _HANDHELD_CLAUSE.search(blob):
+                continue
+            if not any(token in blob for token in tokens):
+                continue
+            return [_PRODUCT_SHEET_NOTE]
+    return []
+
+
 def character_design_request(project, plan, character):
     """Compile one horizontal identity sheet for one approved, identifiable character."""
     approved = (plan.get("production") or {}).get("characters", [])
@@ -56,7 +131,8 @@ def character_design_request(project, plan, character):
     distinction = cast_distinction_line(plan, character)
     if distinction:
         instructions += "\n" + distinction
-    context = {"name": character["name"], "description": character["description"]}
+    instructions += "\n" + _SHEET_NO_PRODUCT
+    context = {"name": character["name"], "description": character_sheet_description(character.get("description", ""), plan)}
     return {"version": "character-context-v2", "character_id": character["id"],
             "aspect_ratio": "16:9", "sheet_layout": "horizontal_16x9",
             "template_version": CHARACTER_SHEET_TEMPLATE,
@@ -164,6 +240,11 @@ def _state_phase_line(phase):
 
 
 _EMPTY_HANDS = "双手空手，不要商品，不要道具，背景只用白或浅灰。"
+_SHEET_NO_PRODUCT = "双手空手，不要商品，不要道具。商品只按每镜的商品参考出现，不要画在身上或手里。"
+_HOLD_OR_WEAR = re.compile(r"手里|手上|手中|拿着|握着|举着|捧着|佩戴|戴着|戴上|头戴|全程")
+_HANDHELD_CLAUSE = re.compile(r"手里|手上|手中|拿着|握着|举着|捧着")
+_THROUGHOUT_WEAR = re.compile(r"全程[^，。；]{0,8}(?:佩戴|戴着|戴上|头戴)([^，。；]{1,24})")
+_PRODUCT_SHEET_NOTE = "角色设定图不画商品。全程佩戴和镜头里拿在手里对不上，已记下，不因此停下。"
 _APPEARANCE_LEAD = "外观原文照抄，脸、五官、肤色、身材、头发长度和发色、衣服、鞋子都按这句："
 _LATER_WEAR = re.compile(r"(?:出门前|稍后|之后|离开前|出门时|走之前).{0,16}(?:披上|穿上|套上)")
 _WORN_NOW = re.compile(r"披上|穿上|套上|穿着|披着")

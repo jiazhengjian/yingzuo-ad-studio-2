@@ -614,7 +614,7 @@ class Pipeline:
                     on_checkpoint=save_checkpoint)
             raw = await self.gateway.decide(frozen["project"], frozen["assets"], frozen["messages"],
                                             frozen["gates"], frozen["project"].get("plan"),
-                                            **callbacks, **stream_callbacks)
+                                            job_id=job["id"], **callbacks, **stream_callbacks)
             self._guard(job["id"], require_current=True)
             try:
                 decision = AgentDecision.model_validate(raw).model_dump()

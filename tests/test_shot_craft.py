@@ -9,7 +9,7 @@ from app.plan_review import validate_plan_review
 from app.runtime_skills import stage_skill_context
 from app.shot_craft import (apply_shot_rewrite, craft_refine_request, rewrite_shots_if_needed,
                             shot_prompt_lines, shot_suggestions, with_shot_suggestions, _HOLD_LINE)
-from app.video_prompt import compiled_video_request
+from app.video_prompt import character_prose_name, compiled_video_request, replace_character_ids
 from test_progressive_planning import accepted_review, chosen_strategy, director_output
 from test_providers import source
 
@@ -310,6 +310,55 @@ def test_end_hold_check_names_only_the_films_last_shot():
         assert [item["shot_id"] for item in issues if "hold" in item["problems"]] == ["c"]
         assert issues[-1]["needs_hold"] is True
         assert all(item["shot_id"] == "c" or "hold" not in item["problems"] for item in issues)
+
+
+def test_split_timing_keeps_the_action_after_the_setting():
+    lines = shot_prompt_lines({
+        "id": "s4", "start": 0, "end": 5,
+        "description": "厨房台面前，顶灯暖光。她把蛋糕推到他面前，说等一下。",
+    }, hold_tail=True)
+    motion = [line for line in lines if line.strip()[:1].isdigit() and "只做一个运动" in line]
+    assert len(motion) == 1
+    assert "厨房台面前，顶灯暖光" in motion[0]
+    assert "她把蛋糕推到他面前" in motion[0]
+    assert "说等一下" in motion[0]
+    phase = [line for line in shot_prompt_lines(
+        {"id": "long", "start": 0, "end": 8, "description": "手把瓶身转向窗光。镜头仍在前推。"},
+        hold_tail=False) if line.strip()[:1].isdigit() and "只做一个运动" in line]
+    assert any("手把瓶身转向窗光" in line and "镜头仍在前推" not in line for line in phase)
+    assert any("镜头仍在前推" in line and "手把瓶身转向窗光" not in line for line in phase)
+
+
+def test_a_raw_character_id_in_the_shot_becomes_the_display_name():
+    person = {"id": "char_planner", "name": "小夏", "description": "二十多岁，穿浅色家居服"}
+    named_as_id = {"id": "char_planner", "name": "planner", "description": "二十多岁，穿浅色家居服"}
+    assert character_prose_name(person) == "小夏"
+    assert character_prose_name(named_as_id) == "二十多岁"
+    assert replace_character_ids("厨房里，planner双手端着蛋糕。", [person]) == "厨房里，小夏双手端着蛋糕。"
+    segment = {
+        "duration_seconds": 6, "generation_strategy": "continuity_v1", "speech_spans": [],
+        "ad_form": "scene_story",
+        "production": {"characters": [person], "speech_mode": "none"},
+        "reference_roles": [
+            {"index": 1, "role": "product"},
+            {"index": 2, "role": "character", "character_id": "char_planner"},
+        ],
+        "shots": [{
+            "id": "s1", "start": 0, "end": 6,
+            "description": "厨房台面前，planner双手端着蛋糕。",
+            "character_ids": ["char_planner"],
+            "continuity": {
+                "entry_transition": "opening", "start_state": "planner站在台前",
+                "allowed_changes": "planner把蛋糕放下", "end_state": "蛋糕在台面上",
+                "camera_move": "中景，机位固定",
+            },
+        }],
+    }
+    prompt = compiled_video_request(segment)["prompt"]
+    assert "小夏双手端着蛋糕" in prompt
+    assert "小夏站在台前" in prompt
+    assert "planner" not in prompt
+    assert segment["shots"][0]["description"] == "厨房台面前，planner双手端着蛋糕。"
 
 
 def test_phase_lines_stay_inside_one_request():

@@ -577,11 +577,39 @@ def _phase_windows(start_tenths: int, end_tenths: int, *, hold_tail: bool):
     return windows
 
 
+# A place-and-light sentence has none of these. The action that follows must stay
+# on the timing line instead of being cut off after the setting.
+_ACTION_CUE = re.compile(
+    r"把|将|拿|放|推|拉|递|举|握|端|切|倒|送|走|跑|坐|站|转|看|说|问|笑|"
+    r"打开|关上|伸手|点头|摇头|开口|入画|入镜|推近|前推|后退|低下|抬起|翻身"
+)
+
+
 def _motion_sentence(clause: str, *, index: int) -> str:
     lead = "从起始状态开始，只做一个运动" if index == 0 else "只做一个运动"
     if clause:
         return f"{lead}：{clause.rstrip('。')}。"
     return f"{lead}，变化限于本镜允许变化。"
+
+
+def _fold_timing_clauses(clauses: list[str], motion_count: int) -> list[str]:
+    """One clause per motion window. A setting-only lead joins the next action.
+
+    Extra clauses used to be dropped, so a split line could keep only
+    「厨房台面前，顶灯暖光。」 and lose the action.
+    """
+    if motion_count <= 0:
+        return []
+    folded = list(clauses)
+    if len(folded) >= 2 and not _ACTION_CUE.search(folded[0]) and any(_ACTION_CUE.search(item) for item in folded[1:]):
+        folded = [folded[0].rstrip("。") + "。" + folded[1], *folded[2:]]
+    if not folded:
+        return [""] * motion_count
+    if len(folded) <= motion_count:
+        return folded + [""] * (motion_count - len(folded))
+    head = folded[: motion_count - 1]
+    tail = "。".join(folded[motion_count - 1 :])
+    return head + [tail]
 
 
 def shot_prompt_lines(shot, *, hold_tail: bool, continue_tail: bool = False, label: str | None = None, hold_line: str | None = None) -> list[str]:
@@ -602,13 +630,15 @@ def shot_prompt_lines(shot, *, hold_tail: bool, continue_tail: bool = False, lab
         clauses = _clauses(shot.get("description") or "")
         if clauses and _HOLD.search(clauses[-1]):
             clauses = clauses[:-1]
+        motion_count = sum(1 for _, _, is_hold in windows if not is_hold)
+        packed = _fold_timing_clauses(clauses, motion_count)
         motion_index = 0
         lines.append("  分阶段：同一条视频请求内，每段只做一个运动。")
         for begin, finish, is_hold in windows:
             if is_hold:
                 text = hold_line or _HOLD_LINE
             else:
-                clause = clauses[motion_index] if motion_index < len(clauses) else ""
+                clause = packed[motion_index] if motion_index < len(packed) else ""
                 text = _motion_sentence(clause, index=motion_index)
                 motion_index += 1
             lines.append(f"  {begin / 10:g}–{finish / 10:g}秒：{text}")

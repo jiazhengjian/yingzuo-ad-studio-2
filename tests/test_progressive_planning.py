@@ -95,7 +95,7 @@ def progressive_gateway(settings, source, install_transport, tmp_path):
         draft_mutation=None, refinement_mutation=None, first_review_mutation=None,
         second_review_mutation=None, third_review_mutation=None, refinement_mutations=[], empty_stage=None, empty_count=0,
         empty_finish="stop", empty_forever=False, inherited_skill_trace=(), ad_form=None,
-        review_suffix=None)
+        review_suffix=None, project_id=None, job_id=None)
 
     def handler(request):
         assert str(request.url) == "https://api.deepseek.com/chat/completions"
@@ -149,11 +149,14 @@ def progressive_gateway(settings, source, install_transport, tmp_path):
         project = {"brief": state.brief, "duration_seconds": state.duration}
         if state.ad_form:
             project["ad_form"] = state.ad_form
+        if state.project_id:
+            project["id"] = state.project_id
         return asyncio.run(Gateway(settings).decide(
             project, [source], state.conversation, [],
             state.current_plan, selected_strategy=state.strategy.model_dump(), on_progress=report,
             inherited_skill_trace=state.inherited_skill_trace,
-            on_skill_trace=lambda trace: state.traces.append(deepcopy(trace))))["plan"]
+            on_skill_trace=lambda trace: state.traces.append(deepcopy(trace)),
+            job_id=state.job_id))["plan"]
     state.run = run
     state.records = lambda: [json.loads(path.read_text()) for path in (settings.data_root / "diagnostics").glob("*.json")]
     return state
@@ -503,6 +506,29 @@ def test_two_round_budget_stops_even_if_remaining_issue_is_new(progressive_gatew
     assert plan["segments"]
     assert state.calls.count("plan_refinement") == 2
     assert state.calls.count("plan_review") == 3
+
+
+def test_nonblocking_warning_is_written_for_the_plan_job(progressive_gateway, settings):
+    state = progressive_gateway
+    state.project_id = "proj_r23"
+    state.job_id = "job_r23"
+
+    def coat(value):
+        value["shots"][0]["description"] += "，身上披着外套。"
+
+    state.first_director_mutation = coat
+    plan = state.run()
+    assert plan["segments"]
+    files = list((settings.data_root / "diagnostics" / "plan-warnings").glob("*.json"))
+    assert len(files) == 1
+    assert files[0].name.startswith("proj_r23_job_r23_")
+    saved = json.loads(files[0].read_text())
+    assert saved["project_id"] == "proj_r23" and saved["job_id"] == "job_r23"
+    assert saved["timestamp"] in files[0].name
+    assert saved["warnings"]
+    assert any("外套" in item.get("message", "") or "外套" in "".join(item.get("issues") or [])
+               for item in saved["warnings"])
+    assert list((settings.data_root / "diagnostics").glob("*.json")) == []
 
 
 def test_cosmetic_refinement_does_not_spend_another_review_or_round(progressive_gateway):

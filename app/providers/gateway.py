@@ -404,8 +404,20 @@ def remember_plan_warning(settings, holder, candidate):
         warnings = []
         holder["_plan_warnings"] = warnings
     warnings.append(note)
+    project_id = holder.get("project_id") if isinstance(holder.get("project_id"), str) else ""
+    job_id = holder.get("job_id") if isinstance(holder.get("job_id"), str) else ""
+    timestamp = holder.get("_plan_warnings_timestamp")
+    if not isinstance(timestamp, str) or not timestamp:
+        timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        holder["_plan_warnings_timestamp"] = timestamp
     try:
-        content = json.dumps({"kind": "plan_warnings", "warnings": list(warnings)}, ensure_ascii=False).encode("utf-8")
+        content = json.dumps({
+            "kind": "plan_warnings",
+            "project_id": project_id,
+            "job_id": job_id,
+            "timestamp": timestamp,
+            "warnings": list(warnings),
+        }, ensure_ascii=False).encode("utf-8")
         if len(content) > 200 * 1024:
             warnings.pop()
             return None
@@ -417,7 +429,11 @@ def remember_plan_warning(settings, holder, candidate):
             path.write_bytes(content)
             os.chmod(path, 0o600)
             return path
-        path = directory / f"{uuid.uuid4().hex}.json"
+        def safe_id(value, fallback):
+            cleaned = re.sub(r"[^A-Za-z0-9_-]", "", value)[:40]
+            return cleaned or fallback
+        path = directory / (
+            f"{safe_id(project_id, 'project')}_{safe_id(job_id, 'job')}_{timestamp}_{uuid.uuid4().hex[:8]}.json")
         holder["_plan_warnings_path"] = str(path)
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "wb") as handle:
@@ -1965,7 +1981,7 @@ class Gateway:
     async def decide(self, project, assets, messages, gates, current_plan, *, force_plan=False, on_progress=None,
                      selected_strategy=None, inherited_skill_trace=(), on_skill_trace=None,
                      planning_checkpoint=None, on_checkpoint=None, stage_result_cache=None,
-                     stage_cache_sink=None, abandon_check=None, on_planner_stream=None):
+                     stage_cache_sink=None, abandon_check=None, on_planner_stream=None, job_id=None):
         """Resolve intent/choice, then draft -> direct -> independent plan review.
 
         Replies/clarifications cost one request; new choices include one review.
@@ -2508,7 +2524,10 @@ class Gateway:
                         else:
                             draft = copy.deepcopy(raw_draft)
             if choice_enabled and getattr(self.settings, "progressive_planning_enabled", False):
-                self._plan_warning_holder = {}
+                self._plan_warning_holder = {
+                    "project_id": project.get("id") if isinstance(project, dict) and isinstance(project.get("id"), str) else "",
+                    "job_id": job_id if isinstance(job_id, str) else "",
+                }
 
                 def record_progressive_failure(candidate):
                     if isinstance(candidate, dict) and candidate.get("nonblocking") is True:
