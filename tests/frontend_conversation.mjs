@@ -725,6 +725,10 @@ test('state stills stay on the image gate and are captioned by phase', () => {
   assert.equal(planStateReferenceCount({ segments: [{ shots: [
     { description: '她从门口走到台前。' },
     { continuity: { start_state: '头发是湿的', end_state: '头发已经干' } },
+  ] }] }), 1);
+  assert.equal(planStateReferenceCount({ segments: [{ shots: [
+    { id: 's3', description: '她吹着头发。', continuity: { start_state: '头发是湿的', end_state: '被吹开一半', allowed_changes: '发丝由湿到被吹开一半' } },
+    { id: 's6', description: '她关掉吹风机，头发已经顺了。', continuity: { start_state: '头发半干', end_state: '头发顺开', allowed_changes: '发丝由半干到顺开' } },
   ] }] }), 2);
 });
 

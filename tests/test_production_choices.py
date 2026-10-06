@@ -235,3 +235,65 @@ def test_replace_keys_redraws_only_the_finished_old_character_sheet(settings, so
     assert scene_png.read_bytes() == scene_bytes and old_sheet.read_bytes() == old_bytes
     assert (folder / "scene_task.json").exists()
     assert json.loads((folder / "character_char_a_task.json.replaced").read_text())["task_id"] == "old-sheet"
+
+
+def test_state_still_request_includes_the_scene_the_person_and_the_shot(settings, source, tmp_path, monkeypatch):
+    import base64
+    from PIL import Image
+
+    gateway, requests = Gateway(settings), []
+    cast = production()
+    cast["characters"][0]["description"] = "灰色连帽卫衣，黑长发"
+    plan = {
+        "facts": {"name": "吹风机"},
+        "visual_direction": {"scene": "合住卧室", "lighting": "清晨窗边"},
+        "production": cast,
+        "strategy": {"brief": {"product_name": "吹风机", "facts": [{"id": "form", "text": "高速吹干"}]},
+                     "directions": [{"id": "d", "production": deepcopy(cast)}], "selected_direction_id": "d"},
+        "segments": [{"shots": [
+            {"id": "s3", "character_ids": ["char_a"],
+             "description": "合住卧室里，灰卫衣女生站在床边吹湿发。",
+             "continuity": {"start_state": "头发是湿的", "end_state": "被吹开一半", "allowed_changes": "发丝由湿到被吹开一半"}},
+            {"id": "s6", "character_ids": ["char_a"],
+             "description": "同一间卧室，她关掉吹风机，头发已经顺了。",
+             "continuity": {"start_state": "头发半干", "end_state": "头发顺开", "allowed_changes": "发丝由半干到顺开"}},
+        ]}],
+    }
+
+    async def original(asset):
+        return "https://cdn.example/product.png"
+
+    async def submit(route, payload):
+        requests.append(payload)
+        return "task_" + str(len(requests))
+
+    async def task(identifier):
+        return {"status": "completed", "result": {"images": [{"url": "https://cdn.example/" + identifier + ".png"}]}}
+
+    async def download(url, path):
+        Image.new("RGB", (8, 8), "red").save(path, "PNG")
+
+    def tagged(asset):
+        kind = asset.get("kind") or "product"
+        cid = (asset.get("metadata") or {}).get("character_id") or ""
+        raw = f"{kind}:{cid}:{Path(asset['path']).name}".encode()
+        return "data:image/png;base64," + base64.b64encode(raw).decode()
+
+    monkeypatch.setattr(gateway, "_original_reference_url", original)
+    monkeypatch.setattr(gateway, "_submit", submit)
+    monkeypatch.setattr(gateway, "_task", task)
+    monkeypatch.setattr(gateway, "download_video", download)
+    monkeypatch.setattr("app.providers.gateway.data_url", tagged)
+    asyncio.run(gateway.create_designs({}, [source], plan, tmp_path / "designs"))
+    state_requests = [item for item in requests if "写实静帧" in item["prompt"]]
+    assert len(state_requests) == 2
+    for item in state_requests:
+        labels = [base64.b64decode(url.split(",", 1)[1]).decode() for url in item["images"]]
+        assert any(label.startswith("product") for label in labels)
+        assert any(label.startswith("scene:") for label in labels)
+        assert any(label.startswith("character:char_a") for label in labels)
+        assert "灰色连帽卫衣" in item["prompt"]
+        assert "合住卧室" in item["prompt"]
+    assert "灰卫衣女生站在床边吹湿发" in state_requests[0]["prompt"]
+    assert "关掉吹风机" in state_requests[1]["prompt"]
+    assert requests[0]["images"] and all(not base64.b64decode(url.split(",", 1)[1]).decode().startswith("scene:") for url in requests[0]["images"])

@@ -1,14 +1,16 @@
 """剧情结尾、点题、高光证明、状态参考、不看镜头、背景人物。Offline must-fail and must-pass."""
 import asyncio
 
+import pytest
+
 from app.design import state_design_request
 from app.line_quality import apply_line_rewrite, script_line_offenses
 from app.picture_rules import action_issues, state_change_issues
 from app.production import required_designs, validate_design_assets
 from app.story_logic import (
     background_issues, line_is_punchline, plan_state_references, proof_highlight_issues,
-    scrub_story_purposes, shot_state_change, story_ending_issues, story_gaze_line,
-    story_plan_issues, with_background_line,
+    scrub_story_purposes, shot_state_change, state_pairing_issues, story_ending_issues,
+    story_gaze_line, story_plan_issues, with_background_line,
 )
 from app.strategy import StrategyRecord
 from app.video_prompt import compile_grouped_video
@@ -119,36 +121,59 @@ def test_each_story_benefit_needs_a_technique_shot():
     assert "剧情卖点没有高光证明镜" not in story_plan_issues(shown, strategy)
 
 
-def test_state_change_gets_two_stills_and_a_hard_cut_not_a_walk_across_the_room():
-    changed = {
-        "id": "s0",
-        "description": "她按下开关。",
-        "continuity": {"start_state": "头发是湿的", "end_state": "头发已经干", "allowed_changes": ""},
+def _hair_process(shot_id, end):
+    # Halfway wording only shows up when the board itself writes 由湿到半程.
+    allowed = "" if ("已经" in end or "干了" in end or "顺了" in end) else f"发丝由湿到{end}"
+    return {
+        "id": shot_id,
+        "description": "她在床边吹着湿发。",
+        "continuity": {"start_state": "头发是湿的", "end_state": end, "allowed_changes": allowed},
     }
+
+
+def _hair_result(shot_id="s6"):
+    return {
+        "id": shot_id,
+        "description": "同一间卧室，她关掉吹风机，头发已经顺了。",
+        "continuity": {"start_state": "头发半干", "end_state": "头发顺开", "allowed_changes": "发丝由半干到顺开"},
+    }
+
+
+def test_state_change_splits_the_process_shot_from_a_later_result():
+    changed = _hair_process("s0", "头发已经干")
     assert shot_state_change(changed)[0:2] == ("湿", "已经干")
     assert shot_state_change({"id": "walk", "description": "她从门口走到台前。"}) is None
     assert shot_state_change({"id": "still", "description": "瓶子停在桌角。",
                                "continuity": {"start_state": "同一商品静置", "end_state": "同一商品静置"}}) is None
-    plan = {"production": {"characters": []}, "segments": [{"shots": [changed]}]}
+    same_shot = {"production": {"characters": []}, "segments": [{"shots": [changed]}]}
+    assert [item["phase"] for item in plan_state_references(same_shot)] == ["start"]
+    assert "结果状态没有单独的结果镜" in state_pairing_issues(same_shot)
+    halfway = {"production": {"characters": []}, "segments": [{"shots": [_hair_process("s3", "被吹开一半")]}]}
+    assert "状态结果还停在半程" in state_pairing_issues(halfway)
+    assert "一半" not in "".join(item["label"] for item in plan_state_references(halfway))
+    plan = {"production": {"characters": []}, "segments": [{"shots": [
+        _hair_process("s3", "被吹开一半"), _hair_result(),
+    ]}]}
     refs = plan_state_references(plan)
     assert [item["phase"] for item in refs] == ["start", "result"]
+    assert refs[0]["shot_id"] == "s3" and refs[1]["shot_id"] == "s6"
+    assert refs[1]["label"].endswith("顺了")
+    assert "一半" not in refs[1]["label"] and "半干" not in refs[0]["label"]
+    assert state_pairing_issues(plan) == []
     assert all(item["kind"] == "start_frame" for item in refs)
     designs = required_designs(plan)
     assert [item["kind"] for item in designs] == ["scene", "start_frame", "start_frame"]
     scene = {"kind": "scene", "metadata": {"generated": True}}
-    with_missing = [scene]
     try:
-        validate_design_assets(plan, with_missing)
+        validate_design_assets(plan, [scene])
     except ValueError as error:
         assert "状态变化" in str(error)
     else:
         raise AssertionError("state stills are required")
-    stills = []
-    for item in refs:
-        stills.append({"kind": "start_frame", "metadata": {
-            "generated": True, "state_reference": True, "state_id": item["state_id"],
-            "phase": item["phase"], "shot_id": item["shot_id"], "state_label": item["label"],
-        }})
+    stills = [{"kind": "start_frame", "metadata": {
+        "generated": True, "state_reference": True, "state_id": item["state_id"],
+        "phase": item["phase"], "shot_id": item["shot_id"], "state_label": item["label"],
+    }} for item in refs]
     ordered = validate_design_assets(plan, [scene, *stills])
     assert [asset["metadata"].get("phase") for asset in ordered[1:]] == ["start", "result"]
     static = {"production": {"characters": []}, "segments": [{"shots": [{"description": "瓶子停在桌角。"}]}]}
@@ -161,20 +186,42 @@ def test_state_change_gets_two_stills_and_a_hard_cut_not_a_walk_across_the_room(
     assert "商品原图" in request["prompt"]
     assert "画成真人头" in request["prompt"]
     assert "必须露脸" not in request["prompt"]
+    on_story = state_design_request(
+        {},
+        {"facts": {"name": "吹风机"}, "visual_direction": {"scene": "合住卧室", "lighting": "清晨窗边"},
+         "production": {"characters": [{"id": "girl", "name": "女生", "description": "灰色连帽卫衣"}]},
+         "segments": [{"shots": [{
+             "id": "s3", "character_ids": ["girl"],
+             "description": "合住卧室里，灰卫衣女生站在床边吹湿发。",
+             "continuity": {"start_state": "头发是湿的", "end_state": "被吹开一半"},
+         }]}]},
+        {"phase": "start", "label": "头发湿", "subject": "头发", "state_id": "s3:start", "shot_id": "s3"})
+    assert "灰卫衣女生站在床边吹湿发" in on_story["prompt"]
+    assert "灰色连帽卫衣" in on_story["prompt"]
+    assert "合住卧室" in on_story["prompt"]
     segment = _segment(ad_form="scene_story")
+    segment["shots"][0]["description"] = "她在床边吹着湿发。"
     segment["shots"][0]["continuity"] = {
-        "entry_transition": "opening", "start_state": "头发是湿的", "end_state": "头发已经干",
+        "entry_transition": "opening", "start_state": "头发是湿的", "end_state": "被吹开一半",
+        "allowed_changes": "发丝由湿到被吹开一半", "camera_move": "机位不动",
+    }
+    segment["shots"][1]["description"] = "她关掉吹风机，头发已经顺了。"
+    segment["shots"][1]["continuity"] = {
+        "entry_transition": "cut", "start_state": "头发半干", "end_state": "头发顺开",
         "allowed_changes": "", "camera_move": "机位不动",
     }
     segment["reference_roles"] = [
         *segment["reference_roles"],
         {"index": 4, "role": "state", "phase": "start", "shot_id": "s0", "label": "头发湿"},
-        {"index": 5, "role": "state", "phase": "result", "shot_id": "s0", "label": "头发干"},
+        {"index": 5, "role": "state", "phase": "result", "shot_id": "s1", "label": "头发顺了"},
     ]
     prompt = compile_grouped_video(segment)
     opening = _shot_block(prompt, "镜头1 |")
+    ending = _shot_block(prompt, "镜头2 |")
     assert "起始状态参考图4" in opening
-    assert "硬切到结果状态参考图5" in opening
+    assert "停在过程里" in opening
+    assert "硬切到结果" not in opening
+    assert "硬切到结果状态参考图5" in ending
     assert "商品原图" in prompt
 
 
@@ -241,3 +288,91 @@ def test_story_plan_issues_names_the_blocking_problem():
     assert "剧情末句还在点题" in issues
     assert "剧情卖点没有高光证明镜" in issues
     assert story_plan_issues(plan, typed("brand_tvc")) == []
+
+
+def test_story_lines_must_not_score_a_benefit():
+    strategy = _dryer()
+    for line in ("一拨就顺。", "干得快。", "这风不吵。", "太安静了。", "负离子护发。", "不毛躁了。"):
+        names = [name for item in script_line_offenses(_lines("我尽量轻点。", line), strategy) for name in item["offenses"]]
+        assert "在说卖点" in names, line
+    for line in ("我尽量轻点。", "你醒着？", "那我吹了。", "算了，先吹干。", "别吵。"):
+        names = [name for item in script_line_offenses(_lines(line), strategy) for name in item["offenses"]]
+        assert "在说卖点" not in names, line
+    presenter = [name for item in script_line_offenses(_lines("一拨就顺。"), typed("presenter_pitch")) for name in item["offenses"]]
+    assert "在说卖点" not in presenter
+    script = _lines("你醒着？", "一拨就顺。")
+    rejected = apply_line_rewrite(
+        script, {"lines": [{"beat_id": "b1", "narration": "一拨就顺。"}]},
+        limits={"b1": 40}, strategy=strategy, duration_seconds=20)
+    assert rejected is None
+    accepted = apply_line_rewrite(
+        script, {"lines": [{"beat_id": "b1", "narration": "那我吹了。"}]},
+        limits={"b1": 40}, strategy=strategy, duration_seconds=20)
+    assert accepted["beats"][1]["narration"] == "那我吹了。"
+    issues = story_plan_issues(_board(_shot("她拨了拨头发。"), script=_lines("一拨就顺。")), strategy)
+    assert "剧情对白还在说卖点" in issues
+
+
+def test_rack_focus_onto_the_roommate_counts_as_the_quiet_highlight():
+    strategy = _dryer("风很安静，夜里不吵")
+    rack = _board(_shot("过肩近景，焦点从女生侧脸拉到室友脸上，室友睁眼。"))
+    assert proof_highlight_issues(rack, strategy) == []
+    glance = _board(_shot("她看了室友一眼。"))
+    assert proof_highlight_issues(glance, strategy) == ["剧情卖点没有高光证明镜"]
+
+
+def test_generated_state_stills_pass_the_creative_gate(tmp_path):
+    from PIL import Image
+    from app.db import Store
+
+    store = Store(tmp_path / "gate.sqlite3", tmp_path / "media")
+    project = store.create_project("状态参考过确认", "product", duration_seconds=20)
+    story = {"production": {"characters": []}, "segments": [{"shots": [
+        _hair_process("s3", "被吹开一半"), _hair_result(),
+    ]}]}
+    refs = plan_state_references(story)
+    assert [item["phase"] for item in refs] == ["start", "result"]
+    saved = store.update_plan(project["id"], {"title": "先确认方案", "segments": [
+        {"id": "seg_0", "duration_seconds": 10}, {"id": "seg_1", "duration_seconds": 10},
+    ]})
+    scene_path = store.media_root / "scene.png"
+    Image.new("RGB", (8, 8), "gray").save(scene_path)
+    scene = store.add_asset(saved["id"], "scene", "场景", scene_path, "image/png", metadata={"generated": True})
+    plain_path = store.media_root / "plain.png"
+    Image.new("RGB", (8, 8), "blue").save(plain_path)
+    plain = store.add_asset(saved["id"], "start_frame", "普通首帧", plain_path, "image/png", metadata={"generated": True})
+    job = store.create_job(saved["id"], "generate", saved["revision"], {"pause_for_creative": True})
+    assert store.claim_job(job["id"])
+    option = {"id": "current", "label": "保持当前图片", "description": "确认场景和状态参考", "segment": {
+        "id": "seg_0", "duration_seconds": 10, "purpose": "呈现已知操作",
+        "prompt": "商品操作计划", "narration": "三档风速自己选。", "reference_asset_ids": ["product"],
+        "shots": [{"id": "shot_1", "start": 0, "end": 10, "description": "手按已确认的风速键。",
+                   "narration": "", "purpose": "演示操作", "beat_id": "beat_0"}],
+        "speech_spans": [{"id": "speech_1", "beat_id": "beat_0", "text": "三档风速自己选。",
+                          "start": 0, "end": 10, "shot_ids": ["shot_1"], "anchors": [
+                              {"text": "三档风速自己选。", "start": 0, "end": 10, "shot_ids": ["shot_1"],
+                               "visual_evidence": "编排器提供的待审画面说明"}]}]}}
+    payload = store.get_job(job["id"])["payload"]
+    payload["plan"] = story
+    payload["design_asset_ids"] = [scene["id"], plain["id"]]
+    store.update_job(job["id"], payload=payload)
+    with pytest.raises(ValueError, match="请先准备并确认状态变化的起始与结果参考图"):
+        store.create_creative_gate(job["id"], [option], "确认图片")
+    stills = []
+    for ref in refs:
+        path = store.media_root / f"{ref['state_id'].replace(':', '_')}.png"
+        Image.new("RGB", (8, 8), "green").save(path)
+        stills.append(store.add_asset(
+            project["id"], "start_frame", ref["label"], path, "image/png",
+            metadata={"generated": True, "state_reference": True, "state_id": ref["state_id"],
+                      "phase": ref["phase"], "shot_id": ref["shot_id"], "state_label": ref["label"]}))
+    original = path.read_bytes()
+    path.write_bytes(b"changed-bytes")
+    payload = store.get_job(job["id"])["payload"]
+    payload["design_asset_ids"] = [scene["id"], *[item["id"] for item in stills]]
+    store.update_job(job["id"], payload=payload)
+    with pytest.raises(ValueError, match="缺失或已经变化"):
+        store.create_creative_gate(job["id"], [option], "确认图片")
+    path.write_bytes(original)
+    gate = store.create_creative_gate(job["id"], [option], "确认图片")
+    assert gate["kind"] == "creative" and gate["status"] == "pending"

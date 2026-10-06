@@ -1291,7 +1291,8 @@ class Store:
             asset = self._dict(c.execute("SELECT * FROM assets WHERE id=? AND project_id=?", (aid, job["project_id"])).fetchone())
             if not asset:
                 raise ValueError("场景图或角色图记录缺失，请先恢复图片")
-            if asset["kind"] not in ("scene", "character"):
+            state_still = asset["kind"] == "start_frame" and asset["metadata"].get("state_reference")
+            if asset["kind"] not in ("scene", "character") and not state_still:
                 continue
             path = Path(asset["path"]).resolve()
             if not asset["metadata"].get("generated") or not path.is_relative_to(self.media_root) or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != asset["metadata"].get("sha256"):

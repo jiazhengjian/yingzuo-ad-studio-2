@@ -56,30 +56,94 @@ def character_design_request(project, plan, character):
             + json.dumps(context, ensure_ascii=False)}
 
 
-def state_design_request(project, plan, instruction):
-    """One still of one state. Not a before/after collage and not a video frame API."""
-    phase = instruction.get("phase")
-    label = instruction.get("label") or "这一状态"
-    subject = instruction.get("subject") or "主体"
-    brief = ((plan.get("strategy") or {}).get("brief") or {})
-    brief_text = " ".join(part for part in (
+def _plan_shot(plan, shot_id):
+    from .story_logic import iter_plan_shots
+    if not shot_id or not isinstance(plan, dict):
+        return None
+    for shot in iter_plan_shots(plan):
+        if shot.get("id") == shot_id:
+            return shot
+    return None
+
+
+def _state_brief_text(project, plan):
+    brief = ((plan.get("strategy") or {}).get("brief") or {}) if isinstance(plan, dict) else {}
+    return " ".join(part for part in (
         brief.get("product_name") or "",
         project.get("brief") if isinstance(project, dict) else "",
         " ".join(fact.get("text") or "" for fact in brief.get("facts") or [] if isinstance(fact, dict)),
     ) if isinstance(part, str))
-    hidden = off_camera_locked(brief_text, (plan.get("facts") or {}).get("name") or "")
+
+
+def state_context_characters(project, plan, instruction):
+    """Characters this still must keep. Empty when the film is locked off-camera."""
+    if not isinstance(plan, dict):
+        return []
+    hidden = off_camera_locked(_state_brief_text(project, plan), (plan.get("facts") or {}).get("name") or "")
+    if hidden:
+        return []
+    cast = [person for person in ((plan.get("production") or {}).get("characters") or []) if isinstance(person, dict)]
+    shot = _plan_shot(plan, (instruction or {}).get("shot_id"))
+    ids = shot.get("character_ids") if isinstance(shot, dict) else None
+    if isinstance(ids, list) and ids:
+        chosen = [person for person in cast if person.get("id") in ids]
+        if chosen:
+            return chosen[:3]
+    return cast[:3]
+
+
+def state_design_request(project, plan, instruction):
+    """One still of one state, in the same scene and wardrobe as the story.
+
+    Not a before/after collage and not a video frame API. The image call also
+    receives the scene, the character sheets, and the product original.
+    """
+    instruction = instruction or {}
+    plan = plan if isinstance(plan, dict) else {}
+    phase = instruction.get("phase")
+    label = instruction.get("label") or "这一状态"
+    subject = instruction.get("subject") or "主体"
+    hidden = off_camera_locked(_state_brief_text(project, plan), (plan.get("facts") or {}).get("name") or "")
     phase_name = "起始" if phase == "start" else "结果"
+    shot = _plan_shot(plan, instruction.get("shot_id")) or {}
+    description = shot.get("description") if isinstance(shot.get("description"), str) else ""
+    continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else {}
+    visual = plan.get("visual_direction") if isinstance(plan.get("visual_direction"), dict) else {}
+    place = " ".join(part for part in (
+        visual.get("scene") if isinstance(visual.get("scene"), str) else "",
+        visual.get("lighting") if isinstance(visual.get("lighting"), str) else "",
+    ) if part)
+    people = state_context_characters(project, plan, instruction)
+    cast_line = "；".join(
+        f"{person.get('name') or '角色'}：{person.get('description') or ''}" for person in people)[:240]
     prompt = (
         f"生成一张写实静帧，只表现「{subject}」的{phase_name}状态：{label}。"
-        "同一场景、同一人物或物体。不要渐变，不要前后对比拼图，不要分格，不要可读文字、字幕或口号。"
+        "这是这条片子里的同一时刻：同一个人、同一套衣服、同一间房间、同一种光线。"
+        "不要换成另一个人，不要换成另一套衣服，不要换成另一个房间，不要改成棚拍。"
+        "不要渐变，不要前后对比拼图，不要分格，不要可读文字、字幕或口号。"
         "商品外形、颜色和标识以商品原图为准，不重画商品，不改商标。"
+        "参考图顺序：先是商品原图，接着是场景图，然后是这一镜相关的角色参考。"
     )
+    if description.strip():
+        prompt += f"这一镜的画面：{description.strip()[:180]}。"
+    start_state = continuity.get("start_state") if isinstance(continuity.get("start_state"), str) else ""
+    end_state = continuity.get("end_state") if isinstance(continuity.get("end_state"), str) else ""
+    if start_state or end_state:
+        prompt += f"这一镜的连续性：起始 {start_state or '未写'}；结束 {end_state or '未写'}。"
+    if place.strip():
+        prompt += f"场景与光线：{place.strip()[:120]}。"
+    if cast_line:
+        prompt += f"角色与服装：{cast_line}。"
+    if phase == "start":
+        prompt += "这张停在过程开始时的样子，不要画成已经做完。"
+    else:
+        prompt += "这张是切到结果之后的终点，要画成这一变化真正做完的样子，不要画成做到一半。"
     if hidden:
         prompt += "本片不出镜：不要人脸，不要把独立发束或局部画成真人头。"
     else:
-        prompt += "若画面里有人，外貌与已确认角色一致，不换脸。"
+        prompt += "外貌、服装与已确认的角色参考一致，不换脸。"
     return {
-        "version": "state-still-v1",
+        "version": "state-still-v2",
         "aspect_ratio": "9:16",
         "state_id": instruction.get("state_id"),
         "phase": phase,

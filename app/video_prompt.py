@@ -68,9 +68,11 @@ def _reference_lines(segment, spoken=""):
         elif role.get("role") == "scene":
             duty = "场景参考，控制空间、材质、灯光与背景"
         elif role.get("role") == "state":
-            phase = "起始状态" if role.get("phase") == "start" else "结果状态"
             label = role.get("label") or "这一状态"
-            duty = f"{phase}参考，只锁定「{label}」。对应镜头硬切到这张静帧，不要在一镜里渐变。商品外形仍以商品原图为准"
+            if role.get("phase") == "start":
+                duty = f"起始状态参考，只锁定「{label}」。过程镜从这张对齐，停在过程里，不要在这一镜跳到结果。商品外形仍以商品原图为准"
+            else:
+                duty = f"结果状态参考，只锁定「{label}」。切到结果镜之后再对齐这张，不要在过程镜里渐变过来。商品外形仍以商品原图为准"
         elif role.get("role") == "character":
             cid = role.get("character_id")
             if cid not in characters or cid in referenced_characters:
