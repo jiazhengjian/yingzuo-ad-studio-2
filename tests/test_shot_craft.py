@@ -335,30 +335,32 @@ def test_a_raw_character_id_in_the_shot_becomes_the_display_name():
     assert character_prose_name(person) == "小夏"
     assert character_prose_name(named_as_id) == "二十多岁"
     assert replace_character_ids("厨房里，planner双手端着蛋糕。", [person]) == "厨房里，小夏双手端着蛋糕。"
+    cake = {"id": "char_b_planner", "name": "小夏", "description": "穿浅色围裙"}
+    assert replace_character_ids("浅色围裙的planner双手", [cake]) == "浅色围裙的小夏双手"
+    assert replace_character_ids("产品 plannerbook 与 superplanner", [cake]) == "产品 plannerbook 与 superplanner"
     segment = {
         "duration_seconds": 6, "generation_strategy": "continuity_v1", "speech_spans": [],
         "ad_form": "scene_story",
-        "production": {"characters": [person], "speech_mode": "none"},
+        "production": {"characters": [cake], "speech_mode": "none"},
         "reference_roles": [
             {"index": 1, "role": "product"},
-            {"index": 2, "role": "character", "character_id": "char_planner"},
+            {"index": 2, "role": "character", "character_id": "char_b_planner"},
         ],
         "shots": [{
             "id": "s1", "start": 0, "end": 6,
-            "description": "厨房台面前，planner双手端着蛋糕。",
-            "character_ids": ["char_planner"],
+            "description": "厨房台面前，浅色围裙的planner双手端着蛋糕。",
+            "character_ids": ["char_b_planner"],
             "continuity": {
-                "entry_transition": "opening", "start_state": "planner站在台前",
+                "entry_transition": "opening", "start_state": "浅色围裙的planner双手停在台前",
                 "allowed_changes": "planner把蛋糕放下", "end_state": "蛋糕在台面上",
                 "camera_move": "中景，机位固定",
             },
         }],
     }
     prompt = compiled_video_request(segment)["prompt"]
-    assert "小夏双手端着蛋糕" in prompt
-    assert "小夏站在台前" in prompt
+    assert "浅色围裙的小夏双手" in prompt
     assert "planner" not in prompt
-    assert segment["shots"][0]["description"] == "厨房台面前，planner双手端着蛋糕。"
+    assert segment["shots"][0]["description"] == "厨房台面前，浅色围裙的planner双手端着蛋糕。"
 
 
 def test_phase_lines_stay_inside_one_request():

@@ -18,16 +18,23 @@ _ID_LIKE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,79}$")
 
 
 def _character_id_tokens(character_id):
+    """The id, then each trailing piece after ``char_``.
+
+    ``char_b_planner`` yields ``char_b_planner``, ``b_planner`` and ``planner``.
+    A later replace only touches a token that is not inside a longer ASCII word.
+    """
     if not isinstance(character_id, str):
         return []
     token = character_id.strip()
     if not token:
         return []
     tokens = [token]
-    if token.startswith("char_") and len(token) > 9:
-        bare = token[5:]
-        if bare not in tokens:
-            tokens.append(bare)
+    if token.startswith("char_") and len(token) > 5:
+        parts = [part for part in token[5:].split("_") if part]
+        for index in range(len(parts)):
+            suffix = "_".join(parts[index:])
+            if suffix and suffix not in tokens:
+                tokens.append(suffix)
     return tokens
 
 
