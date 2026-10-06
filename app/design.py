@@ -83,7 +83,7 @@ def _state_brief_text(project, plan):
 
 
 def state_context_characters(project, plan, instruction):
-    """Characters this still must keep. Empty when the film is locked off-camera."""
+    """Characters who could own a person-state sheet. Empty when the film is locked off-camera."""
     if not isinstance(plan, dict):
         return []
     hidden = off_camera_locked(_state_brief_text(project, plan), (plan.get("facts") or {}).get("name") or "")
@@ -99,11 +99,41 @@ def state_context_characters(project, plan, instruction):
     return cast[:3]
 
 
-def state_design_request(project, plan, instruction):
-    """One still of one state, in the same scene and wardrobe as the story.
+_PRODUCT_STATE_SUBJECTS = frozenset({"盖子", "瓶盖", "杯", "门", "商品"})
 
-    Not a before/after collage and not a video frame API. The image call also
-    receives the scene, the character sheets, and the product original.
+
+def state_sheet_person(project, plan, instruction):
+    """The one person this state sheet copies. None for an object, or when nobody is on camera."""
+    instruction = instruction or {}
+    if (instruction.get("subject") or "") in _PRODUCT_STATE_SUBJECTS:
+        return None
+    people = state_context_characters(project, plan, instruction)
+    if not people:
+        return None
+    production = plan.get("production") if isinstance(plan, dict) and isinstance(plan.get("production"), dict) else {}
+    speaker_id = production.get("speaker_id")
+    shot = _plan_shot(plan, instruction.get("shot_id")) or {}
+    ids = shot.get("character_ids") if isinstance(shot, dict) else None
+    if isinstance(speaker_id, str) and speaker_id and isinstance(ids, list) and speaker_id in ids:
+        chosen = next((person for person in people if person.get("id") == speaker_id), None)
+        if chosen:
+            return chosen
+    return people[0]
+
+
+def _state_phase_line(phase):
+    if phase == "start":
+        return "这张停在过程开始时的样子，不要画成已经做完。"
+    return "这张是切到结果之后的终点，要画成这一变化真正做完的样子，不要画成做到一半。"
+
+
+def state_design_request(project, plan, instruction):
+    """One state, drawn like a reference sheet, not a frame from the film.
+
+    A person keeps the character-sheet layout and is conditioned only on that
+    person's own sheet. An object, or an off-camera film, is the same product
+    on a clean background, conditioned only on the product original. The scene
+    image stays with the video, where it still owns the room.
     """
     instruction = instruction or {}
     plan = plan if isinstance(plan, dict) else {}
@@ -112,49 +142,39 @@ def state_design_request(project, plan, instruction):
     subject = instruction.get("subject") or "主体"
     hidden = off_camera_locked(_state_brief_text(project, plan), (plan.get("facts") or {}).get("name") or "")
     phase_name = "起始" if phase == "start" else "结果"
-    shot = _plan_shot(plan, instruction.get("shot_id")) or {}
-    description = shot.get("description") if isinstance(shot.get("description"), str) else ""
-    continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else {}
-    visual = plan.get("visual_direction") if isinstance(plan.get("visual_direction"), dict) else {}
-    place = " ".join(part for part in (
-        visual.get("scene") if isinstance(visual.get("scene"), str) else "",
-        visual.get("lighting") if isinstance(visual.get("lighting"), str) else "",
-    ) if part)
-    people = state_context_characters(project, plan, instruction)
-    cast_line = "；".join(
-        f"{person.get('name') or '角色'}：{person.get('description') or ''}" for person in people)[:240]
-    prompt = (
-        f"生成一张写实静帧，只表现「{subject}」的{phase_name}状态：{label}。"
-        "这是这条片子里的同一时刻：同一个人、同一套衣服、同一间房间、同一种光线。"
-        "不要换成另一个人，不要换成另一套衣服，不要换成另一个房间，不要改成棚拍。"
-        "不要渐变，不要前后对比拼图，不要分格，不要可读文字、字幕或口号。"
-        "商品外形、颜色和标识以商品原图为准，不重画商品，不改商标。"
-        "参考图顺序：先是商品原图，接着是场景图，然后是这一镜相关的角色参考。"
-    )
-    if description.strip():
-        prompt += f"这一镜的画面：{description.strip()[:180]}。"
-    start_state = continuity.get("start_state") if isinstance(continuity.get("start_state"), str) else ""
-    end_state = continuity.get("end_state") if isinstance(continuity.get("end_state"), str) else ""
-    if start_state or end_state:
-        prompt += f"这一镜的连续性：起始 {start_state or '未写'}；结束 {end_state or '未写'}。"
-    if place.strip():
-        prompt += f"场景与光线：{place.strip()[:120]}。"
-    if cast_line:
-        prompt += f"角色与服装：{cast_line}。"
-    if phase == "start":
-        prompt += "这张停在过程开始时的样子，不要画成已经做完。"
-    else:
-        prompt += "这张是切到结果之后的终点，要画成这一变化真正做完的样子，不要画成做到一半。"
-    if hidden:
-        prompt += "本片不出镜：不要人脸，不要把独立发束或局部画成真人头。"
-    else:
-        prompt += "外貌、服装与已确认的角色参考一致，不换脸。"
-    return {
-        "version": "state-still-v2",
-        "aspect_ratio": "9:16",
+    person = state_sheet_person(project, plan, instruction)
+    common = {
+        "version": "state-sheet-v1",
         "state_id": instruction.get("state_id"),
         "phase": phase,
         "shot_id": instruction.get("shot_id"),
         "state_label": label,
-        "prompt": prompt,
+        "aspect_ratio": "16:9",
     }
+    if person is None:
+        prompt = (
+            f"生成一张商品状态参考，只表现「{subject}」的{phase_name}状态：{label}。"
+            "干净的白或浅灰无缝背景，同一件商品，只有这一处状态不同。"
+            "不要房间，不要人物，不要场景道具，不要把商品放进故事画面，不要前后对比拼图，不要可读文字。"
+            "商品外形、颜色和标识以商品原图为准，不重画商标。"
+            "参考图只有商品原图，不要场景图，不要角色图。"
+            + _state_phase_line(phase)
+        )
+        if hidden:
+            prompt += "本片不出镜：不要人脸，不要把独立发束或局部画成真人头。"
+        return {**common, "reference_kinds": ["product"], "prompt": prompt}
+    instructions, trace = compiler_template("ads-video-asset-prompts", "references/character-template.txt")
+    instructions = apply_cast_instructions(instructions, person.get("description", ""))
+    instructions += (
+        f"\n这张是同一人的状态四视图，只改这一处：{label}。"
+        "身份、衣服和头发长度与这个人自己的角色四视图一致，只有这一处状态不同。"
+        "不要房间，不要其他人物，不要场景里的道具，不要商品。"
+        "参考图只有这一位角色自己的四视图，不要场景图，不要画成故事里的静帧。"
+        + _state_phase_line(phase)
+    )
+    context = {"name": person.get("name") or "角色", "description": person.get("description") or "",
+               "state": label, "phase": phase_name}
+    return {**common, "character_id": person.get("id"), "sheet_layout": "horizontal_16x9",
+            "template_version": CHARACTER_SHEET_TEMPLATE, "reference_kinds": ["character"],
+            "skill_trace": [trace], "prompt": instructions + "\n已确认角色与这一处状态：\n"
+            + json.dumps(context, ensure_ascii=False)}

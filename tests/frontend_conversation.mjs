@@ -708,19 +708,23 @@ test('state stills stay on the image gate and are captioned by phase', () => {
   const snapshot = messageDesignFixture();
   const still = (id, phase, label) => ({
     id, project_id: projectId, kind: 'start_frame', name: label, revision: 1, url: `/media/${id}`,
-    metadata: { generated: true, state_reference: true, phase, state_label: label },
+    metadata: { generated: true, state_reference: true, phase, state_label: label, sheet_layout: 'horizontal_16x9' },
   });
   snapshot.assets.push(still('wet', 'start', '湿发'), still('dry', 'result', '干发'),
     { id: 'plain-frame', project_id: projectId, kind: 'start_frame', name: '普通首帧', metadata: { generated: true } });
   snapshot.jobs[0].progress.design_asset_ids.push('wet', 'dry', 'plain-frame');
   const assets = messageDesignAssets(snapshot, snapshot.messages[0]);
   assert.deepEqual(assets.map(asset => asset.id), ['original', 'scene', 'wet', 'dry']);
-  assert.equal(designImageLabel(assets[2]), '起始状态 · 湿发');
-  assert.equal(designImageLabel(assets[3]), '结果状态 · 干发');
+  assert.equal(designImageLabel(assets[2]), '状态四视图 · 起始 · 湿发');
+  assert.equal(designImageLabel(assets[3]), '状态四视图 · 结果 · 干发');
+  assert.equal(designImageLabel({
+    id: 'cup', project_id: projectId, kind: 'start_frame', name: '空杯', revision: 1, url: '/media/cup',
+    metadata: { generated: true, state_reference: true, phase: 'result', state_label: '空了' },
+  }), '结果状态 · 空了');
   const html = renderToStaticMarkup(React.createElement(MessageDesignImages, { assets, onPreview: () => {} }));
-  assert.ok(html.includes('商品、场景与状态图片'));
-  assert.ok(html.includes('起始状态'));
-  assert.ok(html.includes('结果状态'));
+  assert.ok(html.includes('商品、场景与状态四视图'));
+  assert.ok(html.includes('状态四视图 · 起始 · 湿发'));
+  assert.ok(html.includes('状态四视图 · 结果 · 干发'));
   assert.ok(!html.includes('普通首帧'));
   assert.equal(planStateReferenceCount({ segments: [{ shots: [
     { description: '她从门口走到台前。' },

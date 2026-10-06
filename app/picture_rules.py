@@ -29,6 +29,11 @@ _DRY_OR_SMOOTH = re.compile(r"吹干|干了|变干|干燥|是干|顺滑|不毛�
 _SLAM = re.compile(r"摔门|砸门|猛地(?:把)?门|把门摔|重重(?:地)?(?:把)?门")
 _QUIET = re.compile(r"安静|不吵|声音小|静音|压声|轻声|别吵")
 _DOOR = re.compile(r"带上门|带门|关门|掩门")
+_NEGATED_PREFIX = re.compile(r"(?:不要|别要|没有|没|不|别|未|勿|莫)[^，。；\s]{0,3}$")
+_ACTION_QUIET = re.compile(r"压声|把声音压低|声音压低")
+_ACTION_HAND = re.compile(r"手部|手指")
+_ACTION_TURN = re.compile(r"翻(?:了个|个)?身")
+_ACTION_DOOR = re.compile(r"门")
 
 
 def off_camera_locked(*texts) -> bool:
@@ -141,17 +146,29 @@ def action_issues(text, claim_text="") -> list[str]:
     return issues
 
 
+def _affirmed(pattern, source):
+    """True when the action occurs without 没/不/别/未 immediately in front of it."""
+    text = source or ""
+    found = False
+    for match in pattern.finditer(text):
+        prefix = text[max(0, match.start() - 6):match.start()]
+        if _NEGATED_PREFIX.search(prefix):
+            continue
+        found = True
+    return found
+
+
 def stitch_actions(description, allowed):
     """Key actions enter the state line as short units, not as a new scene."""
     source = description or ""
     units = []
-    if re.search(r"压声|把声音压低|声音压低", source):
+    if _affirmed(_ACTION_QUIET, source):
         units.append("压低声音")
-    if re.search(r"手部|手指", source):
+    if _affirmed(_ACTION_HAND, source):
         units.append("手部动作")
-    if re.search(r"翻身", source):
+    if _affirmed(_ACTION_TURN, source):
         units.append("翻身")
-    if re.search(r"门", source):
+    if _affirmed(_ACTION_DOOR, source):
         units.append("轻轻带门")
     existing = allowed or ""
     missing = [unit for unit in units if unit not in existing]

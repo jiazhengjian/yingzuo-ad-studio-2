@@ -68,6 +68,9 @@ def video_submission_spec(plan, segment, assets=None):
             if asset["kind"] == "start_frame":
                 role = {"index": index, "role": "state", "phase": meta.get("phase"),
                         "shot_id": meta.get("shot_id"), "label": meta.get("state_label")}
+                state_layout = meta.get("sheet_layout")
+                if state_layout in ("horizontal_16x9", "grid_2x2"):
+                    role["sheet_layout"] = state_layout
             else:
                 role = {"index": index, "role": asset["kind"]}
             if asset["kind"] == "character":

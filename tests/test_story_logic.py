@@ -188,19 +188,50 @@ def test_state_change_splits_the_process_shot_from_a_later_result():
     assert "商品原图" in request["prompt"]
     assert "画成真人头" in request["prompt"]
     assert "必须露脸" not in request["prompt"]
+    assert request["reference_kinds"] == ["product"]
+    assert "sheet_layout" not in request
     on_story = state_design_request(
         {},
         {"facts": {"name": "吹风机"}, "visual_direction": {"scene": "合住卧室", "lighting": "清晨窗边"},
-         "production": {"characters": [{"id": "girl", "name": "女生", "description": "灰色连帽卫衣"}]},
+         "production": {"characters": [
+             {"id": "room", "name": "室友", "description": "碎花睡衣"},
+             {"id": "girl", "name": "女生", "description": "灰色连帽卫衣"},
+         ], "speaker_id": "girl"},
          "segments": [{"shots": [{
-             "id": "s3", "character_ids": ["girl"],
+             "id": "s3", "character_ids": ["room", "girl"],
              "description": "合住卧室里，灰卫衣女生站在床边吹湿发。",
              "continuity": {"start_state": "头发是湿的", "end_state": "被吹开一半"},
          }]}]},
         {"phase": "start", "label": "头发湿", "subject": "头发", "state_id": "s3:start", "shot_id": "s3"})
-    assert "灰卫衣女生站在床边吹湿发" in on_story["prompt"]
+    assert on_story["reference_kinds"] == ["character"]
+    assert on_story["character_id"] == "girl"
+    assert on_story["aspect_ratio"] == "16:9"
+    assert on_story["sheet_layout"] == "horizontal_16x9"
+    assert on_story["template_version"] == "chinese-horizontal-v1"
+    assert "左侧约40%" in on_story["prompt"]
+    assert "背面全身" in on_story["prompt"]
+    assert "白或浅灰无缝背景" in on_story["prompt"]
     assert "灰色连帽卫衣" in on_story["prompt"]
-    assert "合住卧室" in on_story["prompt"]
+    assert "头发湿" in on_story["prompt"]
+    assert "合住卧室" not in on_story["prompt"]
+    assert "清晨窗边" not in on_story["prompt"]
+    assert "床边" not in on_story["prompt"]
+    assert "碎花睡衣" not in on_story["prompt"]
+    assert "室友" not in on_story["prompt"]
+    assert "场景图" in on_story["prompt"]
+    cup = state_design_request(
+        {},
+        {"facts": {"name": "杯子"}, "visual_direction": {"scene": "合住卧室"},
+         "production": {"characters": [{"id": "girl", "name": "女生", "description": "灰色连帽卫衣"}]},
+         "segments": [{"shots": [{"id": "s1", "character_ids": ["girl"],
+                                  "description": "合住卧室里，杯子还是满的。"}]}]},
+        {"phase": "result", "label": "空了", "subject": "杯", "state_id": "s1:result", "shot_id": "s1"})
+    assert cup["reference_kinds"] == ["product"]
+    assert "sheet_layout" not in cup
+    assert "商品原图" in cup["prompt"]
+    assert "白或浅灰" in cup["prompt"]
+    assert "合住卧室" not in cup["prompt"]
+    assert "灰色连帽卫衣" not in cup["prompt"]
     segment = _segment(ad_form="scene_story")
     segment["shots"][0]["description"] = "她在床边吹着湿发。"
     segment["shots"][0]["continuity"] = {

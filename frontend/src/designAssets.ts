@@ -101,8 +101,12 @@ export function designImageLabel(asset: Asset): string {
     return `${asset.metadata.view_layout === 'four_view' ? '角色四视图' : '角色参考'} · ${name}`;
   }
   if (asset.kind === 'start_frame' && asset.metadata.state_reference === true) {
-    const phase = asset.metadata.phase === 'start' ? '起始状态' : '结果状态';
     const label = typeof asset.metadata.state_label === 'string' && asset.metadata.state_label.trim() ? asset.metadata.state_label.trim() : '';
+    if (asset.metadata.sheet_layout === 'horizontal_16x9') {
+      const phase = asset.metadata.phase === 'start' ? '起始' : '结果';
+      return label ? `状态四视图 · ${phase} · ${label}` : `状态四视图 · ${phase}`;
+    }
+    const phase = asset.metadata.phase === 'start' ? '起始状态' : '结果状态';
     return label ? `${phase} · ${label}` : phase;
   }
   return '场景图';

@@ -361,7 +361,7 @@
     {
       "id": "ads-video-video-prompts",
       "display_name": "Ads Video Video Prompts",
-      "version": "1.5.1",
+      "version": "1.5.2",
       "stages": [
         "video_prompts"
       ],
