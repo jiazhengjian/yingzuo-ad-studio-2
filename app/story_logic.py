@@ -58,7 +58,20 @@ _STATE_PAIRS = (
 _LOOK = re.compile(r"(?<![不别])(?:看向镜头|看着镜头|看镜头|面向镜头|直视镜头|对着镜头)")
 _BG_NAME = re.compile(r"室友|同事|朋友|旁边的人|另一个人")
 _BED = re.compile(r"床|床铺|被窝|枕头")
-_POSES = ("背对", "后脑", "侧躺", "趴着", "面向镜头", "正脸", "侧卧")
+# More specific orientations win. 侧躺 stays available when the plan never names a facing.
+_POSE_RULES = (
+    ("面向镜头", re.compile(r"面向镜头|正脸朝|正脸对着镜头")),
+    ("脸朝房间", re.compile(r"脸朝房间|脸转向房间|转向房间一侧|脸朝向房间")),
+    ("背对", re.compile(r"背对|后脑")),
+    ("趴着", re.compile(r"趴着")),
+    ("侧躺", re.compile(r"侧躺|侧卧|侧睡")),
+)
+_FLORAL = re.compile(r"碎花|小花|花纹")
+_SIMILAR_COLORS = ("粉色", "粉白", "奶油", "米色", "浅粉", "杏色")
+_LOGO_TO_CAMERA = re.compile(
+    r"(?:，\s*)?(?:机身\s*)?(?:[A-Za-z][A-Za-z0-9]*\s*)?(?:字样|商标|标志|logo|Logo)\s*朝向?镜头"
+)
+_STORY_HOLD_LINE = "机位停住，人物和手都不再动，商品按放下时的样子留在原位，不摆向镜头，不放下、不移出画面，不出现字幕、Logo或字卡。"
 _NEUTRAL_PURPOSE = "停在这一下刚发生的动作上。"
 
 
@@ -323,22 +336,93 @@ def _push_state(refs, shot, index, phase, label, subject):
     })
 
 
+def _continuity_field(shot, key):
+    continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else {}
+    value = continuity.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def _named_subject(*parts):
+    blob = " ".join(part for part in parts if isinstance(part, str))
+    for word in ("头发", "发丝", "盖子", "瓶盖", "杯", "门", "衣服", "商品"):
+        if word in blob:
+            return "头发" if word in ("头发", "发丝") else word
+    return "主体"
+
+
+def cross_shot_state_pairs(shots):
+    """A cut can be the change: the previous shot still ends wet, a later shot starts dry.
+
+    Intra-shot changes stay with shot_state_change. One open process per subject,
+    kept on the latest shot that still ends in the start state.
+    """
+    open_process = {}
+    pairs = []
+    used = set()
+    for index, shot in enumerate(shots or []):
+        if not isinstance(shot, dict):
+            continue
+        if shot_state_change(shot) is not None:
+            blob = _shot_blob(shot)
+            open_process.pop(_subject_key(_named_subject(blob), blob), None)
+            continue
+        end = _continuity_field(shot, "end_state")
+        start = _continuity_field(shot, "start_state")
+        description = shot.get("description") if isinstance(shot.get("description"), str) else ""
+        subject = _named_subject(start, end, description)
+        key = _subject_key(subject, " ".join((start, end, description)))
+        result_label = _end_from_label(start) or _end_from_label(end)
+        halfway = _intermediate_label(start) or _intermediate_label(end)
+        if key in open_process and key not in used and (result_label or halfway):
+            proc_index, proc_shot, proc_label, proc_subject = open_process.pop(key)
+            pairs.append({
+                "process_index": proc_index, "process_shot": proc_shot,
+                "result_index": index, "result_shot": shot,
+                "start_label": proc_label,
+                "result_label": result_label,
+                "raw_after": start or end,
+                "subject": proc_subject if proc_subject != "主体" else subject,
+            })
+            used.add(key)
+            continue
+        start_label = _canonical_start(end)
+        if start_label and not _end_from_label(end):
+            open_process[key] = (index, shot, start_label, subject)
+    return pairs
+
+
 def _state_groups(container):
-    """One chain per subject. Intermediate steps stay in the chain instead of becoming new pairs."""
+    """One chain per subject. A change may sit inside one shot or on the cut between shots."""
     shots = iter_plan_shots(container)
     groups = {}
     order = []
+
+    def add(key, event):
+        if key not in groups:
+            order.append(key)
+            groups[key] = []
+        groups[key].append(event)
+
     for index, shot in enumerate(shots):
         change = shot_state_change(shot)
         if change is None:
             continue
         before, after, subject = change
         key = _subject_key(subject, _shot_blob(shot))
-        if key not in groups:
-            order.append(key)
-            groups[key] = []
-        groups[key].append({
-            "index": index, "shot": shot, "before": before, "after": after, "subject": subject,
+        add(key, {"index": index, "shot": shot, "before": before, "after": after, "subject": subject})
+    for pair in cross_shot_state_pairs(shots):
+        blob = _shot_blob(pair["process_shot"]) + _shot_blob(pair["result_shot"])
+        key = _subject_key(pair["subject"], blob)
+        if key in groups:
+            continue
+        subject = pair["subject"]
+        add(key, {
+            "index": pair["process_index"], "shot": pair["process_shot"],
+            "before": pair["start_label"], "after": pair["start_label"], "subject": subject,
+        })
+        add(key, {
+            "index": pair["result_index"], "shot": pair["result_shot"],
+            "before": pair["raw_after"], "after": pair["result_label"] or pair["raw_after"], "subject": subject,
         })
     return shots, order, groups
 
@@ -462,50 +546,180 @@ def story_gaze_line(shot, form):
     return "  本镜人物不看镜头。"
 
 
-def background_roster(shots):
-    """The first background person and the pose the story actually gave them."""
-    for shot in shots or []:
-        blob = _shot_blob(shot)
-        name = _BG_NAME.search(blob)
-        if not name:
-            continue
-        pose = next((item for item in _POSES if item in blob), None)
-        if pose is None and "睡" not in blob:
-            continue
-        return {"name": name.group(0), "pose": pose or "睡着"}
+def _declared_pose(text):
+    if not text:
+        return None
+    for name, pattern in _POSE_RULES:
+        if pattern.search(text):
+            return name
     return None
 
 
+def _pose_in_force(shots, index):
+    """Identity from the first appearance. Pose from the latest shot that declares one."""
+    name = None
+    pose = None
+    for cursor, shot in enumerate(shots or []):
+        if cursor > index:
+            break
+        blob = _shot_blob(shot)
+        found = _BG_NAME.search(blob)
+        if found and name is None:
+            name = found.group(0)
+        declared = _declared_pose(blob)
+        if declared:
+            pose = declared
+        elif pose is None and "睡" in blob and found:
+            pose = "睡着"
+    return name, pose
+
+
+def background_roster(shots):
+    """The background person, with the pose in force at the last shot."""
+    if not shots:
+        return None
+    name, pose = _pose_in_force(shots, len(list(shots)) - 1)
+    if not name or not pose:
+        return None
+    return {"name": name, "pose": pose}
+
+
 def background_issues(container):
-    """A bed in frame must still show the background person in the pose already established."""
+    """A bed in frame keeps the person. A declared turn wins; the camera-facing turn does not."""
     shots = iter_plan_shots(container)
-    roster = background_roster(shots)
-    if not roster:
+    if not shots or background_roster(shots) is None:
         return []
     issues = []
-    facing = roster["pose"] in ("背对", "后脑", "侧躺", "趴着", "侧卧", "睡着")
+    established = None
+    name = None
     for shot in shots:
         blob = _shot_blob(shot)
+        found = _BG_NAME.search(blob)
+        if found and name is None:
+            name = found.group(0)
+        pose = _declared_pose(blob)
         if not _BED.search(blob):
+            if pose:
+                established = pose
             continue
-        if roster["name"] not in blob or (roster["pose"] not in blob and "睡着" not in blob and "朝向不变" not in blob):
+        present = name and name in blob
+        carried = pose or "睡着" in blob or "朝向不变" in blob or (established and established in blob)
+        if not present or not carried:
             issues.append("背景人物没有跟着床入画")
-        elif facing and re.search(r"面向镜头|正脸朝", blob):
+        elif pose == "面向镜头" and established and established != "面向镜头":
             issues.append("背景人物朝向和前面不一致")
+        if pose and pose != "面向镜头":
+            established = pose
+        elif pose == "面向镜头" and established is None:
+            established = pose
     return list(dict.fromkeys(issues))
 
 
-def with_background_line(description, shots):
-    """Compiler copy. The checker still fails a plan that omitted the person."""
-    roster = background_roster(shots)
-    if not roster or not isinstance(description, str) or not _BED.search(description):
+def with_background_line(description, shots, index=None):
+    """Carry the latest declared pose. A pose this shot already states is left alone."""
+    if not isinstance(description, str) or not shots or not _BED.search(description):
         return description
-    if roster["name"] in description and roster["pose"] in description:
+    shots = [shot for shot in shots if isinstance(shot, dict)]
+    if index is None:
+        index = next((cursor for cursor, shot in enumerate(shots) if (shot.get("description") or "") == description), None)
+        if index is None:
+            index = len(shots) - 1
+    name, pose = _pose_in_force(shots, index)
+    if not name or not pose:
         return description
-    extra = f"{roster['name']}仍{roster['pose']}，朝向不变"
-    if extra in description:
+    if _declared_pose(description):
+        return description
+    if name in description and pose in description:
+        return description
+    extra = f"{name}仍{pose}，朝向不变，同一套衣服，仍在原来的床位"
+    if extra in description or f"{name}仍{pose}，朝向不变" in description:
         return description
     return description.rstrip("。") + "。" + extra + "。"
+
+
+def rest_product_for_story_ending(shot):
+    """A story ending leaves the product where the action put it. No logo aimed at the lens."""
+    if not isinstance(shot, dict):
+        return shot
+    updated = {**shot, "description": _LOGO_TO_CAMERA.sub("", shot.get("description") or "")}
+    continuity = shot.get("continuity")
+    if isinstance(continuity, dict):
+        continuity = {**continuity}
+        for key in ("start_state", "allowed_changes", "end_state"):
+            if isinstance(continuity.get(key), str):
+                continuity[key] = _LOGO_TO_CAMERA.sub("", continuity[key])
+        updated["continuity"] = continuity
+    updated["description"] = re.sub(r"，{2,}", "，", updated["description"]).strip("，")
+    return updated
+
+
+def shared_characters(plan, character):
+    """Other approved people who appear in the same shot as this one."""
+    if not isinstance(plan, dict) or not isinstance(character, dict):
+        return []
+    approved = [person for person in ((plan.get("production") or {}).get("characters") or []) if isinstance(person, dict)]
+    others = [person for person in approved if person.get("id") != character.get("id")]
+    found = []
+    own_name = character.get("name") if isinstance(character.get("name"), str) else ""
+    for shot in iter_plan_shots(plan):
+        ids = shot.get("character_ids") if isinstance(shot.get("character_ids"), list) else []
+        blob = _shot_blob(shot)
+        for person in others:
+            if person in found:
+                continue
+            other_name = person.get("name") if isinstance(person.get("name"), str) else ""
+            if character.get("id") in ids and person.get("id") in ids:
+                found.append(person)
+            elif own_name and other_name and own_name in blob and other_name in blob:
+                found.append(person)
+    return found
+
+
+def cast_distinction_line(plan, character):
+    """Image-prompt rule. Two people in one frame cannot share a floral pajama set."""
+    shared = shared_characters(plan, character)
+    if not shared:
+        return ""
+    production = (plan or {}).get("production") or {}
+    cast = [person for person in production.get("characters") or [] if isinstance(person, dict)]
+    lead_id = production.get("speaker_id") or (cast[0].get("id") if cast else "")
+    names = "、".join(person.get("name") or "另一人" for person in shared)
+    if character.get("id") == lead_id:
+        wardrobe = "这是主要行动的人：上衣用纯色，不要碎花"
+    else:
+        wardrobe = "这是另一人：衣服用和对方明显不同的颜色，不要碎花"
+    other = "；".join(
+        f"{person.get('name') or '另一人'}：{person.get('description') or ''}" for person in shared)[:240]
+    return (
+        f"同框区分：这一人和{names}会出现在同一画面。{wardrobe}。"
+        "发型长短或刘海也要和对方不同，不要两个人都是差不多的长黑发加浅色碎花睡衣。"
+        "不要只把同一套碎花换成深浅。"
+        f"另一人的资料：{other}。"
+    )
+
+
+def _wardrobes_too_similar(left, right):
+    if _FLORAL.search(left or "") and _FLORAL.search(right or ""):
+        return True
+    return any(color in (left or "") and color in (right or "") for color in _SIMILAR_COLORS)
+
+
+def cast_distinction_issues(plan):
+    """Light check. Vague pajamas are left to the image prompt; matching florals are not."""
+    characters = [person for person in (((plan or {}).get("production") or {}).get("characters") or []) if isinstance(person, dict)]
+    if len(characters) < 2:
+        return []
+    issues = []
+    seen = set()
+    for character in characters:
+        for other in shared_characters(plan, character):
+            pair = tuple(sorted((str(character.get("id")), str(other.get("id")))))
+            if pair in seen:
+                continue
+            seen.add(pair)
+            if _wardrobes_too_similar(character.get("description") or "", other.get("description") or ""):
+                issues.append("同框角色的衣服和发型太接近")
+    return issues
 
 
 def story_plan_issues(plan, strategy):
@@ -527,4 +741,5 @@ def story_plan_issues(plan, strategy):
     issues.extend(proof_highlight_issues(plan, strategy))
     issues.extend(state_pairing_issues(plan))
     issues.extend(background_issues(plan))
+    issues.extend(cast_distinction_issues(plan))
     return list(dict.fromkeys(issues))

@@ -555,7 +555,7 @@
     {
       "id": "ad-form-playbook-scene-story",
       "path": "shared/ad-form-playbooks/scene-story.md",
-      "version": "1.5.1",
+      "version": "1.5.2",
       "stages": ["strategy", "direction_review", "ad_script", "content_draft", "storyboard", "plan_refinement", "plan_review"],
       "ad_forms": ["scene_story"],
       "source_refs": [{"source_id": "tvc-director-local", "path": "tvc-director-examples.md", "sha256": "c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1"}],

@@ -730,6 +730,11 @@ test('state stills stay on the image gate and are captioned by phase', () => {
     { id: 's3', description: '她吹着头发。', continuity: { start_state: '头发是湿的', end_state: '被吹开一半', allowed_changes: '发丝由湿到被吹开一半' } },
     { id: 's6', description: '她关掉吹风机，头发已经顺了。', continuity: { start_state: '头发半干', end_state: '头发顺开', allowed_changes: '发丝由半干到顺开' } },
   ] }] }), 2);
+  assert.equal(planStateReferenceCount({ segments: [{ shots: [
+    { id: 'sh4', continuity: { start_state: '头发仍是湿的', end_state: '头发仍是湿的' } },
+    { id: 'sh5', continuity: { start_state: '头发仍是湿的', end_state: '头发仍是湿的' } },
+    { id: 'sh6', continuity: { start_state: '省略继续吹干的过程后，头发已经吹干', end_state: '头发吹干且顺' } },
+  ] }] }), 2);
 });
 
 test('current character sheets follow explicit render lineage and never stale or unrelated projects', () => {
