@@ -872,7 +872,7 @@ def test_story_explainer_is_rewritten_before_the_plan_is_ready(progressive_gatew
         beats = value["ad_script"]["beats"]
         beats[0]["narration"] = "不敢开，怕吵醒她。"
         beats[1]["narration"] = "太吵了。"
-        beats[2]["narration"] = "不毛躁了。"
+        beats[2]["narration"] = "那我吹了。"
         value["shots"][0]["description"] = "夜里，室友侧躺在床上睡着。她站在镜前，手指停在开关上。"
 
     async def speak_as_the_character(stage_call, director, strategy, duration_seconds, locked_lines=(), plan=None):
@@ -901,7 +901,7 @@ def test_story_explainer_is_not_marked_ready_when_the_rewrite_stays(progressive_
         beats = value["ad_script"]["beats"]
         beats[0]["narration"] = "不敢开，怕吵醒她。"
         beats[1]["narration"] = "太吵了。"
-        beats[2]["narration"] = "不毛躁了。"
+        beats[2]["narration"] = "那我吹了。"
         value["shots"][0]["description"] = "夜里，室友侧躺在床上睡着。她站在镜前，手指停在开关上。"
 
     async def keep_explainer(*args, **kwargs):

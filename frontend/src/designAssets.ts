@@ -120,7 +120,19 @@ const STATE_PAIRS: [string, string[]][] = [
   ['皱', ['平整', '展平', '抚平']],
 ];
 
-function shotStateChange(shot: { description?: string; purpose?: string; continuity?: { start_state?: string; end_state?: string; allowed_changes?: string } | null }): boolean {
+type StateShot = { id?: string; description?: string; purpose?: string; continuity?: { start_state?: string; end_state?: string; allowed_changes?: string } | null };
+
+const INTERMEDIATE = /一半|半干|半湿|被吹开|吹开一半|开始变|还没干|未干|将干/;
+const END_SMOOTH = /顺了|顺滑|不毛躁|梳顺|已经顺|顺开|变顺|拨顺/;
+const END_DRY = /干了|已经干|干燥|干发|是干|干透|吹干/;
+const SHOT_DONE = /已经干|干了|干透|顺了|顺滑|不毛躁|梳顺|拨顺|顺开/;
+
+function shotBlob(shot: StateShot): string {
+  const continuity = shot.continuity ?? {};
+  return [continuity.start_state, continuity.end_state, continuity.allowed_changes, shot.description, shot.purpose].filter(Boolean).join(' ');
+}
+
+function shotChange(shot: StateShot): [string, string] | null {
   const continuity = shot.continuity ?? {};
   const start = continuity.start_state ?? '';
   const end = continuity.end_state ?? '';
@@ -128,20 +140,72 @@ function shotStateChange(shot: { description?: string; purpose?: string; continu
   const description = shot.description ?? '';
   const blob = [start, end, allowed, description].filter(Boolean).join(' ');
   const match = FROM_TO.exec(blob);
-  if (match && STATEY.test(match[1]) && STATEY.test(match[2])) return true;
-  return STATE_PAIRS.some(([left, rights]) => left && start.includes(left) && !end.includes(left) && rights.some(right => end.includes(right) || allowed.includes(right) || description.includes(right)));
+  if (match && STATEY.test(match[1]) && STATEY.test(match[2])) return [match[1], match[2]];
+  for (const [left, rights] of STATE_PAIRS) {
+    if (left && start.includes(left) && !end.includes(left) && rights.some(right => end.includes(right) || allowed.includes(right) || description.includes(right))) {
+      const after = rights.find(right => end.includes(right) || allowed.includes(right) || description.includes(right)) ?? '';
+      return [left, after];
+    }
+  }
+  return null;
 }
 
-/** How many start/result stills this plan should show. Capped at three changes. */
-export function planStateReferenceCount(plan: { segments?: { shots?: { description?: string; purpose?: string; continuity?: { start_state?: string; end_state?: string; allowed_changes?: string } | null }[] }[] } | null | undefined): number {
+function canonicalStart(text: string): string | null {
+  if (!text || INTERMEDIATE.test(text)) return null;
+  return ['湿', '毛躁', '乱', '关上', '合上', '满', '皱'].find(word => text.includes(word)) ?? null;
+}
+
+function endFromLabel(text: string): string | null {
+  if (!text || INTERMEDIATE.test(text)) return null;
+  if (END_SMOOTH.test(text)) return '顺了';
+  if (!text.includes('半干') && (END_DRY.test(text) || /(?<![半未不])干$/.test(text))) return '干了';
+  if (/打开|敞开|开了/.test(text) && !text.includes('吹开') && !text.includes('一半')) return '打开';
+  if (/空了|倒空|见底/.test(text)) return '空了';
+  if (/平整|展平|抚平/.test(text)) return '平整';
+  return null;
+}
+
+function endFromShot(shot: StateShot): string | null {
+  const end = shot.continuity?.end_state ?? '';
+  const labeled = endFromLabel(end);
+  if (labeled) return labeled;
+  const description = shot.description ?? '';
+  if (SHOT_DONE.test(description) && !INTERMEDIATE.test(description)) return endFromLabel(description);
+  return null;
+}
+
+/** How many start/result stills this plan should show. One pair per subject, result on a later shot. */
+export function planStateReferenceCount(plan: { segments?: { shots?: StateShot[] }[] } | null | undefined): number {
   const shots = plan?.segments?.flatMap(segment => segment.shots ?? []) ?? [];
-  let changes = 0;
-  for (const shot of shots) {
-    if (!shotStateChange(shot)) continue;
-    changes += 1;
-    if (changes >= 3) break;
+  const groups = new Map<string, { index: number; before: string; after: string }[]>();
+  shots.forEach((shot, index) => {
+    const change = shotChange(shot);
+    if (!change) return;
+    const blob = shotBlob(shot);
+    const key = change[0].includes('发') || blob.includes('头发') || blob.includes('发丝') || ['湿', '毛躁', '乱'].some(word => change[0].includes(word)) ? '头发' : change[0];
+    const group = groups.get(key) ?? [];
+    group.push({ index, before: change[0], after: change[1] });
+    groups.set(key, group);
+  });
+  let count = 0;
+  for (const group of groups.values()) {
+    if (count >= 6) break;
+    let startIndex = group[0].index;
+    const labeled = group.find(item => canonicalStart(item.before));
+    if (labeled) startIndex = labeled.index;
+    else {
+      for (let index = 0; index <= group[0].index; index += 1) {
+        const found = canonicalStart(shotBlob(shots[index]));
+        if (found) { startIndex = index; break; }
+      }
+    }
+    if (!canonicalStart(group.find(item => item.index === startIndex)?.before ?? '') && !shots.slice(0, startIndex + 1).some(shot => canonicalStart(shotBlob(shot)))) continue;
+    count += 1;
+    const laterChange = [...group].reverse().find(item => item.index > startIndex && endFromLabel(item.after));
+    const laterShot = laterChange ? laterChange.index : shots.findIndex((shot, index) => index > startIndex && endFromShot(shot));
+    if (laterShot > startIndex) count += 1;
   }
-  return changes * 2;
+  return count;
 }
 
 export const currentStateAssets = (detail: Detail | null): Asset[] => currentGeneratedDesignAssets(detail, 'start_frame');

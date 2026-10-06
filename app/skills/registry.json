@@ -201,7 +201,7 @@
     {
       "id": "ads-video-dialogue-writing",
       "display_name": "Ads Video Dialogue Writing",
-      "version": "1.9.4",
+      "version": "1.9.5",
       "stages": [
         "ad_script",
         "storyboard",
@@ -361,7 +361,7 @@
     {
       "id": "ads-video-video-prompts",
       "display_name": "Ads Video Video Prompts",
-      "version": "1.5.0",
+      "version": "1.5.1",
       "stages": [
         "video_prompts"
       ],
@@ -403,7 +403,7 @@
     {
       "id": "ads-video-plan-review",
       "display_name": "Ads Video Plan Review",
-      "version": "1.18.0",
+      "version": "1.18.1",
       "stages": [
         "direction_review",
         "plan_review",
@@ -555,7 +555,7 @@
     {
       "id": "ad-form-playbook-scene-story",
       "path": "shared/ad-form-playbooks/scene-story.md",
-      "version": "1.5.0",
+      "version": "1.5.1",
       "stages": ["strategy", "direction_review", "ad_script", "content_draft", "storyboard", "plan_refinement", "plan_review"],
       "ad_forms": ["scene_story"],
       "source_refs": [{"source_id": "tvc-director-local", "path": "tvc-director-examples.md", "sha256": "c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1"}],

@@ -774,6 +774,48 @@ def atomic_json(path, value):
     os.replace(temp, path)
 
 
+def _generated_image(results, assets, work_dir, *, kind, character_id=None, key=None):
+    """A scene or character sheet already produced in this run, or still on disk."""
+    pool = [item for item in results or [] if isinstance(item, dict)]
+    pool.extend(item for item in assets or [] if isinstance(item, dict))
+    for item in reversed(pool):
+        if item.get("kind") != kind:
+            continue
+        meta = item.get("metadata") or {}
+        if character_id and meta.get("character_id") != character_id:
+            continue
+        path = item.get("path")
+        if path and Path(path).is_file():
+            found = dict(item)
+            found.setdefault("mime", "image/png")
+            found.setdefault("kind", kind)
+            return found
+    if work_dir is not None and key:
+        matches = [path for path in Path(work_dir).glob(f"{key}*.png")
+                   if path.is_file() and ".tmp" not in path.name]
+        if matches:
+            return {"path": str(matches[-1]), "mime": "image/png", "kind": kind,
+                    "metadata": {"generated": True, "character_id": character_id}}
+    return None
+
+
+def _state_still_inputs(sources, results, assets, project, plan, instruction, work_dir):
+    """Product original, the scene, and the character sheets that own this shot."""
+    from app.design import state_context_characters
+    images = list(sources)
+    scene = _generated_image(results, assets, work_dir, kind="scene", key="scene")
+    if scene is None:
+        raise ValueError("状态参考图需要已生成的场景图")
+    images.append(scene)
+    for person in state_context_characters(project, plan, instruction):
+        cid = person.get("id")
+        sheet = _generated_image(results, assets, work_dir, kind="character", character_id=cid, key=f"character_{cid}")
+        if sheet is None:
+            raise ValueError("状态参考图需要已生成的角色参考")
+        images.append(sheet)
+    return images
+
+
 def data_url(asset):
     raw = Path(asset["path"]).read_bytes()
     return f"data:{asset['mime']};base64,{base64.b64encode(raw).decode('ascii')}"
@@ -2813,6 +2855,7 @@ class Gateway:
         results = []
         for instruction in instructions:
             kind, name, key = instruction["kind"], instruction["name"], instruction["key"]
+            image_inputs = sources
             check_cancelled()
             receipt_path = work_dir / f"{key}_task.json"
             try:
@@ -2851,8 +2894,11 @@ class Gateway:
                     aspect = "9:16" if kind in ("scene", "start_frame") else "16:9"
                 payload = {"model": self.settings.image_model, "prompt": design_request["prompt"],
                            "size": aspect, "resolution": "1k", "quality": "medium"}
+                image_inputs = sources
+                if kind == "start_frame":
+                    image_inputs = _state_still_inputs(sources, results, assets, project, plan, instruction, work_dir)
                 if kind in ("scene", "start_frame"):
-                    payload["images"] = [data_url(a) for a in sources]
+                    payload["images"] = [data_url(item) for item in image_inputs]
                 check_cancelled()
                 receipt = {"state": "submitting", "model": self.settings.image_model, "created_at": time.time(),
                            "design_request": design_request, "kind": kind,
@@ -2959,7 +3005,7 @@ class Gateway:
             result = {"source_path": path, "path": path, "name": name, "kind": kind, "mime": "image/png", "metadata": {
                 "generated": True, "provider": "tudou", "model": receipt.get("model", self.settings.image_model), "provider_url": receipt["url"],
                 "task_id": receipt["task_id"], "expires_at": receipt.get("expires_at"),
-                "source_asset_ids": [a["id"] for a in sources] if kind in ("scene", "start_frame") else [],
+                "source_asset_ids": [a["id"] for a in (image_inputs if kind == "start_frame" else sources) if a.get("id")] if kind in ("scene", "start_frame") else [],
                 **design_metadata, "review_required": review}}
             results.append(result)
             if on_asset is not None:

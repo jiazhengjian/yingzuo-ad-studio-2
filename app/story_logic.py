@@ -32,10 +32,18 @@ _TECHNIQUE = re.compile(
 )
 _CLAIM_VISUAL = {
     "speed": re.compile(r"快|干|吹|风口|气流|风"),
-    "noise": re.compile(r"安静|不吵|睡|轻声|声音"),
+    # A rack focus onto the roommate or sleeper is the quiet proof, even without the word 安静.
+    "noise": re.compile(r"安静|不吵|睡|轻声|声音|室友|侧躺|闭眼|装睡|没醒"),
     "smooth": re.compile(r"顺|梳|发丝|毛躁"),
     "ions": re.compile(r"离子|光点|微粒"),
 }
+_INTERMEDIATE = re.compile(r"一半|半干|半湿|被吹开|吹开一半|开始变|还没干|未干|将干")
+_END_SMOOTH = re.compile(r"顺了|顺滑|不毛躁|梳顺|已经顺|顺开|变顺|拨顺")
+_END_DRY = re.compile(r"干了|已经干|干燥|干发|是干|干透|吹干|(?<![半未不])干$")
+_END_OPEN = re.compile(r"打开|敞开|开了")
+_END_EMPTY = re.compile(r"空了|倒空|见底")
+_END_FLAT = re.compile(r"平整|展平|抚平")
+_SHOT_DONE = re.compile(r"已经干|干了|干透|顺了|顺滑|不毛躁|梳顺|拨顺|顺开")
 _FROM_TO = re.compile(r"(?:由|从)([^，。；\s]{1,6}?)(?:到|变成|变为)([^，。；\s]{1,6})")
 _STATEY = re.compile(r"湿|干|乱|顺|毛|关|开|满|空|皱|平|脏|净|合")
 _STATE_PAIRS = (
@@ -245,49 +253,197 @@ def shot_state_change(shot):
     return before, after, subject
 
 
-def plan_state_references(container, *, limit=3):
-    """Start and result stills for shots whose state text alone will not execute.
+def _intermediate_label(text):
+    return bool(_INTERMEDIATE.search(text or ""))
 
-    All ad types. At most `limit` changes, so the reference list can still fit.
-    """
-    refs = []
-    for index, shot in enumerate(iter_plan_shots(container)):
+
+def _canonical_start(text):
+    if not text or _intermediate_label(text):
+        return None
+    for word in ("湿", "毛躁", "乱", "关上", "合上", "满", "皱"):
+        if word in text:
+            return word
+    return None
+
+
+def _end_from_label(text):
+    """A real end of the claim. Halfway states such as 一半 or 半干 are not ends."""
+    if not text or _intermediate_label(text):
+        return None
+    if _END_SMOOTH.search(text):
+        return "顺了"
+    if "半干" not in text and _END_DRY.search(text):
+        return "干了"
+    if _END_OPEN.search(text) and "吹开" not in text and "一半" not in text:
+        return "打开"
+    if _END_EMPTY.search(text):
+        return "空了"
+    if _END_FLAT.search(text):
+        return "平整"
+    return None
+
+
+def _end_from_shot(shot):
+    if not isinstance(shot, dict):
+        return None
+    continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else {}
+    end = continuity.get("end_state") if isinstance(continuity.get("end_state"), str) else ""
+    label = _end_from_label(end)
+    if label:
+        return label
+    description = shot.get("description") if isinstance(shot.get("description"), str) else ""
+    if _SHOT_DONE.search(description) and not _intermediate_label(description):
+        return _end_from_label(description)
+    return None
+
+
+def _subject_key(subject, blob):
+    if subject in ("头发", "发丝") or "头发" in (blob or "") or "发丝" in (blob or ""):
+        return "头发"
+    return subject or "主体"
+
+
+def _shot_identity(shot, index):
+    shot_id = shot.get("id") if isinstance(shot, dict) and isinstance(shot.get("id"), str) and shot.get("id") else f"n{index}"
+    safe = re.sub(r"[^a-zA-Z0-9_]", "_", shot_id)
+    return shot_id, safe
+
+
+def _push_state(refs, shot, index, phase, label, subject):
+    shot_id, safe = _shot_identity(shot, index)
+    refs.append({
+        "key": f"state_{safe}_{phase}",
+        "kind": "start_frame",
+        "name": f"{subject}{label} · {'起始' if phase == 'start' else '结果'}",
+        "state_id": f"{safe}:{phase}",
+        "phase": phase,
+        "shot_id": shot_id,
+        "label": f"{subject}{label}",
+        "subject": subject,
+    })
+
+
+def _state_groups(container):
+    """One chain per subject. Intermediate steps stay in the chain instead of becoming new pairs."""
+    shots = iter_plan_shots(container)
+    groups = {}
+    order = []
+    for index, shot in enumerate(shots):
         change = shot_state_change(shot)
         if change is None:
             continue
+        before, after, subject = change
+        key = _subject_key(subject, _shot_blob(shot))
+        if key not in groups:
+            order.append(key)
+            groups[key] = []
+        groups[key].append({
+            "index": index, "shot": shot, "before": before, "after": after, "subject": subject,
+        })
+    return shots, order, groups
+
+
+def _pair_for_group(shots, group):
+    """Process shot keeps the start. A later shot keeps the real end. One pair per subject."""
+    start_event = next((item for item in group if _canonical_start(item["before"])), None)
+    if start_event is None:
+        for index, shot in enumerate(shots):
+            if index > group[0]["index"]:
+                break
+            found = _canonical_start(_shot_blob(shot))
+            if found:
+                start_event = {**group[0], "index": index, "shot": shot, "before": found}
+                break
+    if start_event is None:
+        start_event = group[0]
+    start_label = _canonical_start(start_event["before"]) or _canonical_start(_shot_blob(start_event["shot"]))
+    if not start_label:
+        return None
+    result_event = next((item for item in reversed(group)
+                          if item["index"] > start_event["index"] and _end_from_label(item["after"])), None)
+    result_label = _end_from_label(result_event["after"]) if result_event else None
+    if result_event is None:
+        for index, shot in enumerate(shots):
+            if index <= start_event["index"]:
+                continue
+            found = _end_from_shot(shot)
+            if not found:
+                continue
+            if start_event["subject"] not in ("头发", "发丝", "主体") and start_event["subject"] not in _shot_blob(shot):
+                continue
+            result_event = {"index": index, "shot": shot, "subject": start_event["subject"]}
+            result_label = found
+            break
+    subject = start_event["subject"] if start_event["subject"] not in ("主体",) else (
+        "头发" if _subject_key(start_event["subject"], _shot_blob(start_event["shot"])) == "头发" else "主体")
+    if subject == "主体" and _subject_key("", _shot_blob(start_event["shot"])) == "头发":
+        subject = "头发"
+    return start_event, start_label, result_event, result_label, subject
+
+
+def plan_state_references(container, *, limit=3):
+    """One start still on the process shot, and one result still on a later shot.
+
+    The result is the real end of that change, such as dry or smooth. Halfway
+    labels stay off the result still. At most `limit` changes, so the reference
+    list can still fit. All ad types. This is not a first/last-frame API.
+    """
+    shots, order, groups = _state_groups(container)
+    refs = []
+    for key in order:
         if len(refs) >= limit * 2:
             break
-        before, after, subject = change
-        shot_id = shot.get("id") if isinstance(shot.get("id"), str) and shot.get("id") else f"n{index}"
-        safe = re.sub(r"[^a-zA-Z0-9_]", "_", shot_id)
-        for phase, label in (("start", before), ("result", after)):
-            refs.append({
-                "key": f"state_{safe}_{phase}",
-                "kind": "start_frame",
-                "name": f"{subject}{label} · {'起始' if phase == 'start' else '结果'}",
-                "state_id": f"{safe}:{phase}",
-                "phase": phase,
-                "shot_id": shot_id,
-                "label": f"{subject}{label}",
-                "subject": subject,
-            })
+        paired = _pair_for_group(shots, groups[key])
+        if paired is None:
+            continue
+        start_event, start_label, result_event, result_label, subject = paired
+        _push_state(refs, start_event["shot"], start_event["index"], "start", start_label, subject)
+        if result_event is not None and result_label and result_event["index"] != start_event["index"]:
+            _push_state(refs, result_event["shot"], result_event["index"], "result", result_label, subject)
     return refs
 
 
+def state_pairing_issues(container):
+    """The process shot does not also own the result, and the result is a real end."""
+    shots, order, groups = _state_groups(container)
+    if not order:
+        return []
+    issues = []
+    for key in order:
+        group = groups[key]
+        paired = _pair_for_group(shots, group)
+        later = paired is not None and paired[2] is not None and paired[2]["index"] != paired[0]["index"]
+        raw_afters = [item["after"] for item in group]
+        if not later and any(_intermediate_label(after) for after in raw_afters) and not any(
+                _end_from_label(after) for after in raw_afters):
+            issues.append("状态结果还停在半程")
+        elif not later:
+            issues.append("结果状态没有单独的结果镜")
+    refs = plan_state_references(container)
+    phases = {}
+    for ref in refs:
+        phases.setdefault(ref["shot_id"], set()).add(ref["phase"])
+    if any({"start", "result"} <= item for item in phases.values()):
+        issues.append("结果状态和过程写在同一镜")
+    return list(dict.fromkeys(issues))
+
+
 def state_prompt_lines(shot, roles):
-    """Point a changed shot at its stills. No first/last-frame API is claimed."""
-    if not isinstance(shot, dict) or shot_state_change(shot) is None:
+    """Process shots stay on the start still. Only a later result shot hard-cuts.
+
+    No first/last-frame API is claimed. A shot that was given both stills keeps
+    the process reading, so a drying shot is not also told to jump to the end.
+    """
+    if not isinstance(shot, dict):
         return []
     shot_id = shot.get("id")
-    lines = []
     start = next((role for role in roles or [] if role.get("role") == "state" and role.get("phase") == "start" and role.get("shot_id") == shot_id), None)
     result = next((role for role in roles or [] if role.get("role") == "state" and role.get("phase") == "result" and role.get("shot_id") == shot_id), None)
+    lines = []
     if start:
-        lines.append(f"  本镜开始对齐起始状态参考图{start['index']}。")
-    if result:
+        lines.append(f"  本镜开始对齐起始状态参考图{start['index']}，停在过程里，不要跳到结果。")
+    if result and not start:
         lines.append(f"  本镜硬切到结果状态参考图{result['index']}，不要在这一镜里从上一状态渐变。")
-    elif not start:
-        lines.append("  本镜是状态结果，硬切，不要在这一镜里渐变。")
     return lines
 
 
@@ -361,10 +517,14 @@ def story_plan_issues(plan, strategy):
     try:
         from .line_quality import script_line_offenses
         script = (plan or {}).get("ad_script") or {}
-        if any("在点题" in (item.get("offenses") or []) for item in script_line_offenses(script, strategy, plan=plan)):
+        offenses = script_line_offenses(script, strategy, plan=plan)
+        if any("在说卖点" in (item.get("offenses") or []) for item in offenses):
+            issues.append("剧情对白还在说卖点")
+        if any("在点题" in (item.get("offenses") or []) for item in offenses):
             issues.append("剧情末句还在点题")
     except (TypeError, ValueError, KeyError):
         pass
     issues.extend(proof_highlight_issues(plan, strategy))
+    issues.extend(state_pairing_issues(plan))
     issues.extend(background_issues(plan))
     return list(dict.fromkeys(issues))

@@ -603,6 +603,24 @@ def _claim_tags(text):
     return found
 
 
+# Spoken as an evaluation of the product or its result. Intentions such as 先吹干,
+# and ordinary words such as 轻点, are not this.
+_SPOKEN_CLAIM = re.compile(
+    r"顺滑|不毛躁|柔顺|顺直|不打结|顺了|是顺|就顺|护发|吹顺|变顺|发丝顺|头发顺"
+    r"|干得快|吹得快|几下就|一下就干|很快就|迅速|马上就干|干得很快"
+    r"|不吵|安静|声音小|听得清|听得见|静音"
+    r"|负离子|很轻|机身轻|分量轻|握感|好握|配色"
+    r"|(?<![便])顺(?!便|利|口|序|手|路|带)"
+)
+
+
+def line_asserts_product_claim(text):
+    """True when a line scores a benefit. 轻点, 先吹干, 那我吹了 stay clear."""
+    if not isinstance(text, str) or not text.strip() or _CTA_LINE.search(text):
+        return False
+    return bool(_SPOKEN_CLAIM.search(text))
+
+
 def _ordered_tags(text):
     ranked = []
     for name, pattern in _CLAIM_PATTERNS:
@@ -835,6 +853,12 @@ def _script_line_offenses(script, strategy, locked_lines, plan=None, duration_se
             tags = _claim_tags(text)
             if axis and tags and axis not in tags:
                 add(beat, indexes.get(id(beat), 0), "主轴拧了")
+        for beat in spoken:
+            text = beat["narration"]
+            if _CTA_LINE.search(text) or _SCENE_FREEZE_CTA.search(text):
+                continue
+            if line_asserts_product_claim(text):
+                add(beat, indexes.get(id(beat), 0), "在说卖点")
         content_lines = [beat for beat in spoken if not _CTA_LINE.search(beat["narration"]) and not _SCENE_FREEZE_CTA.search(beat["narration"])]
         if content_lines:
             from .story_logic import line_is_punchline, purpose_is_punchline
@@ -1505,6 +1529,12 @@ def rewrite_schema(lines: list[dict], beat_cap: int) -> dict:
             one["properties"]["narration"]["description"] = (
                 "这句的好处和这条的主好处不是同一件。改成对主好处的反应或态度。"
                 "不要换成另一条卖点，也不要写固定套话。")
+        elif "在说卖点" in offenses:
+            one["properties"]["narration"]["minLength"] = 1
+            one["properties"]["narration"]["description"] = (
+                "这句在评价商品或它的结果，例如顺、干得快、不吵、安静、护发。"
+                "改成这个人当下的反应或意图，不要给结果打分，也不要再报一条卖点。"
+                "不要指定某一句替换。")
         elif "在点题" in offenses:
             one["properties"]["narration"]["minLength"] = 1
             one["properties"]["narration"]["description"] = (
@@ -1564,7 +1594,7 @@ def apply_line_rewrite(script: dict, raw, *, limits: dict, locked_lines=(), fact
                 leftover = _script_line_offenses(revised, strategy, locked_lines, duration_seconds=duration_seconds)
                 blocked = {"电报体", "主轴拧了"}
                 if form_now == "scene_story":
-                    blocked.add("在点题")
+                    blocked.update({"在点题", "在说卖点"})
                 if form_now == "brand_tvc":
                     blocked.update({"旁白像文案", "旁白在堆卖点", "一句里塞了两个卖点", "标签式旁白"})
                 if any(name in blocked for item in leftover for name in item["offenses"]):
@@ -1598,7 +1628,7 @@ LINE_REWRITE_SYSTEM = """你只重写列出的中文广告台词，只输出 JSO
 产品展示大约15秒整条只围绕一个主好处，像跟人说话。大约30秒可以在这一个主好处之后再留一个配角好处，分清主次。45秒以上可以再展开一句，仍然不要并列清单。不要文案腔，不要「是它的脸」「先到了」「肩线这一圈」，也不要「十万转高速马达」「一亿负离子」这种参数清单。短的口语好处不要改长，也不要补主语。例如「这风不吵。」「几下就干。」「是……的」这种电报标签要改成说得出口的一句，不要指定某一句替换。顺、顺滑、不毛躁是同一个好处。不要描述镜头里的光和动作，不要用痛点问句或场景交代开场。旁白太密，或超过本片时长还能说的卖点，那些句子 narration 留空。至少留一拍只有产品的声音。不编价格。口播不受这条限制，卖点之间仍用而且接上。
 人物讲解的每一句卖点都要有主语：这款、它，或「我用它」。不要用「风大」「带负离子」这种没有主语的开头。卖点之间用而且、还、另外、所以或关键是接上。
 产品片不必每句点名。直接、短地说画面证明不了的好处。不要描述镜头里的光、银线或发丝飘起。
-剧情对白是意图、反应、对照或包袱，每句大约4到10字，用这个人自己的第一人称。不要把这一镜已经看见的事再说一遍，也不要用她、他做第三人称解说。画面是室友在睡、她没按开关时，不要说「不敢开，怕吵醒她。」改成这个人自己会说的反应、态度，或一句画面带不走的话。不要念室友在睡、她拿吹风机，也不要改成口播卖点。末句不要点题，不要用没白、终于、还好有它、幸亏，也不要让产品当主语说它让我。好处最多一句，并且和这条的主好处是同一件。剧情不念点击或链接，片尾停在故事里。人物不要转头对着镜头推销。数字和功效只在 facts 里已经有时才能写。若某句带了 picture，那就是这一镜已经拍到的内容。口播是出镜的人用第一人称对观众说，商品特写仍是这个人接着说，不是另配旁白，卖点可以连着说。产品展示是画外旁白，不要对口型念卖点，可以留不说话的画面，不规定那一拍占几秒。
+剧情对白是意图、反应、对照或包袱，每句大约4到10字，用这个人自己的第一人称。不要把这一镜已经看见的事再说一遍，也不要用她、他做第三人称解说。画面是室友在睡、她没按开关时，不要说「不敢开，怕吵醒她。」改成这个人自己会说的反应、态度，或一句画面带不走的话。不要念室友在睡、她拿吹风机，也不要改成口播卖点。末句不要点题，不要用没白、终于、还好有它、幸亏，也不要让产品当主语说它让我。不要用对白评价商品好不好，不要说顺、干得快、不吵、安静、护发。轻点、醒着、那我吹了、先吹干这种当下的话可以留。好处最多一句，并且和这条的主好处是同一件。剧情不念点击或链接，片尾停在故事里。人物不要转头对着镜头推销。数字和功效只在 facts 里已经有时才能写。若某句带了 picture，那就是这一镜已经拍到的内容。口播是出镜的人用第一人称对观众说，商品特写仍是这个人接着说，不是另配旁白，卖点可以连着说。产品展示是画外旁白，不要对口型念卖点，可以留不说话的画面，不规定那一拍占几秒。
 tagline_policy.enabled 为 false 时不加独立口号字卡。为 true 时只有收束句可以是不超过10字的口播，仍然不写购买、下单、抢购。
 不输出其他字段，不解释。"""
 

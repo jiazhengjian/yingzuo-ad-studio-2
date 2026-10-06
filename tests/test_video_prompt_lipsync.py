@@ -70,7 +70,7 @@ def test_on_camera_speech_is_lip_synced_from_the_first_word():
 
 def test_new_template_is_traced_and_does_not_ban_a_spoken_cta_word():
     compiled = compiled_video_request(_segment())
-    assert compiled["skill_trace"][0]["version"] == "1.5.0"
+    assert compiled["skill_trace"][0]["version"] == "1.5.1"
     assert "CTA" not in compiled["prompt"]
     assert "台词只说出来，不显示成字幕。" in compiled["prompt"]
 
