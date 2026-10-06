@@ -110,6 +110,29 @@ def _reference_lines(segment, spoken=""):
     return lines
 
 
+def _identity_index(roles, character_id, shot_id, shot_ids):
+    """Ordinary sheet, otherwise the start sheet. From the result shot on, the result sheet."""
+    sheet = start = result = None
+    result_shot = None
+    for role in roles or []:
+        if role.get("character_id") != character_id or type(role.get("index")) is not int:
+            continue
+        if role.get("role") == "character":
+            sheet = role["index"]
+        elif role.get("role") == "state" and role.get("phase") == "start":
+            start = role["index"]
+        elif role.get("role") == "state" and role.get("phase") == "result":
+            result = role["index"]
+            result_shot = role.get("shot_id")
+    if (result is not None and isinstance(result_shot, str) and isinstance(shot_ids, list)
+            and result_shot in shot_ids and shot_id in shot_ids
+            and shot_ids.index(shot_id) >= shot_ids.index(result_shot)):
+        return result
+    if sheet is not None:
+        return sheet
+    return start
+
+
 def _character_labels(segment):
     indexes = {}
     roles = segment.get("reference_roles") or []
@@ -348,6 +371,9 @@ def _compile_grouped_video(segment, template):
     lines.append("画面镜头（切镜不打断连续表达）：")
     closes_film = segment.get("closes_film", True) is not False
     last_index = len(shots) - 1
+    shot_ids = [item.get("id") for item in shots]
+    people = {person["id"]: person for person in (production or {}).get("characters", [])}
+    roles = segment.get("reference_roles")
     first_speaking_shot = None
     lip_sync = (production and production.get("speech_mode") == "character_dialogue" and spans
                 and segment.get("ad_form") != "brand_tvc")
@@ -367,16 +393,24 @@ def _compile_grouped_video(segment, template):
             shot_view, hold_tail=last and closes_film, continue_tail=last and not closes_film,
             label=labels.get(shot.get("id")),
             hold_line=_STORY_HOLD_LINE if segment.get("ad_form") == "scene_story" and last and closes_film else None))
+        shot_labels = {}
         if shot.get("character_ids"):
             if not set(shot["character_ids"]).issubset(characters):
                 raise ValueError("镜头引用了未绑定参考图的角色")
-            lines.append("  出镜角色：" + "、".join(characters[cid] for cid in shot["character_ids"]))
+            for cid in shot["character_ids"]:
+                person = people.get(cid)
+                identity = _identity_index(roles, cid, shot.get("id"), shot_ids)
+                if person and identity is not None:
+                    shot_labels[cid] = f"{person['name']}（参考图{identity}）"
+                else:
+                    shot_labels[cid] = characters[cid]
+            lines.append("  出镜角色：" + "、".join(shot_labels[cid] for cid in shot["character_ids"]))
         if segment.get("ad_form") == "scene_story" and _only_guidance(shot, original_spans):
             lines.append("  本镜停在结果上，不对口型，不念链接。")
         elif lip_sync:
             speaker_id = production.get("speaker_id")
             speaking_here = any(_speech_overlaps(shot, span) for span in spans)
-            name = characters.get(speaker_id, "")
+            name = shot_labels.get(speaker_id) or characters.get(speaker_id, "")
             speaker_name, other_names = _cast_names(production, speaker_id)
             face_visible = _speaker_face_visible(shot_view, speaker_name, other_names)
             if speaking_here and speaker_id in shot.get("character_ids", []) and face_visible:
@@ -395,7 +429,7 @@ def _compile_grouped_video(segment, template):
         partial = [person["id"] for person in (production or {}).get("characters", [])
                    if person.get("appearance") == "partial_only" and person["id"] in shot.get("character_ids", [])]
         if partial:
-            lines.append("  仅局部出镜、不增加露脸：" + "、".join(characters[cid] for cid in partial)
+            lines.append("  仅局部出镜、不增加露脸：" + "、".join(shot_labels.get(cid, characters[cid]) for cid in partial)
                          + "；依实际镜头拍摄其手、头发或其他已确认局部，不把身份参考的组合版式当成本镜构图。")
         continuity = shot_view.get("continuity")
         speaking_face = (lip_sync
@@ -408,7 +442,7 @@ def _compile_grouped_video(segment, template):
         gaze = story_gaze_line(shot_view, segment.get("ad_form"))
         if gaze:
             lines.append(gaze)
-        lines.extend(state_prompt_lines(shot_view, segment.get("reference_roles")))
+        lines.extend(state_prompt_lines(shot_view, roles, shot_ids))
         hand_line = _hand_product_line(shot_view)
         if hand_line:
             lines.append(hand_line)

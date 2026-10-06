@@ -300,7 +300,11 @@ def test_state_sheet_request_uses_the_character_sheet_and_not_the_scene(settings
         assert "床边" not in item["prompt"]
         assert "场景图" not in item["prompt"] or "不要场景图" in item["prompt"]
     assert "湿" in state_requests[0]["prompt"]
+    assert "吹风机" not in state_requests[0]["prompt"]
     assert "起始状态四视图" in state_requests[1]["prompt"]
+    assert "灰色连帽卫衣，黑长发" in state_requests[1]["prompt"]
+    for item in state_requests:
+        assert "双手空手，不要商品，不要道具，背景只用白或浅灰。" in item["prompt"]
     sheets = [item for item in saved if item["metadata"].get("state_reference")]
     assert len(sheets) == 2
     assert all(item["metadata"]["sheet_layout"] == "horizontal_16x9" for item in sheets)

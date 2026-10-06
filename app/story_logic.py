@@ -285,24 +285,104 @@ def _state_subject(shot):
     return _named_subject(start, end, description)
 
 
-def _short_declared(text, subject):
-    clause = re.split(r"[，。；]", (text or "").strip(), maxsplit=1)[0].strip()
-    if subject and clause.startswith(subject):
-        clause = clause[len(subject):].lstrip("的")
-    return clause[:24]
+def _clauses(text):
+    return [part.strip() for part in re.split(r"[，。；、]", text or "") if isinstance(part, str) and part.strip()]
+
+
+def _mentions_subject(clause, subject):
+    if subject and subject in clause:
+        return True
+    return bool(subject in ("头发", "发丝") and "发" in clause)
+
+
+def _declared_state(shot, subject):
+    """Planner short words win: subject=她的头发, start=湿, result=干顺."""
+    continuity = shot.get("continuity") if isinstance(shot, dict) and isinstance(shot.get("continuity"), dict) else {}
+    items = continuity.get("subject_states")
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name, start, result = item.get("subject"), item.get("start"), item.get("result")
+        if not all(isinstance(value, str) and value.strip() for value in (name, start, result)):
+            continue
+        name, start, result = name.strip(), start.strip(), result.strip()
+        if subject and (subject == name or subject in name or name in subject):
+            return name, start, result
+    return None
+
+
+def _tight_state(clause, subject):
+    """A hair clause that never names 头发 keeps only the character before 发."""
+    clause = (clause or "").strip()
+    if subject in ("头发", "发丝") and "发" in clause and subject not in clause:
+        index = clause.rfind("发")
+        if index > 0:
+            return clause[index - 1:index]
+    return clause[:16]
+
+
+def _phase_word(text, pattern):
+    found = list(pattern.finditer(text or ""))
+    if not found:
+        return ""
+    found.sort(key=lambda item: len(item.group(0)), reverse=True)
+    return found[0].group(0)
+
+
+def _state_words(text, subject, phase):
+    """The clause about this subject. Actions and props in other clauses stay out."""
+    wanted = _UNFINISHED if phase == "start" else _REACHED
+    other = _REACHED if phase == "start" else _UNFINISHED
+    clauses = _clauses(text)
+    mentioned = [clause for clause in clauses if _mentions_subject(clause, subject)]
+    preferred = [clause for clause in mentioned if wanted.search(clause) and not other.search(clause)]
+    if preferred:
+        return _tight_state(preferred[0], subject)
+    signaled = next((clause for clause in clauses if wanted.search(clause) and not other.search(clause)), "")
+    if signaled:
+        return _phase_word(signaled, wanted)
+    if mentioned:
+        return _tight_state(mentioned[0], subject)
+    return ""
+
+
+def _compose_label(subject, words, name=None):
+    words = (words or "").strip()
+    if not words:
+        return ""
+    title = (name or subject or "").strip()
+    if title and title in words:
+        return words[:24]
+    if title:
+        return f"{title}{words}"[:24]
+    return words[:24]
+
+
+def _phase_label(shot, subject, phase):
+    declared = _declared_state(shot, subject)
+    if declared:
+        name, start, result = declared
+        word = start if phase == "start" else result
+        if word:
+            return _compose_label(subject, word, name)
+    start = _continuity_field(shot, "start_state")
+    end = _continuity_field(shot, "end_state")
+    if phase == "start":
+        text = start if start and not _reached(start) else end
+    else:
+        text = end if _reached(end) else start
+    words = _state_words(text, subject, phase) or _state_words(start or end, subject, phase)
+    return _compose_label(subject, words)
 
 
 def _start_label(shot, subject):
-    start = _continuity_field(shot, "start_state")
-    end = _continuity_field(shot, "end_state")
-    text = start if start and not _reached(start) else end
-    return _short_declared(text, subject) or _short_declared(start or end, subject)
+    return _phase_label(shot, subject, "start")
 
 
 def _result_label(shot, subject):
-    end = _continuity_field(shot, "end_state")
-    start = _continuity_field(shot, "start_state")
-    return _short_declared(end if _reached(end) else start, subject)
+    return _phase_label(shot, subject, "result")
 
 
 def _state_character_id(container, shot, subject):
@@ -327,11 +407,11 @@ def _push_state(refs, shot, index, phase, label, subject, character_id=None):
     item = {
         "key": f"state_{safe}_{phase}",
         "kind": "start_frame",
-        "name": f"{subject}{label} · {'起始' if phase == 'start' else '结果'}",
+        "name": f"{label} · {'起始' if phase == 'start' else '结果'}",
         "state_id": f"{safe}:{phase}",
         "phase": phase,
         "shot_id": shot_id,
-        "label": f"{subject}{label}",
+        "label": label,
         "subject": subject,
     }
     if character_id:
@@ -351,7 +431,7 @@ def shot_state_change(shot):
     if _reached(start) or not _reached(end):
         return None
     subject = _named_subject(start, end, description)
-    before, after = _short_declared(start, subject), _short_declared(end, subject)
+    before, after = _start_label(shot, subject), _result_label(shot, subject)
     if not before or not after:
         return None
     return before, after, subject
@@ -419,8 +499,8 @@ def state_pairing_issues(container):
     """Pairing is no longer a reason to refuse a plan."""
     return []
 
-def state_prompt_lines(shot, roles):
-    """A later result shot hard-cuts. A shot that owns both stills uses them as the two ends."""
+def state_prompt_lines(shot, roles, shot_ids=None):
+    """A later result shot hard-cuts. Every shot from that result onward names the result sheet."""
     if not isinstance(shot, dict):
         return []
     shot_id = shot.get("id")
@@ -434,6 +514,21 @@ def state_prompt_lines(shot, roles):
         lines.append(f"  本镜开始对齐起始状态参考图{start['index']}，停在过程里，不要跳到结果。")
     elif result:
         lines.append(f"  本镜硬切到结果状态参考图{result['index']}，不要在这一镜里从上一状态渐变。")
+    if isinstance(shot_ids, list) and shot_id in shot_ids:
+        here = shot_ids.index(shot_id)
+        present = [item for item in (shot.get("character_ids") or []) if isinstance(item, str)]
+        for role in roles or []:
+            if role.get("role") != "state" or role.get("phase") != "result" or type(role.get("index")) is not int:
+                continue
+            result_shot = role.get("shot_id")
+            if not isinstance(result_shot, str) or result_shot not in shot_ids or shot_ids.index(result_shot) >= here:
+                continue
+            cid = role.get("character_id")
+            if isinstance(cid, str) and cid and cid not in present:
+                continue
+            line = f"  本镜人物身份用结果状态参考图{role['index']}，不要再用起始状态那张。"
+            if line not in lines:
+                lines.append(line)
     return lines
 
 
@@ -520,9 +615,23 @@ def background_roster(shots):
     return {"name": name, "pose": pose}
 
 
-def _bed_problem(blob, name, established):
+def _bed_in_frame(shot):
+    """The bed is in this shot only when the picture or the camera says so.
+
+    An inherited start_state can mention the bed from the previous shot. A
+    hand or product close-up does not bring that bed, or the person on it, into frame.
+    """
+    if not isinstance(shot, dict):
+        return False
+    description = shot.get("description") if isinstance(shot.get("description"), str) else ""
+    continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else {}
+    camera = continuity.get("camera_move") if isinstance(continuity.get("camera_move"), str) else ""
+    return bool(_BED.search(f"{description} {camera}"))
+
+
+def _bed_problem(shot, blob, name, established):
     """absent or facing. A missing pose restatement is not a problem."""
-    if not _BED.search(blob or ""):
+    if not _bed_in_frame(shot):
         return None
     pose = _declared_pose(blob)
     if name is None or _BG_ABSENT.search(blob) or not _person_referenced(blob, name):
@@ -541,7 +650,7 @@ def _walk_background(shots):
         if found and name is None:
             name = found.group(0)
         pose = _declared_pose(blob)
-        problem = _bed_problem(blob, name, established)
+        problem = _bed_problem(shot, blob, name, established)
         yield shot, blob, name, established, pose, problem
         established = _remember_pose(established, pose)
 
@@ -550,7 +659,8 @@ def background_issues(container):
     """A bed in frame keeps the person. A declared turn wins; the camera-facing turn does not.
 
     床上的人、睡着的人、不会认错的「她」，以及仍在睡、还在睡、没动、没翻身，都算人还在、姿势还在。
-    连续性的起止状态也算。没把姿势再写一遍不算失败。
+    床入画只看这一镜的画面和机位；继承来的起止状态不算床已经入画。人还在时，连续性的起止状态也算。
+    没把姿势再写一遍不算失败。
     """
     shots = iter_plan_shots(container)
     if not shots or background_roster(shots) is None:
@@ -629,7 +739,7 @@ def stamp_background_lines(container):
         return container, False
     changed = False
     for index, (shot, blob, name, established, _pose, problem) in enumerate(_walk_background(shots)):
-        if problem or not _BED.search(blob):
+        if problem or not _bed_in_frame(shot):
             continue
         if not _person_referenced(blob, name):
             continue

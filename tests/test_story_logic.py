@@ -289,6 +289,13 @@ def test_a_background_person_stays_with_the_bed():
     asleep = _shot("夜里，室友侧躺在床上睡着。", id="s0")
     missing = _board(asleep, _shot("镜头回到床边，被子还在。", id="s1"))
     assert "背景人物没有跟着床入画" in background_issues(missing)
+    hands = _board(
+        asleep,
+        _shot("微距，只有手和机身。", id="s2", continuity={
+            "start_state": "人站在床边，头发是湿的", "end_state": "人仍在床边", "camera_move": "手部特写",
+        }),
+    )
+    assert background_issues(hands) == []
     turned = _board(asleep, _shot("床上的室友面向镜头。", id="s1"))
     assert background_issues(turned)
     kept = _board(asleep, _shot("床边，室友仍侧躺。", id="s1"), _shot("她走到门口，门在身后。", id="s2"))
@@ -368,6 +375,90 @@ def test_r18b_wet_process_then_dry_result_pairs_start_and_result():
     result = state_design_request({}, plan, refs[1])
     assert result["reference_kinds"] == ["state_start"]
     assert "起始状态四视图" in result["prompt"]
+
+
+def test_r19_state_label_is_the_subject_and_later_shots_use_the_result_sheet():
+    from app.directing import ShotContinuity, prepare_storyboard_wire
+
+    blown = {
+        "id": "s3", "character_ids": ["girl"],
+        "description": "她低头，风扫过头发。",
+        "continuity": {"start_state": "吹风机开着，风扫过湿发", "end_state": "吹风机仍开着，湿发被吹开"},
+    }
+    dry = {
+        "id": "s5", "character_ids": ["girl"],
+        "description": "她拨开已经干顺的头发。",
+        "continuity": {"start_state": "头发已经干顺", "end_state": "头发已经干顺"},
+    }
+    plan = {"production": {"speaker_id": "girl", "characters": [
+        {"id": "girl", "name": "女生", "description": "炭灰软裤，居家拖鞋"},
+    ]}, "segments": [{"shots": [blown, dry]}]}
+    refs = plan_state_references(plan)
+    assert [item["phase"] for item in refs] == ["start", "result"]
+    assert "湿" in refs[0]["label"] and "吹风机" not in refs[0]["label"]
+    assert "干顺" in refs[1]["label"] or "干" in refs[1]["label"]
+    start_prompt = state_design_request({}, plan, refs[0])["prompt"]
+    assert "湿" in start_prompt and "吹风机" not in start_prompt
+    assert "双手空手" in start_prompt and "不要商品" in start_prompt and "不要道具" in start_prompt
+    assert "白或浅灰" in start_prompt
+    declared = {
+        "id": "s3", "character_ids": ["girl"], "description": "她低头。",
+        "continuity": {
+            "start_state": "吹风机开着，风扫过湿发", "end_state": "头发已经干顺",
+            "subject_states": [{"subject": "她的头发", "start": "湿", "result": "干顺"}],
+        },
+    }
+    wired = prepare_storyboard_wire({"shots": [{
+        **declared,
+        "continuity": {**declared["continuity"], "allowed_changes": "吹", "camera_move": "不动",
+                       "entry_transition": "opening", "entry_reason": "开场"},
+    }]})
+    kept = wired["shots"][0]["continuity"]["subject_states"]
+    assert kept == [{"subject": "她的头发", "start": "湿", "result": "干顺"}]
+    assert ShotContinuity.model_validate({
+        "start_state": "头发是湿的", "allowed_changes": "吹", "end_state": "头发干了",
+        "camera_move": "不动", "entry_transition": "opening", "entry_reason": "开场",
+        "subject_states": kept,
+    }).subject_states[0].start == "湿"
+    named = {"production": {"speaker_id": "girl", "characters": [
+        {"id": "girl", "name": "女生", "description": "炭灰软裤，居家拖鞋"},
+    ]}, "segments": [{"shots": [declared]}]}
+    named_refs = plan_state_references(named)
+    assert named_refs[0]["label"] == "她的头发湿"
+    assert named_refs[1]["label"] == "她的头发干顺"
+    assert "吹风机" not in named_refs[0]["label"] and "吹风机" not in named_refs[1]["label"]
+    result_request = state_design_request({}, named, named_refs[1])
+    assert result_request["reference_kinds"] == ["state_start"]
+    assert "炭灰软裤，居家拖鞋" in result_request["prompt"]
+    assert "双手空手，不要商品，不要道具，背景只用白或浅灰。" in result_request["prompt"]
+    segment = _segment(ad_form="scene_story")
+    segment["production"]["characters"] = [
+        {"id": "char_host", "name": "女生", "description": "炭灰软裤，居家拖鞋"},
+        {"id": "room", "name": "室友", "description": "碎花睡衣"},
+    ]
+    segment["duration_seconds"] = 9
+    segment["speech_spans"] = []
+    segment["shots"] = [
+        {"id": "s0", "start": 0, "end": 3, "description": "她在吹还湿着的头发。", "character_ids": ["char_host"]},
+        {"id": "s1", "start": 3, "end": 6, "description": "头发已经干了，她拨开发尾。", "character_ids": ["char_host"]},
+        {"id": "s2", "start": 6, "end": 9, "description": "她把已经干的头发拨到肩前。", "character_ids": ["char_host"]},
+    ]
+    segment["reference_roles"] = [
+        {"index": 1, "role": "product"},
+        {"index": 2, "role": "scene"},
+        {"index": 3, "role": "character", "character_id": "room"},
+        {"index": 4, "role": "state", "phase": "start", "shot_id": "s0", "label": "头发湿",
+         "character_id": "char_host", "sheet_layout": "horizontal_16x9"},
+        {"index": 5, "role": "state", "phase": "result", "shot_id": "s1", "label": "头发干顺",
+         "character_id": "char_host", "sheet_layout": "horizontal_16x9"},
+    ]
+    prompt = compile_grouped_video(segment)
+    wet = _shot_block(prompt, "镜头1 |")
+    dry_shot = _shot_block(prompt, "镜头2 |")
+    later = _shot_block(prompt, "镜头3 |")
+    assert "女生（参考图4）" in wet and "参考图5" not in wet
+    assert "女生（参考图5）" in dry_shot and "结果状态参考图5" in dry_shot and "参考图4" not in dry_shot
+    assert "女生（参考图5）" in later and "结果状态参考图5" in later and "参考图4" not in later
 
 
 def test_state_references_off_gives_every_character_one_ordinary_sheet(monkeypatch):

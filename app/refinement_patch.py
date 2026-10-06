@@ -16,7 +16,8 @@ _BEAT = ("purpose", "message", "visual_role", "narration", "evidence_ids",
          "boundary_before", "continuity_group", "timing")
 _TIMING = ("visual_seconds", "speech_overlap", "action_plan", "start_state", "end_state", "time_transition")
 _SHOT = ("coverage", "description", "purpose", "evidence_ids", "character_ids", "continuity")
-_CONTINUITY = ("start_state", "end_state", "allowed_changes", "camera_move", "entry_transition", "entry_reason")
+_CONTINUITY = ("start_state", "end_state", "allowed_changes", "camera_move", "entry_transition", "entry_reason",
+               "subject_states")
 _STATES = ("start_state", "end_state")
 
 

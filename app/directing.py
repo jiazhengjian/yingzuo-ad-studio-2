@@ -14,6 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 
 _Text = Annotated[str, StringConstraints(strict=True, strip_whitespace=True, min_length=1, max_length=800)]
 _Identifier = Annotated[str, StringConstraints(strict=True, strip_whitespace=True, min_length=1, max_length=160)]
+_StateWord = Annotated[str, StringConstraints(strict=True, strip_whitespace=True, min_length=1, max_length=16)]
+_StateSubject = Annotated[str, StringConstraints(strict=True, strip_whitespace=True, min_length=1, max_length=24)]
 
 
 class _DirectingModel(BaseModel):
@@ -37,6 +39,12 @@ class VisualDirection(_DirectingModel):
         return self
 
 
+class SubjectState(_DirectingModel):
+    subject: _StateSubject = Field(description="会变化的主体，例如她的头发")
+    start: _StateWord = Field(description="起始时主体本身的状态，短词，例如湿；不写动作或道具")
+    result: _StateWord = Field(description="结果时主体本身的状态，短词，例如干顺；不写动作或道具")
+
+
 class ShotContinuity(_DirectingModel):
     start_state: _Text = Field(description="镜头开始时主体的物理状态、位置或动作阶段；不要把机位或景别写进主体状态")
     allowed_changes: _Text = Field(description="本镜头允许发生的明确动作和状态变化；静止展示则明确不改变主体状态")
@@ -44,6 +52,27 @@ class ShotContinuity(_DirectingModel):
     camera_move: _Text = Field(description="实际机位、景别或摄影机运动，与主体物理状态分开描述")
     entry_transition: Literal["opening", "continuous", "cut", "scene_change"]
     entry_reason: _Text = Field(description="这次开始或切换如何支持信息、情境或必要收束；不能用换场景掩盖商品状态跳变")
+    subject_states: list[SubjectState] = Field(default_factory=list, max_length=4, exclude_if=lambda value: not value,
+        description="每个会变化的主体一条。start 和 result 只写主体状态，不写动作或道具。没有可见状态变化就留空")
+
+
+def _inline_defs(schema):
+    """Keep a nested state object inside this schema so parent $defs stay unchanged."""
+    defs = schema.pop("$defs", None) or {}
+
+    def walk(node):
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/$defs/"):
+                name = ref.rsplit("/", 1)[-1]
+                if name in defs:
+                    return walk(deepcopy(defs[name]))
+            return {key: walk(value) for key, value in node.items()}
+        if isinstance(node, list):
+            return [walk(item) for item in node]
+        return node
+
+    return walk(schema)
 
 
 def storyboard_continuity_schema():
@@ -52,7 +81,7 @@ def storyboard_continuity_schema():
     A model need not repeat the previous shot's state for continuous entries.
     Non-continuous entries still own and must supply their actual start state.
     """
-    schema = ShotContinuity.model_json_schema()
+    schema = _inline_defs(ShotContinuity.model_json_schema())
     schema["required"].remove("start_state")
     schema["properties"]["start_state"]["description"] = (
         "continuous镜头可省略，由程序继承上一镜end_state，跨生成段同样继承；"
@@ -72,6 +101,7 @@ _SHOT_FIELDS = {
 }
 _CONTINUITY_FIELDS = {
     "start_state", "allowed_changes", "end_state", "camera_move", "entry_transition", "entry_reason",
+    "subject_states",
 }
 _VISUAL_FIELDS = {
     "version", "product_anchor_ids", "scene", "lighting", "color_palette", "camera_style", "sound",

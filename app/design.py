@@ -163,6 +163,9 @@ def _state_phase_line(phase):
     return "这张是切到结果之后的终点，要画成这一变化真正做完的样子，不要画成做到一半。"
 
 
+_EMPTY_HANDS = "双手空手，不要商品，不要道具，背景只用白或浅灰。"
+
+
 def state_design_request(project, plan, instruction):
     """One state, drawn like a reference sheet, not a frame from the film.
 
@@ -199,7 +202,7 @@ def state_design_request(project, plan, instruction):
         if hidden:
             prompt += "本片不出镜：不要人脸，不要把独立发束或局部画成真人头。"
         return {**common, "reference_kinds": ["product"], "prompt": prompt}
-    description = _BUN.sub("", person.get("description") or "")
+    description = _BUN.sub("", person.get("description") or "").strip("，,、 \n")
     hair = _hairstyle_line(_hair_source_text(plan, person))
     instructions, trace = compiler_template("ads-video-asset-prompts", "references/character-template.txt")
     instructions = apply_cast_instructions(instructions, description)
@@ -207,17 +210,20 @@ def state_design_request(project, plan, instruction):
         instructions += (
             f"\n这张是同一人的起始状态四视图，也是这个人的身份参考。只表现这一处起始状态：{label}。"
             + (hair + "\n" if hair else "\n")
+            + _EMPTY_HANDS
             + "不要房间，不要其他人物，不要场景里的道具，不要商品，不要场景图。"
             "不要另画一张普通角色四视图。版式不进入成片。"
             + _state_phase_line(phase)
         )
         kinds = []
     else:
+        outfit = f"外观原文照抄：{description}。" if description else ""
         instructions += (
             f"\n这张是同一人的结果状态四视图。只把这一处改成结果：{label}。"
             + (hair + "\n" if hair else "\n")
-            + "身份、衣服和头发长度与起始状态四视图一致，只有这一处状态不同。"
-            "不要房间，不要其他人物，不要场景里的道具，不要商品。"
+            + f"衣服、鞋子和头发长度与起始状态四视图完全一致，{outfit}只有这一处状态可以不同。"
+            + _EMPTY_HANDS
+            + "不要房间，不要其他人物，不要场景里的道具，不要商品。"
             "参考图只有这一位的起始状态四视图，不要场景图，不要商品原图，不要另一张普通角色四视图。"
             + _state_phase_line(phase)
         )
