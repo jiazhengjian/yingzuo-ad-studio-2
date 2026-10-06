@@ -1,18 +1,20 @@
 """剧情结尾、点题、高光证明、状态参考、不看镜头、背景人物。Offline must-fail and must-pass."""
 import asyncio
+import json
+from pathlib import Path
 
 import pytest
 
-from app.design import state_design_request
-from app.line_quality import apply_line_rewrite, script_line_offenses
+from app.design import character_design_request, state_design_request, state_sheet_clothing_notes
+from app.line_quality import apply_line_rewrite, script_line_offenses, voice_identity_issues
 from app.picture_rules import action_issues, state_change_issues
 from app.production import required_designs, validate_design_assets
 from app.story_logic import (
     apply_background_rewrite, background_issues, cast_distinction_issues, line_is_punchline,
     align_declared_continuity, plan_state_references, proof_highlight_issues, rewrite_background_if_needed,
-    scrub_story_purposes, snap_declared_speech, stamp_background_lines, state_change_warnings, state_pairing_issues,
-    story_ending_issues, story_gaze_line, story_plan_issues, storyboard_content_failure,
-    wardrobe_warnings, with_background_line,
+    scrub_story_purposes,     settle_inner_monologue, snap_declared_speech, stamp_background_lines, state_change_warnings,
+    state_pairing_issues, story_ending_issues, story_gaze_line, story_plan_issues,
+    storyboard_content_failure, wardrobe_warnings, with_background_line,
 )
 from app.strategy import StrategyRecord
 from app.video_prompt import compile_grouped_video
@@ -971,3 +973,156 @@ def test_generated_state_stills_pass_the_creative_gate(tmp_path):
     path.write_bytes(original)
     gate = store.create_creative_gate(job["id"], [option], "确认图片")
     assert gate["kind"] == "creative" and gate["status"] == "pending"
+
+
+def _r22():
+    return json.loads(Path(__file__).parent.joinpath("fixtures/r22_scene.json").read_text())
+
+
+def _r22_plan():
+    raw = _r22()
+    characters = [
+        {**raw["characters"][0], "name": "小夏"},
+        {**raw["characters"][1], "name": "阿宁"},
+    ]
+    shots = []
+    for shot in raw["shots"]:
+        shots.append({**shot, "beat_id": shot["beat_ids"][0], "purpose": "这一下"})
+    spans = []
+    for index, span in enumerate(raw["speech_spans"], start=1):
+        spans.append({**span, "id": f"speech_{index}",
+                      "anchors": [{"text": span["text"], "start": span["start"], "end": span["end"],
+                                   "shot_ids": list(span["shot_ids"])}]})
+    return {
+        "production": {"characters": characters, "speaker_id": "char_xia",
+                       "speech_mode": "character_dialogue", "voice_description": "自然的成年女性普通话"},
+        "strategy": _dryer().model_dump(),
+        "state_changes": raw["state_changes"],
+        "segments": [{"id": "seg_1", "duration_seconds": 20, "shots": shots, "speech_spans": spans,
+                      "ad_form": "scene_story"}],
+    }
+
+
+def test_r22_line_lands_in_the_shot_that_says_she_speaks():
+    plan = _r22_plan()
+    segment = plan["segments"][0]
+    shots = segment["shots"]
+    spans = segment["speech_spans"]
+    groups = [
+        {"beat_id": "b1", "start": 0.0, "end": 2.6, "speech_start": 0.2, "speech_end": 1.9},
+        {"beat_id": "b2", "start": 2.6, "end": 7.9},
+        {"beat_id": "b3", "start": 7.9, "end": 12.7, "speech_start": 8.1, "speech_end": 9.8},
+        {"beat_id": "b4", "start": 12.7, "end": 17.4, "speech_start": 12.9, "speech_end": 15.6},
+        {"beat_id": "b5", "start": 17.4, "end": 20.0},
+    ]
+    second = spans[1]
+    assert snap_declared_speech([segment], [{"groups": groups}]) is True
+    assert second["shot_ids"] == ["s5"]
+    assert second["start"] == 9.8 and abs(second["end"] - 11.5) < 1e-6
+    assert shots[3]["start"] == 7.9 and shots[3]["end"] == 9.8
+    assert shots[4]["start"] == 9.8 and shots[4]["end"] == 12.7
+    video = {
+        "duration_seconds": 20, "generation_strategy": "continuity_v1", "ad_form": "scene_story",
+        "production": plan["production"], "shots": shots, "speech_spans": spans,
+        "reference_roles": [
+            {"index": 1, "role": "product"},
+            {"index": 2, "role": "character", "character_id": "char_xia"},
+            {"index": 3, "role": "character", "character_id": "char_ning"},
+        ],
+    }
+    prompt = compile_grouped_video(video)
+    fourth = _shot_block(prompt, "镜头4 |")
+    fifth = _shot_block(prompt, "镜头5 |")
+    assert "嘴型与台词同步" not in prompt
+    assert "开口说" not in fourth
+    assert "你接着睡" not in fourth
+    assert "不对口型" in fifth
+    assert "内心声音" in fifth
+    assert "9.8–11.5秒" in prompt
+    assert "关联镜头 镜头5" in prompt
+    assert "声音方式：画外旁白" not in prompt
+    assert "内心独白" in prompt
+
+
+def test_silence_is_not_an_empty_bed():
+    raw = _r22()
+    asleep = _shot("夜里，室友侧躺在床上睡着。", id="s0")
+    from app.story_logic import _background_absent
+    assert _background_absent(raw["shots"][-1]["description"]) is False
+    assert _background_absent(raw["r21b_s8_description"]) is False
+    quiet = _board(asleep, _shot("床上的室友仍侧躺闭眼睡着。画面里没有人开口。", id="s7"))
+    assert background_issues(quiet) == []
+    muted = _board(asleep, _shot(raw["r21b_s8_description"], id="s8"))
+    assert background_issues(muted) == []
+    empty = _board(asleep, _shot("镜头回到床边，床上没有人。", id="s1"))
+    assert "背景人物没有跟着床入画" in background_issues(empty)
+    bare = _board(asleep, _shot("床是空的。", id="s1"))
+    assert "背景人物没有跟着床入画" in background_issues(bare)
+    assert with_background_line("床上没有人。", [asleep, {"description": "床上没有人。"}]) == "床上没有人。"
+
+
+def test_state_sheet_wears_only_this_shots_clothes():
+    plan = _r22_plan()
+    person = plan["production"]["characters"][0]
+    sheet = character_design_request({}, plan, person)
+    assert "薄外套" in sheet["prompt"]
+    assert "手里拿吹风机" in sheet["prompt"]
+    start = state_design_request({}, plan, {
+        "phase": "start", "label": "湿", "subject": "头发", "shot_id": "s3",
+        "character_id": "char_xia", "state_text": "湿，发梢成缕"})
+    result = state_design_request({}, plan, {
+        "phase": "result", "label": "干顺", "subject": "头发", "shot_id": "s4",
+        "character_id": "char_xia", "state_text": "干顺，蓬松披肩"})
+    for request in (start, result):
+        assert "家居短袖" in request["prompt"]
+        assert "薄外套" not in request["prompt"]
+        assert "手里拿" not in request["prompt"]
+    assert "与起始图保持一致" not in start["prompt"]
+    assert "不要换颜色" in result["prompt"]
+    assert "与起始图保持一致" in result["prompt"]
+    assert state_sheet_clothing_notes(plan) == ["状态图只画这一镜身上的衣服，稍后才披的没有提前画上。"]
+    assert "状态图只画这一镜身上的衣服" not in story_plan_issues(plan, _dryer())
+
+
+def test_asleep_company_becomes_inner_monologue_and_awake_company_stays_dialogue():
+    plan = _r22_plan()
+    segment = plan["segments"][0]
+    groups = [
+        {"beat_id": "b1", "start": 0.0, "end": 2.6, "speech_start": 0.2, "speech_end": 1.9},
+        {"beat_id": "b2", "start": 2.6, "end": 7.9},
+        {"beat_id": "b3", "start": 7.9, "end": 12.7, "speech_start": 8.1, "speech_end": 9.8},
+        {"beat_id": "b4", "start": 12.7, "end": 17.4, "speech_start": 12.9, "speech_end": 15.6},
+        {"beat_id": "b5", "start": 17.4, "end": 20.0},
+    ]
+    snap_declared_speech([segment], [{"groups": groups}])
+    notes = settle_inner_monologue(plan)
+    assert notes == ["这一场没有醒着的人听，台词改成她自己的内心独白，不对口型。"]
+    assert plan["production"]["speech_mode"] == "character_dialogue"
+    spoken = plan["segments"][0]["shots"][4]["description"]
+    assert "开口说" not in spoken
+    assert "没有开口" in spoken
+    assert spoken.count("放轻脚步") == 1
+    assert "这句是她的内心独白，嘴没有动。" in spoken
+    again = settle_inner_monologue(plan)
+    assert again == notes
+    assert plan["segments"][0]["shots"][4]["description"].count("放轻脚步") == 1
+    assert voice_identity_issues(_dryer(), plan["production"]) == []
+    assert voice_identity_issues(_dryer(), {"speech_mode": "voiceover"}) == ["剧情被写成了整条旁白"]
+    awake = _r22_plan()
+    awake["production"]["characters"][1]["description"] = "二十多岁，穿深色家居睡衣裤，坐在床边。"
+    for shot in awake["segments"][0]["shots"]:
+        shot["description"] = shot["description"].replace("睡着", "坐着").replace("闭眼", "睁眼")
+    kept = awake["segments"][0]["shots"][4]["description"]
+    assert settle_inner_monologue(awake) == []
+    assert awake["segments"][0]["shots"][4]["description"] == kept
+    segment = _segment(ad_form="scene_story")
+    segment["production"]["characters"].append({"id": "room", "name": "室友", "description": "坐在旁边，醒着"})
+    segment["shots"][0]["description"] = "她开口说，室友坐在旁边看着她。"
+    segment["shots"][0]["character_ids"] = ["char_host", "room"]
+    segment["reference_roles"].append({"index": 4, "role": "character", "character_id": "room"})
+    prompt = compile_grouped_video(segment)
+    assert "嘴型与台词同步" in _shot_block(prompt, "镜头1 |")
+    selling = story_plan_issues(_board(_shot("室友还在睡着。"), script=_lines("太安静了。")), _dryer())
+    assert "剧情对白还在说卖点" in selling
+    quiet = story_plan_issues(_board(_shot("室友还在睡着。"), script=_lines("这风不吵。")), _dryer())
+    assert "剧情对白还在说卖点" in quiet

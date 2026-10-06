@@ -376,6 +376,57 @@ def _public_response_excerpt(text):
     return json.dumps(scrub(body), ensure_ascii=False)[:500]
 
 
+def remember_plan_warning(settings, holder, candidate):
+    """Rewrite one warning file for this plan job. Failure replay files stay separate."""
+    if holder is None or not isinstance(candidate, dict) or candidate.get("nonblocking") is not True:
+        return None
+    note = {}
+    message = candidate.get("message")
+    if isinstance(message, str) and message.strip():
+        note["message"] = message.strip()[:500]
+    issues = candidate.get("issues")
+    if isinstance(issues, list):
+        clean = []
+        for item in issues:
+            if isinstance(item, str) and item.strip() and item.strip() not in clean:
+                clean.append(item.strip()[:200])
+            if len(clean) == 8:
+                break
+        if clean:
+            note["issues"] = clean
+    code = candidate.get("error_code")
+    if isinstance(code, str) and re.fullmatch(r"[a-z0-9_]{1,40}", code):
+        note["error_code"] = code
+    if "message" not in note and "issues" not in note:
+        return None
+    warnings = holder.get("_plan_warnings")
+    if not isinstance(warnings, list):
+        warnings = []
+        holder["_plan_warnings"] = warnings
+    warnings.append(note)
+    try:
+        content = json.dumps({"kind": "plan_warnings", "warnings": list(warnings)}, ensure_ascii=False).encode("utf-8")
+        if len(content) > 200 * 1024:
+            warnings.pop()
+            return None
+        directory = Path(settings.data_root) / "diagnostics" / "plan-warnings"
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path_text = holder.get("_plan_warnings_path")
+        if isinstance(path_text, str) and path_text:
+            path = Path(path_text)
+            path.write_bytes(content)
+            os.chmod(path, 0o600)
+            return path
+        path = directory / f"{uuid.uuid4().hex}.json"
+        holder["_plan_warnings_path"] = str(path)
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+        return path
+    except Exception:
+        return None
+
+
 def save_failed_planner_output(settings, stage_result):
     """Best-effort local replay evidence; no prompts, request media or headers."""
     if stage_result is None:
@@ -1333,6 +1384,9 @@ class Gateway:
         self._emit_planner_phase("retrying_planner")
         retried = {**context, "contentless_retried": True, "reasoning_effort_override": "low",
             "contentless_note": "上一轮没有返回正文。请直接输出完整 JSON，推理从简。"}
+        if context.get("stage") == "plan_review":
+            retried["thinking_disabled"] = True
+            retried["compact_output_tokens"] = 4096
         try:
             return await self._planner_json(
                 system, retried, sources, max_tokens, route=route, on_first_token=on_first_token,
@@ -1455,6 +1509,12 @@ class Gateway:
             "response_format": {"type": "json_object"}, "thinking": {"type": "disabled"},
             "max_tokens": max_tokens, "stream": stream}
         payload.update(stage_request_options(context.get("stage"), bool(context.get("stage_skills"))))
+        if isinstance(context, dict) and context.get("thinking_disabled"):
+            payload["thinking"] = {"type": "disabled"}
+        compact = context.get("compact_output_tokens") if isinstance(context, dict) else None
+        if type(compact) is int and compact > 0:
+            current = payload.get("max_tokens")
+            payload["max_tokens"] = compact if type(current) is not int else min(current, compact)
         if route.effort:
             payload["reasoning_effort"] = route.effort
         payload = transport_options(route_settings(self.settings, route), payload, stage=context.get("stage"))
@@ -1845,7 +1905,8 @@ class Gateway:
                 if choice.get("finish_reason") == "length":
                     stage_name = context.get("stage") if isinstance(context, dict) else None
                     if (stage_name == "plan_review" and isinstance(context, dict)
-                            and not context.get("review_length_retried")):
+                            and not context.get("review_length_retried")
+                            and not context.get("contentless_retried")):
                         save_failed_planner_output(self.settings, {
                             "stage": "plan_review",
                             "model": route.model,
@@ -1853,6 +1914,7 @@ class Gateway:
                                            "finish_reason": "length"},
                         })
                         shorter = {**context, "review_length_retried": True,
+                            "thinking_disabled": True, "compact_output_tokens": 4096,
                             "length_note": "上一份审核写超了。通过项 note 不超过8个字，失败项只留一句，不要复述镜头原文。"}
                         return await self._planner_json(
                             system, shorter, sources, min(max_tokens, 4096), route=route,
@@ -2446,7 +2508,12 @@ class Gateway:
                         else:
                             draft = copy.deepcopy(raw_draft)
             if choice_enabled and getattr(self.settings, "progressive_planning_enabled", False):
+                self._plan_warning_holder = {}
+
                 def record_progressive_failure(candidate):
+                    if isinstance(candidate, dict) and candidate.get("nonblocking") is True:
+                        remember_plan_warning(self.settings, self._plan_warning_holder, candidate)
+                        return
                     if last_stage_result is None or last_stage_result.get("_diagnostic_saved"):
                         if last_stage_result is not None and candidate is not None:
                             last_stage_result["validation_candidate"] = copy.deepcopy(candidate)

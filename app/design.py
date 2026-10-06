@@ -165,6 +165,11 @@ def _state_phase_line(phase):
 
 _EMPTY_HANDS = "双手空手，不要商品，不要道具，背景只用白或浅灰。"
 _APPEARANCE_LEAD = "外观原文照抄，脸、五官、肤色、身材、头发长度和发色、衣服、鞋子都按这句："
+_LATER_WEAR = re.compile(r"(?:出门前|稍后|之后|离开前|出门时|走之前).{0,16}(?:披上|穿上|套上)")
+_WORN_NOW = re.compile(r"披上|穿上|套上|穿着|披着")
+_HANDHELD = re.compile(r"手里|手上拿|拿着")
+_SAME_OUTFIT = "衣服、颜色和鞋子与起始图保持一致，不要换颜色，不要改成另一双鞋，也不要凭空加鞋。只改声明的这一处状态。"
+_SHEET_CLOTHES_NOTE = "状态图只画这一镜身上的衣服，稍后才披的没有提前画上。"
 
 
 def _neutral_description(description, phrases):
@@ -181,6 +186,74 @@ def _neutral_description(description, phrases):
             continue
         kept.append(clause)
     return "，".join(kept)
+
+
+def _shots_through(plan, shot_id):
+    from .story_logic import iter_plan_shots
+    found = []
+    for shot in iter_plan_shots(plan):
+        found.append(shot)
+        if shot.get("id") == shot_id:
+            return found, True
+    return found, False
+
+
+def _worn_by(shots):
+    from .story_logic import _GARMENTS
+    worn = set()
+    for shot in shots:
+        blob = shot.get("description") if isinstance(shot.get("description"), str) else ""
+        for garment in _GARMENTS:
+            if garment not in blob:
+                continue
+            for clause in re.split(r"[，。；]", blob):
+                if garment in clause and _WORN_NOW.search(clause) and not _LATER_WEAR.search(clause):
+                    worn.add(garment)
+    return worn
+
+
+def _sheet_appearance(description, plan, shot_id):
+    """Clothes and empty hands for this sheet's own shot. Later layers stay off."""
+    description = (description or "").strip()
+    if not description or not isinstance(shot_id, str) or not shot_id:
+        return description
+    shots, found = _shots_through(plan, shot_id)
+    if not found:
+        shots = []
+    from .story_logic import _GARMENTS
+    worn = _worn_by(shots)
+    kept = []
+    for clause in re.split(r"[，。；]", description):
+        clause = clause.strip()
+        if not clause or _HANDHELD.search(clause):
+            continue
+        garments = [item for item in _GARMENTS if item in clause]
+        if _LATER_WEAR.search(clause) and garments and any(item not in worn for item in garments):
+            continue
+        kept.append(clause)
+    return "，".join(kept)
+
+
+def state_sheet_clothing_notes(plan):
+    """Soft note when a state sheet drops a garment that is put on later."""
+    if not isinstance(plan, dict):
+        return []
+    people = {person.get("id"): person for person in ((plan.get("production") or {}).get("characters") or [])
+              if isinstance(person, dict)}
+    for change in plan.get("state_changes") or []:
+        if not isinstance(change, dict):
+            continue
+        person = people.get(change.get("owner"))
+        raw = person.get("description") if isinstance(person, dict) else ""
+        if not isinstance(raw, str) or not raw:
+            continue
+        for shot_id in (change.get("start_shot"), change.get("result_shot")):
+            filtered = _sheet_appearance(raw, plan, shot_id)
+            for clause in re.split(r"[，。；]", raw):
+                clause = clause.strip()
+                if clause and _LATER_WEAR.search(clause) and clause not in filtered:
+                    return [_SHEET_CLOTHES_NOTE]
+    return []
 
 
 def _appearance_line(description):
@@ -228,9 +301,9 @@ def state_design_request(project, plan, instruction):
         if hidden:
             prompt += "本片不出镜：不要人脸，不要把独立发束或局部画成真人头。"
         return {**common, "reference_kinds": ["product"], "prompt": prompt}
-    description = _neutral_description(
+    description = _sheet_appearance(_neutral_description(
         _BUN.sub("", person.get("description") or "").strip("，,、 \n"),
-        instruction.get("appearance_phrases") or [])
+        instruction.get("appearance_phrases") or []), plan, instruction.get("shot_id"))
     hair = _hairstyle_line(_hair_source_text(plan, person))
     instructions, trace = compiler_template("ads-video-asset-prompts", "references/character-template.txt")
     instructions = apply_cast_instructions(instructions, description)
@@ -253,6 +326,7 @@ def state_design_request(project, plan, instruction):
             + (hair + "\n" if hair else "\n")
             + appearance + "。"
             + "脸、五官、肤色、身材、头发长度和发色、衣服、鞋子都锁在起始图上，只有这一处状态可以不同。"
+            + _SAME_OUTFIT
             + _EMPTY_HANDS
             + "不要房间，不要其他人物，不要场景里的道具，不要商品。"
             "参考图只有这一位的起始状态四视图，不要场景图，不要商品原图，不要另一张普通角色四视图。"

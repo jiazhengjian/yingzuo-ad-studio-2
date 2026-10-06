@@ -509,7 +509,10 @@ def test_l8_speaker_own_back_of_head_stays_off_camera():
     segment = _segment(delivery="on_and_off_screen", ad_form="scene_story")
     segment["shots"][0]["description"] = "她背对镜头，只露后脑。"
     opening = _shot_block(compile_grouped_video(segment), "镜头1 |")
-    assert "画外接着说" in opening
+    assert "画外接着说" not in opening
+    assert "嘴型与台词同步" not in opening
+    assert "内心声音" in opening
+    assert "不对口型" in opening
 
 
 def test_l8_story_without_cta_last_shot_does_not_lipsync_a_pitch():

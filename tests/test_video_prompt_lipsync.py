@@ -87,8 +87,14 @@ def test_roommate_back_of_head_does_not_mark_the_speaker_off_camera():
     assert "面向镜头说话" not in opening
     hidden = _segment(delivery="on_and_off_screen", ad_form="scene_story")
     hidden["shots"][0]["description"] = "她背对镜头，只露后脑。"
-    hidden_opening = compile_grouped_video(hidden).split("镜头1 |", 1)[1].split("镜头2 |", 1)[0]
-    assert "画外接着说" in hidden_opening
+    hidden_prompt = compile_grouped_video(hidden)
+    hidden_opening = hidden_prompt.split("镜头1 |", 1)[1].split("镜头2 |", 1)[0]
+    assert "画外接着说" not in hidden_opening
+    assert "嘴型与台词同步" not in hidden_opening
+    assert "内心声音" in hidden_opening
+    assert "不对口型" in hidden_opening
+    assert "内心独白" in hidden_prompt
+    assert "声音方式：画外旁白" not in hidden_prompt
     presenter = compile_grouped_video(_segment(delivery="on_and_off_screen", ad_form="presenter_pitch"))
     assert "看着镜头亲口说" in presenter
     assert "第一人称" in presenter

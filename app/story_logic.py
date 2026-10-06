@@ -45,6 +45,14 @@ _LOOK = re.compile(r"(?<![不别])(?:看向镜头|看着镜头|看镜头|面向�
 _BG_NAME = re.compile(r"室友|同事|朋友|旁边的人|另一个人")
 _BG_EQUIV = re.compile(r"床上的人|床上那个人|睡着的人|睡熟的人")
 _BG_ABSENT = re.compile(r"没有人|床是空的|空无一人|人不在床|不在床上|已经起床|已经起来|下了床|离开了床")
+_BG_SILENCE = re.compile(r"没有人(?=\s*(?:说话|开口|出声|说))")
+_CLOCK_GAP = re.compile(r"[\s\u3000，。！？、；：,.!?;:\"'“”‘’「」『』…—\-（）()《》【】\[\]]+")
+_ASLEEP = re.compile(r"睡着|在睡|睡熟|酣睡|没醒|未醒")
+_AWAKE = re.compile(r"(?<!没)醒了|醒来|已经醒|坐起来")
+_LISTENER_WORDS = ("室友", "同事", "朋友", "旁边的人", "另一个人")
+_INNER_NOTE = "这一场没有醒着的人听，台词改成她自己的内心独白，不对口型。"
+_INNER_ACTING = "她放轻脚步，回头看一眼，屏住一点呼吸，表情松一下。这句是她的内心独白，嘴没有动。"
+_OPENING_LINE = re.compile(r"开口说(?:第\s*[0-9一二两三四五六七八九十]+\s*句)?")
 _BED = re.compile(r"床|床铺|被窝|枕头")
 _POSE_CARRY = re.compile(
     r"仍在睡|还在睡|还睡着|仍睡着|在睡着|睡着|朝向不变|"
@@ -643,7 +651,7 @@ def _bed_problem(shot, blob, name, established):
     if not _bed_in_frame(shot):
         return None
     pose = _declared_pose(blob)
-    if name is None or _BG_ABSENT.search(blob) or not _person_referenced(blob, name):
+    if name is None or _background_absent(blob) or not _person_referenced(blob, name):
         return "absent"
     if pose == "面向镜头" and established and established != "面向镜头":
         return "facing"
@@ -725,7 +733,7 @@ def with_background_line(description, shots, index=None):
     from .picture_rules import mentioned
     if not isinstance(description, str) or not shots or not mentioned(_BED, description):
         return description
-    if _BG_ABSENT.search(description):
+    if _background_absent(description):
         return description
     shots = [shot for shot in shots if isinstance(shot, dict)]
     if index is None:
@@ -1101,10 +1109,39 @@ def _link_speech(spans, shots):
     return True
 
 
+def _background_absent(text):
+    """没有人说话 means silence. 床上没有人 and 床是空的 still mean the person is gone."""
+    if not isinstance(text, str) or not text:
+        return False
+    return _BG_ABSENT.search(_BG_SILENCE.sub("没出声", text)) is not None
+
+
+def _spoken_chars(text):
+    return len(_CLOCK_GAP.sub("", text or ""))
+
+
 def _clock_fits(span, start, end):
     from .schemas import shot_character_limit
     text = span.get("text") if isinstance(span.get("text"), str) else ""
-    return end > start and len(text) <= shot_character_limit(start, end)
+    return end > start and _spoken_chars(text) <= shot_character_limit(start, end)
+
+
+def _fitted_duration(span, duration, room):
+    """Keep the arranged length when the words fit. Widen only inside the free range."""
+    if duration <= 0 or room + 1e-7 < duration:
+        return None
+    if _clock_fits(span, 0.0, duration):
+        return duration
+    steps = int((room - duration + 1e-7) / 0.1)
+    for step in range(1, steps + 1):
+        widened = round(duration + step * 0.1, 10)
+        if widened - room > 1e-7:
+            break
+        if _clock_fits(span, 0.0, widened):
+            return widened
+    if _clock_fits(span, 0.0, room):
+        return room
+    return None
 
 
 def _remember_group(groups, beat_id, start, end):
@@ -1229,12 +1266,14 @@ def _move_line_clock(span, shot, shots, spoken, groups, saved):
     ceiling = float(spoken[index + 1]["start"]) if index + 1 < len(spoken) else float(shots[-1]["end"])
     lo = max(float(shot["start"]), floor)
     hi = min(float(shot["end"]), ceiling)
-    if hi - lo + 1e-7 < duration or not _clock_fits(span, lo, lo + duration):
+    chosen = _fitted_duration(span, duration, hi - lo)
+    if chosen is None:
         _field_restore(saved)
         return False
-    new_start = min(max(start, lo), hi - duration)
-    new_end = new_start + duration
+    new_start = min(max(start, lo), hi - chosen)
+    new_end = new_start + chosen
     old_len = duration
+    duration = chosen
     span["start"], span["end"] = new_start, new_end
     for anchor in span.get("anchors") or []:
         if not isinstance(anchor, dict):
@@ -1276,3 +1315,103 @@ def wardrobe_warnings(plan):
                 seen.add(garment)
                 warnings.append(f"镜头里的{garment}没有写进角色外观")
     return warnings
+
+
+def _asleep_text(text):
+    if not isinstance(text, str) or not text:
+        return False
+    if _AWAKE.search(text):
+        return False
+    return _ASLEEP.search(text) is not None
+
+
+def awake_listener(production, shots):
+    """True when someone besides the speaker is in the scene and not asleep."""
+    if not isinstance(production, dict):
+        return False
+    speaker = production.get("speaker_id")
+    people = [person for person in production.get("characters") or [] if isinstance(person, dict)]
+    shots = [shot for shot in shots or [] if isinstance(shot, dict)]
+    texts = [shot.get("description") if isinstance(shot.get("description"), str) else "" for shot in shots]
+    listeners = []
+    named = set()
+    for person in people:
+        name = person.get("name") if isinstance(person.get("name"), str) else ""
+        if name:
+            named.add(name)
+        if person.get("id") == speaker:
+            continue
+        blobs = [person.get("description") if isinstance(person.get("description"), str) else ""]
+        present = False
+        for shot, text in zip(shots, texts):
+            ids = shot.get("character_ids") if isinstance(shot.get("character_ids"), list) else []
+            if person.get("id") in ids or (name and name in text):
+                present = True
+                blobs.append(text)
+        if present:
+            listeners.append("".join(blobs))
+    joined = "\n".join(texts)
+    for word in _LISTENER_WORDS:
+        if word in named or word not in joined:
+            continue
+        blobs = [text for text in texts if word in text]
+        if blobs:
+            listeners.append("".join(blobs))
+    if not listeners:
+        return False
+    return any(not _asleep_text(blob) for blob in listeners)
+
+
+def rewrite_inner_shot(description, speaking):
+    """Turn an on-screen speaking cue into private thought. Idempotent."""
+    if not isinstance(description, str):
+        return description
+    updated = _OPENING_LINE.sub("没有开口", description)
+    if speaking and "放轻脚步" not in updated:
+        if updated and not updated.endswith("。"):
+            updated = updated.rstrip() + "。"
+        updated += _INNER_ACTING
+    return updated
+
+
+def _spoken_plan_spans(plan):
+    found = []
+    for segment in (plan or {}).get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        for span in segment.get("speech_spans") or []:
+            if isinstance(span, dict) and isinstance(span.get("text"), str) and span["text"].strip():
+                found.append(span)
+    return found
+
+
+def settle_inner_monologue(plan):
+    """After review: alone or asleep company becomes inner voice. No new hard gate.
+
+    speech_mode stays character_dialogue. A second call does not stack the acting cue.
+    """
+    if not isinstance(plan, dict) or _form(plan.get("strategy")) != "scene_story":
+        return []
+    production = plan.get("production") if isinstance(plan.get("production"), dict) else {}
+    if production.get("speech_mode") != "character_dialogue":
+        return []
+    spans = _spoken_plan_spans(plan)
+    if not spans:
+        return []
+    shots = iter_plan_shots(plan)
+    if awake_listener(production, shots):
+        return []
+    for shot in shots:
+        speaking = False
+        for span in spans:
+            try:
+                start, end = float(span["start"]), float(span["end"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            if _overlap(shot, start, end):
+                speaking = True
+                break
+        updated = rewrite_inner_shot(shot.get("description") or "", speaking)
+        if updated != shot.get("description"):
+            shot["description"] = updated
+    return [_INNER_NOTE]

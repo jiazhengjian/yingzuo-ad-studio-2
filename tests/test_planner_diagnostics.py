@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from app.providers import gateway as gateway_module
-from app.providers.gateway import Gateway, ProviderError, save_failed_planner_output
+from app.providers.gateway import Gateway, ProviderError, remember_plan_warning, save_failed_planner_output
 from test_conversation_api import env
 from test_direction_selection import candidates_for, concept_pool_for, forbid_unmocked_network
 
@@ -168,6 +168,22 @@ def test_diagnostic_write_failure_preserves_original_provider_error(env, monkeyp
         asyncio.run(Gateway(app.state.settings).decide(app.state.store.get_project(pid), [asset], [], [], None))
     assert "DIAGNOSTIC_WRITE_FAILED_PRIVATE" not in str(error.value)
     assert not list((app.state.settings.data_root / "diagnostics").glob("*.json"))
+
+
+def test_plan_warnings_keep_the_full_list_in_one_file(env):
+    settings = env[1].state.settings
+    holder = {}
+    remember_plan_warning(settings, holder, {"nonblocking": True, "message": "第一条",
+                                             "issues": ["外套"], "error_code": "wardrobe"})
+    remember_plan_warning(settings, holder, {"nonblocking": True, "message": "第二条",
+                                             "issues": ["内心"], "error_code": "inner_monologue"})
+    files = list((settings.data_root / "diagnostics" / "plan-warnings").glob("*.json"))
+    assert len(files) == 1
+    assert files[0].stat().st_mode & 0o777 == 0o600
+    saved = json.loads(files[0].read_text())
+    assert saved["kind"] == "plan_warnings"
+    assert [item["message"] for item in saved["warnings"]] == ["第一条", "第二条"]
+    assert list((settings.data_root / "diagnostics").glob("*.json")) == []
 
 
 def test_failed_storyboard_replay_keeps_bounded_validation_candidate(env):

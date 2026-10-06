@@ -208,6 +208,24 @@ def test_schema_has_no_model_owned_final_seconds_or_review_results():
     assert not {"start", "end", "speech_spans", "narration", "passed"}.intersection(shot)
 
 
+def test_schema_valid_snap_is_kept_when_the_schedule_check_fails(source, monkeypatch):
+    strategy = chosen_strategy(source)
+    raw = director_output(strategy, count=2)
+    from app import progressive_planning as planning_module
+
+    def mark(segments, schedule):
+        segments[0]["shots"][0]["description"] += "已对齐。"
+        return True
+
+    def refuse(plan, schedule):
+        raise ValueError("schedule")
+
+    monkeypatch.setattr("app.story_logic.snap_declared_speech", mark)
+    monkeypatch.setattr(planning_module, "validate_expression_schedule", refuse)
+    plan, _, _ = compile_director(raw, strategy, 12, "continuity_v1", [source["id"]])
+    assert "已对齐。" in plan["segments"][0]["shots"][0]["description"]
+
+
 def test_one_shot_covers_two_beats_without_forced_cut(source):
     strategy = chosen_strategy(source)
     raw = director_output(strategy, count=2)

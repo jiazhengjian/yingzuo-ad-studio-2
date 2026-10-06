@@ -8,8 +8,8 @@ from .cta import strip_guidance
 from .picture_rules import prepare_prompt_shot, unlock_wet_identity
 from .production import cast_appearance_clause
 from .story_logic import (
-    _STORY_HOLD_LINE, rest_product_for_story_ending, state_prompt_lines,
-    story_gaze_line, story_needs_lens, with_background_line,
+    _STORY_HOLD_LINE, awake_listener, rest_product_for_story_ending, rewrite_inner_shot,
+    state_prompt_lines, story_gaze_line, story_needs_lens, with_background_line,
 )
 from .runtime_skills import compiler_template
 
@@ -157,7 +157,7 @@ _HAND_PRODUCT_LINE = (
 )
 
 
-def _voice_lines(production, director, spans, characters, *, ad_form=None):
+def _voice_lines(production, director, spans, characters, *, ad_form=None, inner=False):
     if not production:
         # Historical segments keep the voiceover sentence. A new presenter plan
         # must name its speech before any video request is built.
@@ -180,6 +180,11 @@ def _voice_lines(production, director, spans, characters, *, ad_form=None):
         if speaker is None:
             raise ValueError("人物对白缺少已确认的说话角色")
         name = characters[speaker["id"]]
+        if inner and ad_form == "scene_story":
+            return [
+                f"声音方式：{name}的内心独白，用她本人的声音在画外轻轻说出，不对口型，嘴不要动。"
+                f"这不是产品片的旁白，也不是另一个人在解说。声音：{voice}。"
+            ]
         if production.get("speech_delivery") == "on_and_off_screen":
             if ad_form == "scene_story":
                 return [
@@ -360,8 +365,11 @@ def _compile_grouped_video(segment, template):
         ])
     lines.extend(_director_lines(director, production))
     lines.extend(_product_lines(director, production))
+    inner = (segment.get("ad_form") == "scene_story" and production
+             and production.get("speech_mode") == "character_dialogue" and spans
+             and not awake_listener(production, shots))
     lines.extend(_voice_lines(production, director, spans, characters,
-                              ad_form=segment.get("ad_form")))
+                              ad_form=segment.get("ad_form"), inner=bool(inner)))
     from .shot_craft import shot_prompt_lines
     labels = {shot["id"]: f"镜头{index + 1}" for index, shot in enumerate(shots)}
 
@@ -376,7 +384,7 @@ def _compile_grouped_video(segment, template):
     roles = segment.get("reference_roles")
     first_speaking_shot = None
     lip_sync = (production and production.get("speech_mode") == "character_dialogue" and spans
-                and segment.get("ad_form") != "brand_tvc")
+                and segment.get("ad_form") != "brand_tvc" and not inner)
     if lip_sync:
         for candidate in shots:
             if _speech_overlaps(candidate, spans[0]):
@@ -384,6 +392,9 @@ def _compile_grouped_video(segment, template):
                 break
     for index, shot in enumerate(shots):
         last = index == last_index
+        speaking_here = bool(spans) and any(_speech_overlaps(shot, span) for span in spans)
+        if inner:
+            shot = {**shot, "description": rewrite_inner_shot(shot.get("description") or "", speaking_here)}
         if segment.get("ad_form") == "scene_story":
             shot = {**shot, "description": with_background_line(shot.get("description") or "", shots, index)}
             if last:
@@ -407,9 +418,11 @@ def _compile_grouped_video(segment, template):
             lines.append("  出镜角色：" + "、".join(shot_labels[cid] for cid in shot["character_ids"]))
         if segment.get("ad_form") == "scene_story" and _only_guidance(shot, original_spans):
             lines.append("  本镜停在结果上，不对口型，不念链接。")
+        elif inner and speaking_here:
+            gaze = "" if story_needs_lens(shot_view) else "，不转头看镜头"
+            lines.append(f"  本镜不对口型。这句是她自己的内心声音，嘴不要动{gaze}。")
         elif lip_sync:
             speaker_id = production.get("speaker_id")
-            speaking_here = any(_speech_overlaps(shot, span) for span in spans)
             name = shot_labels.get(speaker_id) or characters.get(speaker_id, "")
             speaker_name, other_names = _cast_names(production, speaker_id)
             face_visible = _speaker_face_visible(shot_view, speaker_name, other_names)

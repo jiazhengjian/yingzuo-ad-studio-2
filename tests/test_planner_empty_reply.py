@@ -251,8 +251,15 @@ def test_contentless_low_effort_retry_then_uses_the_other_model(env, monkeypatch
         payload = json.loads(request.content)
         if len(hosts) == 1:
             assert payload["reasoning_effort"] == "high"
+            assert payload["thinking"]["type"] == "enabled"
             return empty_output("", finish_reason="length")
         assert payload["reasoning_effort"] == "low"
+        if payload.get("max_tokens") is not None:
+            assert payload["max_tokens"] <= 4096
+        if payload.get("max_completion_tokens") is not None:
+            assert payload["max_completion_tokens"] <= 4096
+        if "thinking" in payload:
+            assert payload["thinking"]["type"] == "disabled"
         if len(hosts) == 2:
             return empty_output()
         return chat_output({"ready": True})
