@@ -29,7 +29,8 @@ _DRY_OR_SMOOTH = re.compile(r"吹干|干了|变干|干燥|是干|顺滑|不毛�
 _SLAM = re.compile(r"摔门|砸门|猛地(?:把)?门|把门摔|重重(?:地)?(?:把)?门")
 _QUIET = re.compile(r"安静|不吵|声音小|静音|压声|轻声|别吵")
 _DOOR = re.compile(r"带上门|带门|关门|掩门")
-_NEGATED_PREFIX = re.compile(r"(?:不要|别要|没有|没|不|别|未|勿|莫)[^，。；\s]{0,3}$")
+_NEGATED_PREFIX = re.compile(r"(?:不要|别要|没有|没|不|无|别|未|勿|莫)[^，。；\s]{0,3}$")
+_NEGATED_TAIL = re.compile(r"^(?:不在|不出现|没有|不入|未入|不要|别出现)")
 _ACTION_QUIET = re.compile(r"压声|把声音压低|声音压低")
 _ACTION_HAND = re.compile(r"手部|手指")
 _ACTION_TURN = re.compile(r"翻(?:了个|个)?身")
@@ -146,13 +147,35 @@ def action_issues(text, claim_text="") -> list[str]:
     return issues
 
 
+def _negated_before(text, start):
+    prefix = text[max(0, start - 8):start]
+    return bool(_NEGATED_PREFIX.search(prefix))
+
+
 def _affirmed(pattern, source):
-    """True when the action occurs without 没/不/别/未 immediately in front of it."""
+    """True when the action occurs without 没/不/无/别/未 immediately in front of it."""
     text = source or ""
     found = False
     for match in pattern.finditer(text):
-        prefix = text[max(0, match.start() - 6):match.start()]
-        if _NEGATED_PREFIX.search(prefix):
+        if _negated_before(text, match.start()):
+            continue
+        found = True
+    return found
+
+
+def mentioned(pattern, text):
+    """True when the word is stated, not cancelled before it or in the next few characters.
+
+    没有字卡或标语、不要看镜头、床不在这一镜, are not mentions. stitch_actions still
+    uses the prefix-only helper so a following 不要 does not drop a real action.
+    """
+    source = text or ""
+    found = False
+    for match in pattern.finditer(source):
+        if _negated_before(source, match.start()):
+            continue
+        tail = source[match.end():match.end() + 6]
+        if _NEGATED_TAIL.match(tail):
             continue
         found = True
     return found

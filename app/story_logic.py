@@ -162,9 +162,9 @@ def story_ending_issues(container, strategy=None, *, form=None, product_text="")
     blob = _shot_blob(shot)
     goods = _product_text(strategy, product_text) + blob
     issues = []
-    if _HERO.search(blob):
+    if _hits(_HERO, blob):
         issues.append("剧情末镜写成了英雄定格")
-    if _PRESENTS.search(blob):
+    if _hits(_PRESENTS, blob):
         issues.append("剧情末镜人物对着镜头举着产品")
     leaves = _EXIT.search(blob) and _HOLDING.search(blob) and _HOME_GOOD.search(goods) and not _STAYS.search(blob)
     if leaves:
@@ -534,8 +534,14 @@ def state_prompt_lines(shot, roles, shot_ids=None):
     return lines
 
 
+def _hits(pattern, text):
+    """A hard-gate word counts only when this shot actually states it."""
+    from .picture_rules import mentioned
+    return bool(text) and mentioned(pattern, text)
+
+
 def story_needs_lens(shot):
-    return bool(_LOOK.search(_shot_blob(shot)))
+    return _hits(_LOOK, _shot_blob(shot))
 
 
 def story_gaze_line(shot, form):
@@ -628,7 +634,8 @@ def _bed_in_frame(shot):
     description = shot.get("description") if isinstance(shot.get("description"), str) else ""
     continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else {}
     camera = continuity.get("camera_move") if isinstance(continuity.get("camera_move"), str) else ""
-    return bool(_BED.search(f"{description} {camera}"))
+    from .picture_rules import mentioned
+    return mentioned(_BED, description) or mentioned(_BED, camera)
 
 
 def _bed_problem(shot, blob, name, established):
@@ -715,7 +722,8 @@ def _append_pose_line(description, name, pose):
 
 def with_background_line(description, shots, index=None):
     """Carry the latest declared pose. A pose this shot already states is left alone."""
-    if not isinstance(description, str) or not shots or not _BED.search(description):
+    from .picture_rules import mentioned
+    if not isinstance(description, str) or not shots or not mentioned(_BED, description):
         return description
     if _BG_ABSENT.search(description):
         return description
@@ -725,6 +733,8 @@ def with_background_line(description, shots, index=None):
         if index is None:
             index = len(shots) - 1
     name, pose = _pose_in_force(shots, index)
+    if name and name in description and not mentioned(re.compile(re.escape(name)), description):
+        return description
     return _append_pose_line(description, name, pose)
 
 
@@ -969,11 +979,11 @@ def story_plan_issues(plan, strategy):
     shot = _last_shot(plan)
     closing = _shot_blob(shot) if shot is not None else ""
     line = _last_narration(plan)
-    if _LOGO_TO_CAMERA.search(closing):
+    if _hits(_LOGO_TO_CAMERA, closing):
         issues.append("剧情末镜把商标朝向镜头")
-    if any(pattern.search(text) for pattern in (_CTA, _SLOGAN) for text in (closing, line) if text):
+    if any(_hits(pattern, text) for pattern in (_CTA, _SLOGAN) for text in (closing, line) if text):
         issues.append("剧情末镜在喊口号或链接")
-    if any(_LOOK.search(_shot_blob(item)) for item in iter_plan_shots(plan)):
+    if any(_hits(_LOOK, _shot_blob(item)) for item in iter_plan_shots(plan)):
         issues.append("剧情人物看着镜头")
     try:
         from .line_quality import script_line_offenses
@@ -984,3 +994,285 @@ def story_plan_issues(plan, strategy):
     except (TypeError, ValueError, KeyError):
         pass
     return list(dict.fromkeys(issues))
+
+
+_LINE_ORDINALS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+                  "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+_QUIET_LINE = re.compile(r"没说话|不说话|没有说话|未说话|不开口|没有开口|未开口|没有张嘴|嘴没有动")
+_GARMENTS = ("夹克", "外套", "大衣", "风衣", "羽绒服", "卫衣", "衬衫", "毛衣", "针织衫",
+             "背心", "马甲", "连衣裙", "半身裙", "牛仔裤", "短裤", "睡衣", "西装", "围巾")
+
+
+def _line_number(token):
+    if token.isdigit():
+        return int(token)
+    return _LINE_ORDINALS.get(token)
+
+
+def _shot_text(shot):
+    return f"{shot.get('description') or ''} {shot.get('purpose') or ''}"
+
+
+def _declares_line(shot, span, number):
+    from .picture_rules import mentioned
+    blob = _shot_text(shot)
+    text = span.get("text") if isinstance(span.get("text"), str) else ""
+    text = text.strip()
+    if len(text) >= 2 and mentioned(re.compile(re.escape(text)), blob):
+        return True
+    labels = [str(number)]
+    for word, value in _LINE_ORDINALS.items():
+        if value == number:
+            labels.append(word)
+    return any(mentioned(re.compile(rf"第\s*{re.escape(label)}\s*句"), blob) for label in labels)
+
+
+def _is_quiet(shot):
+    from .picture_rules import mentioned
+    return mentioned(_QUIET_LINE, _shot_text(shot))
+
+
+def _declaring_shot(shots, span, number):
+    found = [shot for shot in shots if isinstance(shot, dict) and _declares_line(shot, span, number)]
+    speakers = [shot for shot in found if not _is_quiet(shot)] or found
+    if len(speakers) == 1:
+        return speakers[0]
+    return None
+
+
+def _inside(shot, start, end):
+    return float(shot["start"]) - 1e-7 <= start and end <= float(shot["end"]) + 1e-7
+
+
+def _overlap(shot, start, end):
+    return min(float(shot["end"]), end) - max(float(shot["start"]), start) > 1e-7
+
+
+def _sync_beats(shots, groups):
+    from .schemas import shot_beat_sequence
+    order = [group["beat_id"] for group in groups if isinstance(group, dict) and group.get("beat_id")]
+    if not order:
+        return True
+    for shot in shots:
+        expected = [group["beat_id"] for group in groups
+                    if isinstance(group, dict) and _overlap(shot, float(group["start"]), float(group["end"]))]
+        if not expected:
+            return False
+        shot["beat_ids"] = expected
+        shot["beat_id"] = expected[0]
+    try:
+        return shot_beat_sequence(shots) == order
+    except (ValueError, KeyError, TypeError):
+        return False
+
+
+def _link_speech(spans, shots):
+    for span in spans:
+        if not isinstance(span, dict):
+            continue
+        try:
+            start, end = float(span["start"]), float(span["end"])
+        except (TypeError, ValueError, KeyError):
+            return False
+        beat = span.get("beat_id")
+        ids = []
+        for shot in shots:
+            if not _overlap(shot, start, end):
+                continue
+            owned = shot.get("beat_ids") or [shot.get("beat_id")]
+            if beat and beat not in owned:
+                continue
+            if shot.get("id") not in ids:
+                ids.append(shot["id"])
+        if not ids:
+            return False
+        span["shot_ids"] = ids
+        for anchor in span.get("anchors") or []:
+            if not isinstance(anchor, dict):
+                continue
+            try:
+                a_start, a_end = float(anchor["start"]), float(anchor["end"])
+            except (TypeError, ValueError, KeyError):
+                anchor["shot_ids"] = list(ids)
+                continue
+            anchor_ids = [shot_id for shot_id in ids
+                          if any(shot.get("id") == shot_id and _overlap(shot, a_start, a_end) for shot in shots)]
+            anchor["shot_ids"] = anchor_ids or list(ids)
+    return True
+
+
+def _clock_fits(span, start, end):
+    from .schemas import shot_character_limit
+    text = span.get("text") if isinstance(span.get("text"), str) else ""
+    return end > start and len(text) <= shot_character_limit(start, end)
+
+
+def _remember_group(groups, beat_id, start, end):
+    group = next((item for item in groups if isinstance(item, dict) and item.get("beat_id") == beat_id), None)
+    if group is None:
+        return False
+    group["speech_start"] = start
+    group["speech_end"] = end
+    return True
+
+
+def _cover_group(groups, beat_id, shot):
+    """Let this shot overlap the beat so the moved line may cite it."""
+    group = next((item for item in groups if isinstance(item, dict) and item.get("beat_id") == beat_id), None)
+    if group is None:
+        return False
+    try:
+        g_start, g_end = float(group["start"]), float(group["end"])
+        s_start, s_end = float(shot["start"]), float(shot["end"])
+    except (TypeError, ValueError, KeyError):
+        return False
+    if _overlap(shot, g_start, g_end):
+        return True
+    if s_start >= g_end:
+        group["end"] = min(s_end, s_start + 0.05)
+    elif s_end <= g_start:
+        group["start"] = max(0.0, s_end - 0.05)
+    return _overlap(shot, float(group["start"]), float(group["end"]))
+
+
+def snap_declared_speech(segments, schedule):
+    """Put each line inside the shot that says it is spoken. No model call.
+
+    Prefer moving the cut so the existing clock falls in that shot. If the
+    silent shot would become too short, move the clock into the declaring shot
+    and keep the arranged speech time on the same beat.
+    """
+    if not isinstance(segments, list) or not isinstance(schedule, list):
+        return False
+    changed = False
+    for segment, booked in zip(segments, schedule):
+        if not isinstance(segment, dict) or not isinstance(booked, dict):
+            continue
+        shots = segment.get("shots")
+        spans = segment.get("speech_spans")
+        groups = booked.get("groups")
+        if not isinstance(shots, list) or not isinstance(spans, list) or not isinstance(groups, list):
+            continue
+        spoken = [span for span in spans if isinstance(span, dict) and isinstance(span.get("text"), str) and span["text"]]
+        for number, span in enumerate(spoken, start=1):
+            shot = _declaring_shot(shots, span, number)
+            if shot is None or shot not in shots:
+                continue
+            try:
+                start, end = float(span["start"]), float(span["end"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            if _inside(shot, start, end) and span.get("shot_ids") == [shot.get("id")]:
+                continue
+            backup = (deepcopy(shots), deepcopy(spans), deepcopy(groups))
+            if not _snap_one_line(span, shot, shots, spoken, groups):
+                shots[:] = backup[0]
+                spans[:] = backup[1]
+                groups[:] = backup[2]
+                continue
+            changed = True
+    return changed
+
+
+def _field_snapshot(shots, spoken, groups):
+    return {
+        "shots": [(item, item.get("start"), item.get("end"), list(item.get("beat_ids") or []), item.get("beat_id"))
+                  for item in shots],
+        "spans": [(item, item.get("start"), item.get("end"), list(item.get("shot_ids") or []),
+                   [(anchor, anchor.get("start"), anchor.get("end"), list(anchor.get("shot_ids") or []))
+                    for anchor in item.get("anchors") or [] if isinstance(anchor, dict)])
+                  for item in spoken],
+        "groups": [(item, item.get("start"), item.get("end"), item.get("speech_start"), item.get("speech_end"))
+                   for item in groups if isinstance(item, dict)],
+    }
+
+
+def _field_restore(saved):
+    for shot, start, end, beats, beat in saved["shots"]:
+        shot["start"], shot["end"], shot["beat_id"] = start, end, beat
+        if beats:
+            shot["beat_ids"] = list(beats)
+    for span, start, end, shot_ids, anchors in saved["spans"]:
+        span["start"], span["end"], span["shot_ids"] = start, end, list(shot_ids)
+        for anchor, a_start, a_end, a_ids in anchors:
+            anchor["start"], anchor["end"], anchor["shot_ids"] = a_start, a_end, list(a_ids)
+    for group, start, end, speech_start, speech_end in saved["groups"]:
+        group["start"], group["end"] = start, end
+        group["speech_start"], group["speech_end"] = speech_start, speech_end
+
+
+def _snap_one_line(span, shot, shots, spoken, groups):
+    start, end = float(span["start"]), float(span["end"])
+    holder = next((item for item in shots if _inside(item, start, end)), None)
+    if holder is None:
+        holder = next((item for item in shots if _overlap(item, start, end)), None)
+    saved = _field_snapshot(shots, spoken, groups)
+    if holder is not None and holder in shots and abs(shots.index(shot) - shots.index(holder)) == 1 and not _inside(shot, start, end):
+        declare_at, holder_at = shots.index(shot), shots.index(holder)
+        cut = start if declare_at > holder_at else end
+        earlier, later = (holder, shot) if declare_at > holder_at else (shot, holder)
+        if cut - float(earlier["start"]) >= 0.4 and float(later["end"]) - cut >= 0.4:
+            earlier["end"] = cut
+            later["start"] = cut
+            if (_inside(shot, start, end) and _sync_beats(shots, groups) and _link_speech(spoken, shots)
+                    and span.get("shot_ids") == [shot.get("id")]):
+                return True
+        _field_restore(saved)
+    return _move_line_clock(span, shot, shots, spoken, groups, saved)
+
+
+def _move_line_clock(span, shot, shots, spoken, groups, saved):
+    start, end = float(span["start"]), float(span["end"])
+    duration = end - start
+    index = spoken.index(span)
+    floor = float(spoken[index - 1]["end"]) if index else 0.0
+    ceiling = float(spoken[index + 1]["start"]) if index + 1 < len(spoken) else float(shots[-1]["end"])
+    lo = max(float(shot["start"]), floor)
+    hi = min(float(shot["end"]), ceiling)
+    if hi - lo + 1e-7 < duration or not _clock_fits(span, lo, lo + duration):
+        _field_restore(saved)
+        return False
+    new_start = min(max(start, lo), hi - duration)
+    new_end = new_start + duration
+    old_len = duration
+    span["start"], span["end"] = new_start, new_end
+    for anchor in span.get("anchors") or []:
+        if not isinstance(anchor, dict):
+            continue
+        try:
+            a_start, a_end = float(anchor["start"]), float(anchor["end"])
+        except (TypeError, ValueError, KeyError):
+            anchor["start"], anchor["end"] = new_start, new_end
+            continue
+        anchor["start"] = new_start + (a_start - start) / old_len * duration
+        anchor["end"] = new_start + (a_end - start) / old_len * duration
+    if not (_cover_group(groups, span.get("beat_id"), shot)
+            and _remember_group(groups, span.get("beat_id"), new_start, new_end)
+            and _sync_beats(shots, groups) and _link_speech(spoken, shots)
+            and span.get("shot_ids") == [shot.get("id")] and _inside(shot, new_start, new_end)):
+        _field_restore(saved)
+        return False
+    return True
+
+
+def wardrobe_warnings(plan):
+    """A garment worn in a shot must already be in that person's appearance text."""
+    from .picture_rules import mentioned
+    characters = [person for person in (((plan or {}).get("production") or {}).get("characters") or [])
+                  if isinstance(person, dict)]
+    if not characters:
+        return []
+    warnings = []
+    seen = set()
+    for shot in iter_plan_shots(plan):
+        ids = shot.get("character_ids") if isinstance(shot.get("character_ids"), list) else []
+        people = [person for person in characters if not ids or person.get("id") in ids]
+        appearance = " ".join(person.get("description") or "" for person in people if isinstance(person.get("description"), str))
+        blob = shot.get("description") if isinstance(shot.get("description"), str) else ""
+        for garment in _GARMENTS:
+            if garment in seen or garment in appearance:
+                continue
+            if mentioned(re.compile(re.escape(garment)), blob):
+                seen.add(garment)
+                warnings.append(f"镜头里的{garment}没有写进角色外观")
+    return warnings

@@ -10,9 +10,9 @@ from app.production import required_designs, validate_design_assets
 from app.story_logic import (
     apply_background_rewrite, background_issues, cast_distinction_issues, line_is_punchline,
     align_declared_continuity, plan_state_references, proof_highlight_issues, rewrite_background_if_needed,
-    scrub_story_purposes, stamp_background_lines, state_change_warnings, state_pairing_issues,
+    scrub_story_purposes, snap_declared_speech, stamp_background_lines, state_change_warnings, state_pairing_issues,
     story_ending_issues, story_gaze_line, story_plan_issues, storyboard_content_failure,
-    with_background_line,
+    wardrobe_warnings, with_background_line,
 )
 from app.strategy import StrategyRecord
 from app.video_prompt import compile_grouped_video
@@ -751,6 +751,117 @@ def test_existing_door_and_vapor_checks_stay():
     assert "带门要轻" in action_issues("她带门离开", "别吵")
     raw = {"description": "筒口喷出白烟。", "continuity": {"end_state": "发尾湿塌", "allowed_changes": ""}}
     assert "喷嘴喷烟" in state_change_issues(raw, "吹干了")
+
+
+def test_r21_negated_ending_words_do_not_trip_hard_gates():
+    strategy = _dryer()
+    denied = _board(_shot("她把吹风机放回台面。没有字卡或标语。"))
+    assert story_plan_issues(denied, strategy) == []
+    assert story_ending_issues(_board(_shot("不要英雄定格，也不举向镜头。")), strategy) == []
+    quiet = _board(_shot("她不看镜头，不要把字样朝向镜头，没有链接。"))
+    assert story_plan_issues(quiet, strategy) == []
+    assert story_gaze_line({**quiet["segments"][0]["shots"][0], "character_ids": ["char_host"]}, "scene_story") == "  本镜人物不看镜头。"
+    assert "剧情末镜在喊口号或链接" in story_plan_issues(_board(_shot("结尾打出标语。")), strategy)
+    assert "剧情末镜写成了英雄定格" in story_ending_issues(_board(_shot("英雄定格。")), strategy)
+    assert "剧情末镜人物对着镜头举着产品" in story_ending_issues(_board(_shot("她把吹风机举向镜头。")), strategy)
+    assert "剧情末镜把商标朝向镜头" in story_plan_issues(_board(_shot("机身字样朝向镜头。")), strategy)
+    assert "剧情人物看着镜头" in story_plan_issues(_board(_shot("她看着镜头。")), strategy)
+
+
+def test_r21_bed_out_of_frame_does_not_keep_the_sleeper():
+    asleep = _shot("夜里，室友侧躺在床上睡着。", id="s0")
+    gone = "她披上外套。床不在这一镜的画面里。"
+    board = _board(asleep, _shot(gone, id="s6"), _shot("门口站定。床不在这一镜的画面里。", id="s7"))
+    assert background_issues(board) == []
+    stamped, changed = stamp_background_lines(board)
+    assert changed is False
+    assert "仍在原来的床位" not in stamped["segments"][0]["shots"][1]["description"]
+    assert "仍在原来的床位" not in stamped["segments"][0]["shots"][2]["description"]
+    assert with_background_line(gone, board["segments"][0]["shots"], 1) == gone
+    segment = _segment(ad_form="scene_story")
+    segment["shots"][0]["description"] = "夜里，室友侧躺在床上睡着。"
+    segment["shots"][1]["description"] = gone
+    prompt = compile_grouped_video(segment)
+    ending = _shot_block(prompt, "镜头2 |")
+    assert "仍在原来的床位" not in ending
+    assert "床不在这一镜的画面里" in ending
+
+
+def _speech(span_id, beat_id, text, start, end, shot_id):
+    return {"id": span_id, "beat_id": beat_id, "text": text, "start": start, "end": end,
+            "shot_ids": [shot_id],
+            "anchors": [{"text": text, "start": start, "end": end, "shot_ids": [shot_id]}]}
+
+
+def test_r21_third_line_moves_into_the_shot_that_says_she_speaks():
+    shots = [
+        {"id": "s1", "start": 0.0, "end": 2.5, "beat_id": "b1", "beat_ids": ["b1"], "description": "她开口说第一句。"},
+        {"id": "s2", "start": 2.5, "end": 4.0, "beat_id": "b2", "beat_ids": ["b2"], "description": "她开口说第二句。"},
+        {"id": "s4", "start": 4.0, "end": 7.8, "beat_id": "b3", "beat_ids": ["b3"], "description": "她没说话，只看了室友一眼。"},
+        {"id": "s5", "start": 7.8, "end": 12.0, "beat_id": "b4", "beat_ids": ["b4"], "description": "她开口说第三句。"},
+    ]
+    third = _speech("speech_3", "b3", "你接着睡", 6.1, 7.8, "s4")
+    spans = [
+        _speech("speech_1", "b1", "你醒着？", 0.4, 1.6, "s1"),
+        _speech("speech_2", "b2", "那我吹了。", 2.8, 3.8, "s2"),
+        third,
+    ]
+    groups = [
+        {"beat_id": "b1", "start": 0.0, "end": 2.5, "speech_start": 0.4, "speech_end": 1.6},
+        {"beat_id": "b2", "start": 2.5, "end": 4.0, "speech_start": 2.8, "speech_end": 3.8},
+        {"beat_id": "b3", "start": 4.0, "end": 7.8, "speech_start": 6.1, "speech_end": 7.8},
+        {"beat_id": "b4", "start": 7.8, "end": 12.0},
+    ]
+    segments = [{"shots": shots, "speech_spans": spans}]
+    schedule = [{"groups": groups}]
+    assert snap_declared_speech(segments, schedule) is True
+    assert third["shot_ids"] == ["s5"]
+    assert third["anchors"][0]["shot_ids"] == ["s5"]
+    assert third["start"] == 6.1 and third["end"] == 7.8
+    assert shots[2]["end"] == 6.1 and shots[3]["start"] == 6.1
+    assert "b3" in shots[3]["beat_ids"]
+    assert spans[0]["shot_ids"] == ["s1"] and spans[1]["shot_ids"] == ["s2"]
+    assert snap_declared_speech(segments, schedule) is False
+
+
+def test_r21_short_silent_shot_retimes_the_line_into_the_speaking_shot():
+    shots = [
+        {"id": "s0", "start": 0.0, "end": 6.0, "beat_id": "b1", "beat_ids": ["b1", "b2"],
+         "description": "她开口说第一句，又说第二句。"},
+        {"id": "s4", "start": 6.0, "end": 7.8, "beat_id": "b3", "beat_ids": ["b3"], "description": "她没说话。"},
+        {"id": "s5", "start": 7.8, "end": 12.0, "beat_id": "b4", "beat_ids": ["b4"], "description": "她开口说第三句。"},
+    ]
+    third = _speech("speech_3", "b3", "你接着睡", 6.1, 7.8, "s4")
+    spans = [
+        _speech("speech_1", "b1", "你醒着？", 0.2, 1.0, "s0"),
+        _speech("speech_2", "b2", "那我吹了。", 3.2, 4.2, "s0"),
+        third,
+    ]
+    groups = [
+        {"beat_id": "b1", "start": 0.0, "end": 3.0, "speech_start": 0.2, "speech_end": 1.0},
+        {"beat_id": "b2", "start": 3.0, "end": 6.0, "speech_start": 3.2, "speech_end": 4.2},
+        {"beat_id": "b3", "start": 6.0, "end": 7.8, "speech_start": 6.1, "speech_end": 7.8},
+        {"beat_id": "b4", "start": 7.8, "end": 12.0},
+    ]
+    assert snap_declared_speech([{"shots": shots, "speech_spans": spans}], [{"groups": groups}]) is True
+    assert third["shot_ids"] == ["s5"]
+    assert third["start"] == 7.8 and abs(third["end"] - 9.5) < 1e-6
+    assert groups[2]["speech_start"] == 7.8 and abs(groups[2]["speech_end"] - 9.5) < 1e-6
+    assert shots[1]["end"] == 7.8 and shots[2]["start"] == 7.8
+
+
+def test_a_jacket_in_the_shot_warns_when_the_appearance_only_has_the_sweatshirt():
+    plan = {"production": {"characters": [
+        {"id": "girl", "description": "二十多岁，黑色长发，灰色卫衣，帆布鞋。"},
+    ]}, "segments": [{"shots": [
+        _shot("她穿上外套，拿起吹风机。", id="s3", character_ids=["girl"]),
+        _shot("她没有穿外套，还是灰色卫衣。", id="s4", character_ids=["girl"]),
+    ]}]}
+    assert wardrobe_warnings(plan) == ["镜头里的外套没有写进角色外观"]
+    listed = {"production": {"characters": [
+        {"id": "girl", "description": "二十多岁，黑色长发，灰色卫衣，外套稍后披上或拿着。"},
+    ]}, "segments": [{"shots": [_shot("她穿上外套。", id="s3", character_ids=["girl"])]}]}
+    assert wardrobe_warnings(listed) == []
 
 
 def test_story_plan_issues_names_the_blocking_problem():

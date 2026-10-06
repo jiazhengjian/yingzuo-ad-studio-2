@@ -297,7 +297,7 @@ DIRECTOR_SYSTEM = """你执行中文商品广告分镜落地，只输出本次sc
 初次storyboard的continuous镜头不要重复填写start_state，程序从前镜end_state完整继承；非连续镜头仍须起态。
 每镜coverage按顺序列相邻beat_id及weight，weight为相对份额而非秒数。同一beat可跨相邻多镜，一镜可覆盖相邻多beat，展平后须完整顺序覆盖内容稿，不倒序或跳过。镜头不能跨scene_change或请求边界，连续多拍同镜按真实动作标continuous。
 台词只填写在ad_script，timing.visual_seconds只估视觉动作及必要观看，speech_overlap=false表示先动作后完整话语。时长方法按本阶段资源执行，不能只降低估计凑预算。台词要能说出口并承接核心创意的意思，旧方向若只有 big_idea 就承接那一句，不把关注、呈现、兼顾、打造、采用某技术这类策划词念给观众。问句的下一句回答同一个问题，一个卖点说一次，不写没有信息的空话。只有人物讲解在资料短时才补具体场合和体感，不编数字、规格、价格或折扣。产品展示是画外旁白，不要出镜对口型念卖点，可以有不说话的画面证明，不规定那一拍占几秒。大约15秒整条只围绕一个主好处：旁白、节拍、分镜和贯穿母题都说这一件，不要旁白只留一个、画面还在演示别的卖点。大约30秒可以在主好处之后加一个配角好处，分清主次，不要并列清单。45秒以上可以再展开，仍然不要把卖点排成清单，不要文案腔。口播是出镜的人用第一人称对观众说，脸在就对口型，商品特写仍是这个人接着说，不是另配旁白；可以连着说多个卖点，不受产品片的卖点条数限制。多出来的好处就留空。不描述镜头，不编画面上没有的人，不用痛点问句开场，不编价格。剧情是戏里的第一人称短对白，不要整条都写成画外音，也不要把第三人称解说塞进人物嘴里；不念画面，也不要把这一镜已经看见的事再说一遍，例如室友在睡就不要说不敢开、怕吵醒她，改成这个人自己会说的反应或提醒；末句是当下的反应或关系，不要点题，不要用没白、终于、还好有它、幸亏，也不要让产品当主语；不要用对白评价顺、干得快、不吵、安静、护发。剧情不念点击或链接。剧情要证明的每个好处至少有一镜写明看得见的技法，例如慢动作、微距、逆光或移焦；焦点从前景拉到室友或睡着的人脸上，算安静的证明。台词仍然不念卖点。过程镜只对齐起始状态，干了或顺了这种终点写在切之后的另一镜，不要写成一半或半干，也不要在同一镜里硬切到结果。前一镜结束仍是湿的、后一镜一开始已经干了，也要出起始和结果参考。文字锁不住的可见外观变化写进 state_changes，每条给 subject_label、owner、start、result、start_shot、result_shot。subject_label 例如头发；owner 是角色 id 或 product；start 与 result 只写这一处外观，例如湿，发梢成缕和干顺，蓬松披肩，不写动作，也不写道具；start_shot 必须早于 result_shot。只写人的头发干湿、乱顺，或物体满空这种看得见、单靠文字锁不住的样子。开关机、拿起放下，以及视频自己能演的动作不要写。15秒及以内每个角色最多一条。没有这种变化就给空列表。家用物品留在该在的位置，不要跟着人出门，不要英雄定格，不要人物举着产品对镜头，结尾不要让商标或字样朝向镜头。剧情默认人物不看镜头，分镜写明需要看镜头时才看。背景人物若在床上，每镜床入画都要写上这个人；朝向以这一镜写明的为准，这一镜没改就沿用上一镜。同框的两个人，衣服颜色、花纹和发型要能一眼分开，不要都穿碎花。产品片和口播才用英雄定格。若 shared_references 含本类型 playbook，开场、节拍、景别和切节奏按那一份安排，台词密度不超过 speech_budget。entry_transition=cut只省略入镜前过程，不能据此把镜内未完成动作的end_state写成完成。
-初次分镜先写 video_flow，再按它写 shots。video_flow 和开场镜头要让人看出已选方向的 hook 和核心创意，用能拍到的画面，不把这些字段的策划词念进台词。每镜 description 写清主体和动作、景别与运镜、光线、产品是否在画面里、环境和谁在开口。台词落点不要把台词原文抄进 description。如果描述里已经写下和台词不一样的原句，改成和 ad_script 同一句，或删掉那句引语。旁白留空的镜头不要写「旁白说这句话」。产品展示的 visual_motif 只写主好处那一个贯穿元素。不写如同、仿佛、像什么一样、高级感、氛围感。概念里的产品世界比喻留在方向，镜头改成光线、材质、位置和动作。若已选方向是穿梭，或这条按生活问题接到产品世界再回到结果，每镜 description 用「生活世界：」「产品世界：」或「衔接：」开头。生活问题和真实结果标生活世界，离子颗粒这类可视化标产品世界，从一边切到另一边标衔接。只有外观拆解、没有产品世界那一段时不要硬标。防变形只提醒保持商品外形。可选 visual_motif 写一个贯穿元素；相邻镜头可用 match_cut 标 motion、color 或 scale，不写进 description。camera_move 同时写景别和运动。product_visible 标明产品是否在画面里。切在动作完成或特点出现时，不按秒均分。产品片和口播的最后一镜大约留 2 秒机位停住，产品留在画面里。剧情最后一镜停在故事里，家用物品留在原处，可以由镜头推近作余韵。不另加字卡。出镜时长按 playbook：产品展示大约八成，剧情大约一半，人物讲解大约七成；没有 playbook 时大约七成。不改已经写好的台词。
+初次分镜先写 video_flow，再按它写 shots。video_flow 和开场镜头要让人看出已选方向的 hook 和核心创意，用能拍到的画面，不把这些字段的策划词念进台词。每镜 description 写清主体和动作、景别与运镜、光线、产品是否在画面里、环境和谁在开口。谁在开口就写第几句，例如她开口说第三句；这一镜不说就写她没说话。角色 description 里没有的衣服不要写进镜头；稍后才穿或拿着的也要先写进角色外观，例如外套稍后披上或拿着。台词落点不要把台词原文抄进 description。如果描述里已经写下和台词不一样的原句，改成和 ad_script 同一句，或删掉那句引语。旁白留空的镜头不要写「旁白说这句话」。产品展示的 visual_motif 只写主好处那一个贯穿元素。不写如同、仿佛、像什么一样、高级感、氛围感。概念里的产品世界比喻留在方向，镜头改成光线、材质、位置和动作。若已选方向是穿梭，或这条按生活问题接到产品世界再回到结果，每镜 description 用「生活世界：」「产品世界：」或「衔接：」开头。生活问题和真实结果标生活世界，离子颗粒这类可视化标产品世界，从一边切到另一边标衔接。只有外观拆解、没有产品世界那一段时不要硬标。防变形只提醒保持商品外形。可选 visual_motif 写一个贯穿元素；相邻镜头可用 match_cut 标 motion、color 或 scale，不写进 description。camera_move 同时写景别和运动。product_visible 标明产品是否在画面里。切在动作完成或特点出现时，不按秒均分。产品片和口播的最后一镜大约留 2 秒机位停住，产品留在画面里。剧情最后一镜停在故事里，家用物品留在原处，可以由镜头推近作余韵。不另加字卡。出镜时长按 playbook：产品展示大约八成，剧情大约一半，人物讲解大约七成；没有 playbook 时大约七成。不改已经写好的台词。
 返修严格依repair_scope和本次schema，范围外beat/shot原样保留；narrations专用收尾以其窄schema为准，不用一般Skill合同扩展输出。不得重选方向、增加确认或触发媒体，不输出隐含思考过程。
 """
 
@@ -518,6 +518,7 @@ def compile_director(raw, strategy, duration, generation_strategy, asset_ids, lo
             "reference_asset_ids": list(asset_ids), "shots": shots, "speech_spans": spans,
             "narration": "".join(span["text"] for span in spans)})
     from .planning import align_ending_hold, ending_hold_seconds
+    from .story_logic import snap_declared_speech
     hold = ending_hold_seconds(script, resolve_playbook_form(
         strategy.brief.ad_form, structure))
     if hold and segments:
@@ -531,6 +532,9 @@ def compile_director(raw, strategy, duration, generation_strategy, asset_ids, lo
             validate_expression_schedule({"segments": segments}, schedule)
         except (ValueError, KeyError, TypeError):
             segments[-1] = original
+    speech_segments = deepcopy(segments)
+    speech_schedule = deepcopy(schedule)
+    snap_declared_speech(segments, schedule)
     payload = {"title": draft.title, "ad_script": script.model_dump(),
         "script": narration, "strategy": strategy.model_dump(), "audio_strategy": "native",
         "facts": {"name": strategy.brief.product_name, "claims": [fact.text for fact in strategy.brief.facts]},
@@ -539,8 +543,16 @@ def compile_director(raw, strategy, duration, generation_strategy, asset_ids, lo
         "video_flow": draft.video_flow, "segments": segments}
     if draft.state_changes:
         payload["state_changes"] = [item.model_dump() for item in draft.state_changes]
-    plan = Plan.model_validate(payload, context={"require_beat_ids": True, "require_directing_contract": True}).model_dump()
-    validate_expression_schedule(plan, schedule)
+    try:
+        plan = Plan.model_validate(payload, context={"require_beat_ids": True, "require_directing_contract": True}).model_dump()
+        validate_expression_schedule(plan, schedule)
+    except (ValueError, ValidationError, KeyError, TypeError):
+        segments = speech_segments
+        schedule.clear()
+        schedule.extend(speech_schedule)
+        payload["segments"] = segments
+        plan = Plan.model_validate(payload, context={"require_beat_ids": True, "require_directing_contract": True}).model_dump()
+        validate_expression_schedule(plan, schedule)
     return plan, schedule, draft.model_dump()
 
 
@@ -1443,6 +1455,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     selected_evidence_restored = False
     narration_shrunk = False
     state_warnings_recorded = False
+    wardrobe_warnings_recorded = False
 
     class _PlanAccepted(Exception):
         def __init__(self, plan):
@@ -1854,7 +1867,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 craft_accepted = _accept_craft_issue(diagnostic_settings, craft_request) or craft_accepted
             if skip_review:
                 return release(plan)
-            from .story_logic import align_declared_continuity, state_change_warnings
+            from .story_logic import align_declared_continuity, state_change_warnings, wardrobe_warnings
             aligned, did_align = align_declared_continuity(coordinated)
             if did_align:
                 raw = aligned
@@ -1866,6 +1879,13 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                     record_failure({"nonblocking": True,
                                     "message": "有一条状态变化对不上镜头或角色，已放下，不猜测。",
                                     "issues": notes[:8]})
+            if not wardrobe_warnings_recorded:
+                clothes = wardrobe_warnings(plan)
+                if clothes:
+                    wardrobe_warnings_recorded = True
+                    record_failure({"nonblocking": True,
+                                    "message": "镜头里的衣服没有写进角色外观，已记下，不因此停下。",
+                                    "issues": clothes[:8]})
             progress("reviewing_plan")
             review_input = {"stage": "plan_review", "schema": compact_review_schema(plan_review_schema(plan)),
                 "review_output_version": REVIEW_OUTPUT_VERSION, "review_policy_version": REVIEW_POLICY_VERSION,
