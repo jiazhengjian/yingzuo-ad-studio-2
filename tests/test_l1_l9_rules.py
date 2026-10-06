@@ -546,6 +546,14 @@ def test_l8_key_actions_enter_the_state_line():
     assert "轻轻带门" in allowed
 
 
+def test_l8_negated_actions_do_not_enter_the_state_line():
+    for text in ("一直没翻身", "没翻身", "不翻身", "别翻身", "未翻身", "没有翻身"):
+        assert "翻身" not in stitch_actions(text, ""), text
+    assert "翻身" in stitch_actions("她翻了个身。", "")
+    assert "压低声音" not in stitch_actions("没有把声音压低", "")
+    assert "轻轻带门" not in stitch_actions("别关门", "")
+
+
 def test_l8_must_fail_slamming_the_door_fights_a_quiet_claim():
     assert "摔门砸了安静" in action_issues("她摔门", "安静")
     assert "带门要轻" in action_issues("她带门离开", "别吵")

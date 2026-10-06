@@ -127,6 +127,61 @@ def test_structure_failure_resume_reruns_storyboard(tmp_path):
     assert retried["payload"]["planning_checkpoint"]["entries"][0]["state"] == "ready"
 
 
+def test_storyboard_content_failure_retry_drops_the_saved_board(tmp_path):
+    store = Store(tmp_path / "studio.sqlite3", tmp_path / "media")
+    project = store.create_project("吹风机", "product")
+    job = store.create_turn(project["id"], {
+        "client_turn_id": "plan-r17", "expected_context_version": 0, "content": "怕吵醒室友"})
+    checkpoint = {"version": 1, "scope": fingerprint({"project": project["id"]}),
+        "request_count": 6, "transient_retries": 0, "empty_retries": 0, "manual_retries": 0,
+        "entries": [
+            {"stage": "strategy", "input_hash": fingerprint("strategy"), "state": "ready",
+             "attempts": 1, "result": {"completed": "direction"}},
+            {"stage": "ad_script", "input_hash": fingerprint("script"), "state": "ready",
+             "attempts": 1, "result": {"completed": "script"}},
+            {"stage": "storyboard", "input_hash": fingerprint("storyboard"), "state": "ready",
+             "attempts": 1, "result": {"shots": [{"id": "s4", "description": "床上的人仍在睡。"}]}},
+            {"stage": "ad_script", "input_hash": fingerprint("line"), "state": "ready",
+             "attempts": 1, "result": {"lines": [{"beat_id": "b0", "narration": "轻点。"}]}}]}
+    store.update_job(job["id"], status="failed",
+        error="背景人物没有跟着床入画，这次不采用。已有方案和素材已保留，尚未开始新的图片或视频生成",
+        payload={**job["payload"], "planning_checkpoint": checkpoint},
+        progress={"error_code": "planning_content_failed", "retryable": False, "retry_action": "edit_plan",
+                  "issue_summary": ["背景人物没有跟着床入画"], "repair_attempts": 0})
+    store.set_project_status(project["id"], job["revision"], "failed")
+    retried = store.retry_planning_job(project["id"], job["id"])
+    stages = [entry["stage"] for entry in retried["payload"]["planning_checkpoint"]["entries"]]
+    assert retried["status"] == "queued"
+    assert stages == ["strategy", "ad_script"]
+    assert retried["payload"]["planning_checkpoint"]["manual_retries"] == 1
+
+
+def test_line_content_failure_keeps_the_saved_storyboard(tmp_path):
+    store = Store(tmp_path / "studio.sqlite3", tmp_path / "media")
+    project = store.create_project("吹风机", "product")
+    job = store.create_turn(project["id"], {
+        "client_turn_id": "plan-line", "expected_context_version": 0, "content": "改一句台词"})
+    checkpoint = {"version": 1, "scope": fingerprint({"project": project["id"]}),
+        "request_count": 5, "transient_retries": 0, "empty_retries": 0, "manual_retries": 0,
+        "entries": [
+            {"stage": "strategy", "input_hash": fingerprint("strategy"), "state": "ready",
+             "attempts": 1, "result": {"completed": "direction"}},
+            {"stage": "storyboard", "input_hash": fingerprint("storyboard"), "state": "ready",
+             "attempts": 1, "result": {"shots": [{"id": "s1"}]}},
+            {"stage": "ad_script", "input_hash": fingerprint("line"), "state": "ready",
+             "attempts": 1, "result": {"lines": [{"beat_id": "b0", "narration": "终于干了。"}]}}]}
+    store.update_job(job["id"], status="failed",
+        error="剧情末句还在点题，这次不采用。已有方案和素材已保留，尚未开始新的图片或视频生成",
+        payload={**job["payload"], "planning_checkpoint": checkpoint},
+        progress={"error_code": "planning_content_failed", "retryable": False, "retry_action": "edit_plan",
+                  "issue_summary": ["剧情末句还在点题"]})
+    store.set_project_status(project["id"], job["revision"], "failed")
+    retried = store.retry_planning_job(project["id"], job["id"])
+    stages = [entry["stage"] for entry in retried["payload"]["planning_checkpoint"]["entries"]]
+    assert stages == ["strategy", "storyboard"]
+    assert retried["payload"]["planning_checkpoint"]["entries"][1]["state"] == "ready"
+
+
 def _form_strategy(source, form):
     mode = "character_dialogue" if form in ("presenter_pitch", "scene_story") else "voiceover"
     strategy = chosen_strategy(source, mode)

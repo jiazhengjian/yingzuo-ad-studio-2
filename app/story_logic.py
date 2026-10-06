@@ -57,7 +57,26 @@ _STATE_PAIRS = (
 )
 _LOOK = re.compile(r"(?<![不别])(?:看向镜头|看着镜头|看镜头|面向镜头|直视镜头|对着镜头)")
 _BG_NAME = re.compile(r"室友|同事|朋友|旁边的人|另一个人")
+_BG_EQUIV = re.compile(r"床上的人|床上那个人|睡着的人|睡熟的人")
+_BG_ABSENT = re.compile(r"没有人|床是空的|空无一人|人不在床|不在床上|已经起床|已经起来|下了床|离开了床")
 _BED = re.compile(r"床|床铺|被窝|枕头")
+_POSE_CARRY = re.compile(
+    r"仍在睡|还在睡|还睡着|仍睡着|在睡着|睡着|朝向不变|"
+    r"没动|没有动|一动不动|没翻身|没有翻身|未翻身|"
+    r"没起身|没有起来|没起来|保持睡|睡姿不变|姿势没变|姿势不变"
+)
+_SHE_SLEEPER = re.compile(r"她(?:还|仍|也)?(?:在睡|睡着|没动|没有动|没翻身|没有翻身|没起来|没有起来)")
+_STORYBOARD_CONTENT_MARKERS = (
+    "背景人物没有跟着床入画",
+    "背景人物朝向和前面不一致",
+    "剧情卖点没有高光证明镜",
+    "状态结果还停在半程",
+    "结果状态没有单独的结果镜",
+    "结果状态和过程写在同一镜",
+    "剧情末镜写成了英雄定格",
+    "剧情末镜人物对着镜头举着产品",
+    "剧情末镜把家用物品带出了门",
+)
 # More specific orientations win. 侧躺 stays available when the plan never names a facing.
 _POSE_RULES = (
     ("面向镜头", re.compile(r"面向镜头|正脸朝|正脸对着镜头")),
@@ -555,6 +574,36 @@ def _declared_pose(text):
     return None
 
 
+def _person_referenced(blob, name):
+    """The roster person, including 床上的人 / 睡着的人 / an unambiguous 她."""
+    if not blob:
+        return False
+    if name and name in blob:
+        return True
+    if _BG_EQUIV.search(blob):
+        return True
+    if name and "她" in blob and (_POSE_CARRY.search(blob) or _SHE_SLEEPER.search(blob)):
+        return True
+    return False
+
+
+def _pose_carried(blob, established):
+    """A declared pose, or a phrase that keeps the pose already in force."""
+    if _declared_pose(blob):
+        return True
+    if _POSE_CARRY.search(blob or ""):
+        return True
+    return bool(established and established in (blob or ""))
+
+
+def _remember_pose(established, pose):
+    if pose and pose != "面向镜头":
+        return pose
+    if pose == "面向镜头" and established is None:
+        return pose
+    return established
+
+
 def _pose_in_force(shots, index):
     """Identity from the first appearance. Pose from the latest shot that declares one."""
     name = None
@@ -584,40 +633,92 @@ def background_roster(shots):
     return {"name": name, "pose": pose}
 
 
-def background_issues(container):
-    """A bed in frame keeps the person. A declared turn wins; the camera-facing turn does not."""
-    shots = iter_plan_shots(container)
-    if not shots or background_roster(shots) is None:
-        return []
-    issues = []
-    established = None
+def _bed_problem(blob, name, established):
+    """absent or facing. A missing pose restatement is not a problem."""
+    if not _BED.search(blob or ""):
+        return None
+    pose = _declared_pose(blob)
+    if name is None or _BG_ABSENT.search(blob) or not _person_referenced(blob, name):
+        return "absent"
+    if pose == "面向镜头" and established and established != "面向镜头":
+        return "facing"
+    return None
+
+
+def _walk_background(shots):
     name = None
+    established = None
     for shot in shots:
         blob = _shot_blob(shot)
         found = _BG_NAME.search(blob)
         if found and name is None:
             name = found.group(0)
         pose = _declared_pose(blob)
-        if not _BED.search(blob):
-            if pose:
-                established = pose
-            continue
-        present = name and name in blob
-        carried = pose or "睡着" in blob or "朝向不变" in blob or (established and established in blob)
-        if not present or not carried:
+        problem = _bed_problem(blob, name, established)
+        yield shot, blob, name, established, pose, problem
+        established = _remember_pose(established, pose)
+
+
+def background_issues(container):
+    """A bed in frame keeps the person. A declared turn wins; the camera-facing turn does not.
+
+    床上的人、睡着的人、不会认错的「她」，以及仍在睡、还在睡、没动、没翻身，都算人还在、姿势还在。
+    连续性的起止状态也算。没把姿势再写一遍不算失败。
+    """
+    shots = iter_plan_shots(container)
+    if not shots or background_roster(shots) is None:
+        return []
+    issues = []
+    for _shot, _blob, _name, _established, _pose, problem in _walk_background(shots):
+        if problem == "absent":
             issues.append("背景人物没有跟着床入画")
-        elif pose == "面向镜头" and established and established != "面向镜头":
+        elif problem == "facing":
             issues.append("背景人物朝向和前面不一致")
-        if pose and pose != "面向镜头":
-            established = pose
-        elif pose == "面向镜头" and established is None:
-            established = pose
     return list(dict.fromkeys(issues))
+
+
+def background_contradiction_shots(container):
+    """Shots a model rewrite may fix: the person is gone, or the pose flips to the lens."""
+    shots = iter_plan_shots(container)
+    if not shots or background_roster(shots) is None:
+        return []
+    found = []
+    for shot, _blob, name, established, _pose, problem in _walk_background(shots):
+        if not problem:
+            continue
+        found.append({
+            "shot_id": shot.get("id") or "",
+            "description": shot.get("description") or "",
+            "problem": "背景人物朝向和前面不一致" if problem == "facing" else "背景人物没有跟着床入画",
+            "name": name or "",
+            "pose": established or "",
+        })
+    return found
+
+
+def _pose_line(name, pose):
+    return f"{name}仍{pose}，朝向不变，同一套衣服，仍在原来的床位"
+
+
+def _append_pose_line(description, name, pose):
+    if not isinstance(description, str) or not name or not pose:
+        return description
+    extra = _pose_line(name, pose)
+    if extra in description or f"{name}仍{pose}，朝向不变" in description:
+        return description
+    if _declared_pose(description) or (name in description and pose in description):
+        return description
+    updated = description.rstrip("。").rstrip() + "。" + extra + "。"
+    if len(updated) > 1500:
+        return description
+    return updated
 
 
 def with_background_line(description, shots, index=None):
     """Carry the latest declared pose. A pose this shot already states is left alone."""
     if not isinstance(description, str) or not shots or not _BED.search(description):
+        return description
+    if _BG_ABSENT.search(description):
         return description
     shots = [shot for shot in shots if isinstance(shot, dict)]
     if index is None:
@@ -625,16 +726,139 @@ def with_background_line(description, shots, index=None):
         if index is None:
             index = len(shots) - 1
     name, pose = _pose_in_force(shots, index)
-    if not name or not pose:
-        return description
-    if _declared_pose(description):
-        return description
-    if name in description and pose in description:
-        return description
-    extra = f"{name}仍{pose}，朝向不变，同一套衣服，仍在原来的床位"
-    if extra in description or f"{name}仍{pose}，朝向不变" in description:
-        return description
-    return description.rstrip("。") + "。" + extra + "。"
+    return _append_pose_line(description, name, pose)
+
+
+def stamp_background_lines(container):
+    """Write the pose line onto bed shots that already refer to the person.
+
+    A shot that never mentions the sleeper, or that turns them toward the lens, is left for rewrite.
+    """
+    if not isinstance(container, dict):
+        return container, False
+    revised = deepcopy(container)
+    shots = iter_plan_shots(revised)
+    if not shots or background_roster(shots) is None:
+        return container, False
+    changed = False
+    for index, (shot, blob, name, established, _pose, problem) in enumerate(_walk_background(shots)):
+        if problem or not _BED.search(blob):
+            continue
+        if not _person_referenced(blob, name):
+            continue
+        if not _pose_carried(blob, established) and _declared_pose(blob) == "面向镜头":
+            continue
+        description = shot.get("description") if isinstance(shot.get("description"), str) else ""
+        if not description or _declared_pose(description):
+            continue
+        forced_name, forced_pose = _pose_in_force(shots, index)
+        updated = _append_pose_line(description, forced_name, forced_pose)
+        if updated != description:
+            shot["description"] = updated
+            changed = True
+    return (revised, True) if changed else (container, False)
+
+
+def apply_background_rewrite(director, raw, issues):
+    """Accept a description fix for the named shots, or leave the draft untouched."""
+    if not isinstance(director, dict) or not isinstance(raw, dict) or not isinstance(issues, list) or not issues:
+        return None
+    incoming = raw.get("shots")
+    if not isinstance(incoming, list):
+        return None
+    expected = [item.get("shot_id") for item in issues]
+    if any(not shot_id for shot_id in expected):
+        return None
+    got = []
+    by_id = {}
+    for item in incoming:
+        if not isinstance(item, dict):
+            return None
+        shot_id = item.get("shot_id")
+        description = item.get("description")
+        if not isinstance(shot_id, str) or not isinstance(description, str) or not description.strip():
+            return None
+        if shot_id in by_id:
+            return None
+        by_id[shot_id] = description.strip()
+        got.append(shot_id)
+    if set(got) != set(expected):
+        return None
+    revised = deepcopy(director)
+    shots = {shot.get("id"): shot for shot in iter_plan_shots(revised)}
+    for item in issues:
+        shot = shots.get(item["shot_id"])
+        if shot is None:
+            return None
+        source = f"{item.get('description') or ''}{item.get('name') or ''}{item.get('pose') or ''}"
+        description = by_id[item["shot_id"]]
+        if set(re.findall(r"\d+", description)) - set(re.findall(r"\d+", source)):
+            return None
+        if len(description) > 1500:
+            return None
+        shot["description"] = description
+    if background_issues(revised):
+        return None
+    return revised
+
+
+BACKGROUND_REWRITE_SYSTEM = """你只改列出的镜头说明，只输出 JSON 对象，对象里只有 shots，每项只有 shot_id 和 description。
+床在画面里时，必须能看见列出的这个人，并写明仍保持给出的睡姿和朝向。没有写翻身，就不能改成面向镜头，也不能把人从床上拿掉。
+可以写成「室友仍侧躺，朝向不变」。只使用该镜原文和列出的 name、pose，不新增功效、数字和人名。不改其他镜头，不解释。"""
+
+
+def _background_rewrite_payload(issues):
+    return {
+        "stage": "storyboard",
+        "task_kind": "background_continuity_rewrite",
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["shots"],
+            "properties": {
+                "shots": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["shot_id", "description"],
+                        "properties": {
+                            "shot_id": {"type": "string"},
+                            "description": {"type": "string"},
+                        },
+                    },
+                },
+            },
+        },
+        "shots": issues,
+    }
+
+
+async def rewrite_background_if_needed(stage_call, director, plan):
+    """Return (called, replacement). A continuous board does not call the model."""
+    issues = background_contradiction_shots(plan)
+    if not issues:
+        issues = background_contradiction_shots(director)
+    if not issues:
+        return False, None
+    try:
+        raw = await stage_call(BACKGROUND_REWRITE_SYSTEM, _background_rewrite_payload(issues), [], 1200)
+    except Exception:
+        return True, None
+    revised = apply_background_rewrite(director, raw, issues)
+    return True, revised
+
+
+def storyboard_content_failure(message="", issues=()):
+    """True when a saved storyboard failed a shot-level check and must be written again."""
+    text = str(message or "")
+    if isinstance(issues, dict):
+        text += "".join(str(value) for value in issues.values())
+    elif isinstance(issues, (list, tuple)):
+        text += "".join(str(value) for value in issues)
+    else:
+        text += str(issues or "")
+    return any(token in text for token in _STORYBOARD_CONTENT_MARKERS)
 
 
 def rest_product_for_story_ending(shot):

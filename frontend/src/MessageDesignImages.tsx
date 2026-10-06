@@ -21,8 +21,10 @@ function DesignImage({ asset, onPreview }: { asset: Asset; onPreview: (asset: As
 export default function MessageDesignImages({ assets, onPreview }: { assets: Asset[]; onPreview: (asset: Asset) => void }) {
   const hasCharacter = assets.some(asset => asset.kind === 'character');
   const hasState = assets.some(asset => asset.kind === 'start_frame' && asset.metadata.state_reference === true);
-  const ariaLabel = hasState && hasCharacter ? '商品、场景、角色与状态图片'
-    : hasState ? '商品、场景与状态图片'
+  const stateWord = assets.some(asset => asset.kind === 'start_frame' && asset.metadata.sheet_layout === 'horizontal_16x9')
+    ? '状态四视图' : '状态图片';
+  const ariaLabel = hasState && hasCharacter ? `商品、场景、角色与${stateWord}`
+    : hasState ? `商品、场景与${stateWord}`
     : hasCharacter ? '商品、场景与角色图片'
     : '商品与场景图片';
   return <div className="message-design-images" role="group" aria-label={ariaLabel}>

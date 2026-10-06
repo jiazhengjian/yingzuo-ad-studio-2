@@ -86,6 +86,22 @@ test('a capacity planning failure can be resumed with 继续处理', () => {
   assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
 });
 
+test('a storyboard content failure retries by regenerating the board', () => {
+  const job = fixture({
+    kind: 'plan',
+    error: '背景人物没有跟着床入画，这次不采用。已有方案和素材已保留',
+    progress: { error_code: 'planning_content_failed', retryable: true, retry_action: 'retry_planning',
+      issue_summary: ['背景人物没有跟着床入画'] },
+  });
+  assert.deepEqual(recoveryForJob(job), { kind: 'retry_planning', label: '继续处理' });
+  assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
+  const html = renderCard(job);
+  assert.match(html, /继续处理/);
+  assert.match(html, /重新生成分镜/);
+  assert.match(html, /背景人物没有跟着床入画/);
+  assert.doesNotMatch(html, /输入修改要求|这是系统问题/);
+});
+
 test('a structure failure can be resumed with 继续处理', () => {
   const job = fixture({
     kind: 'plan',

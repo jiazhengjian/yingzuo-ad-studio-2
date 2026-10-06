@@ -8,9 +8,11 @@ from app.line_quality import apply_line_rewrite, script_line_offenses
 from app.picture_rules import action_issues, state_change_issues
 from app.production import required_designs, validate_design_assets
 from app.story_logic import (
-    background_issues, cast_distinction_issues, line_is_punchline, plan_state_references,
-    proof_highlight_issues, scrub_story_purposes, shot_state_change, state_pairing_issues,
-    story_ending_issues, story_gaze_line, story_plan_issues, with_background_line,
+    apply_background_rewrite, background_issues, cast_distinction_issues, line_is_punchline,
+    plan_state_references, proof_highlight_issues, rewrite_background_if_needed,
+    scrub_story_purposes, shot_state_change, stamp_background_lines, state_pairing_issues,
+    story_ending_issues, story_gaze_line, story_plan_issues, storyboard_content_failure,
+    with_background_line,
 )
 from app.strategy import StrategyRecord
 from app.video_prompt import compile_grouped_video
@@ -186,19 +188,50 @@ def test_state_change_splits_the_process_shot_from_a_later_result():
     assert "商品原图" in request["prompt"]
     assert "画成真人头" in request["prompt"]
     assert "必须露脸" not in request["prompt"]
+    assert request["reference_kinds"] == ["product"]
+    assert "sheet_layout" not in request
     on_story = state_design_request(
         {},
         {"facts": {"name": "吹风机"}, "visual_direction": {"scene": "合住卧室", "lighting": "清晨窗边"},
-         "production": {"characters": [{"id": "girl", "name": "女生", "description": "灰色连帽卫衣"}]},
+         "production": {"characters": [
+             {"id": "room", "name": "室友", "description": "碎花睡衣"},
+             {"id": "girl", "name": "女生", "description": "灰色连帽卫衣"},
+         ], "speaker_id": "girl"},
          "segments": [{"shots": [{
-             "id": "s3", "character_ids": ["girl"],
+             "id": "s3", "character_ids": ["room", "girl"],
              "description": "合住卧室里，灰卫衣女生站在床边吹湿发。",
              "continuity": {"start_state": "头发是湿的", "end_state": "被吹开一半"},
          }]}]},
         {"phase": "start", "label": "头发湿", "subject": "头发", "state_id": "s3:start", "shot_id": "s3"})
-    assert "灰卫衣女生站在床边吹湿发" in on_story["prompt"]
+    assert on_story["reference_kinds"] == ["character"]
+    assert on_story["character_id"] == "girl"
+    assert on_story["aspect_ratio"] == "16:9"
+    assert on_story["sheet_layout"] == "horizontal_16x9"
+    assert on_story["template_version"] == "chinese-horizontal-v1"
+    assert "左侧约40%" in on_story["prompt"]
+    assert "背面全身" in on_story["prompt"]
+    assert "白或浅灰无缝背景" in on_story["prompt"]
     assert "灰色连帽卫衣" in on_story["prompt"]
-    assert "合住卧室" in on_story["prompt"]
+    assert "头发湿" in on_story["prompt"]
+    assert "合住卧室" not in on_story["prompt"]
+    assert "清晨窗边" not in on_story["prompt"]
+    assert "床边" not in on_story["prompt"]
+    assert "碎花睡衣" not in on_story["prompt"]
+    assert "室友" not in on_story["prompt"]
+    assert "场景图" in on_story["prompt"]
+    cup = state_design_request(
+        {},
+        {"facts": {"name": "杯子"}, "visual_direction": {"scene": "合住卧室"},
+         "production": {"characters": [{"id": "girl", "name": "女生", "description": "灰色连帽卫衣"}]},
+         "segments": [{"shots": [{"id": "s1", "character_ids": ["girl"],
+                                  "description": "合住卧室里，杯子还是满的。"}]}]},
+        {"phase": "result", "label": "空了", "subject": "杯", "state_id": "s1:result", "shot_id": "s1"})
+    assert cup["reference_kinds"] == ["product"]
+    assert "sheet_layout" not in cup
+    assert "商品原图" in cup["prompt"]
+    assert "白或浅灰" in cup["prompt"]
+    assert "合住卧室" not in cup["prompt"]
+    assert "灰色连帽卫衣" not in cup["prompt"]
     segment = _segment(ad_form="scene_story")
     segment["shots"][0]["description"] = "她在床边吹着湿发。"
     segment["shots"][0]["continuity"] = {
@@ -326,6 +359,98 @@ def test_background_pose_follows_the_latest_declared_turn():
         _shot("夜里，室友侧躺在床上睡着。"),
         _shot("床上的室友面向镜头。"),
     ))
+    assert "背景人物朝向和前面不一致" in background_issues(_board(
+        _shot("夜里，室友侧躺在床上睡着。"),
+        _shot("床上的室友面向镜头。"),
+    ))
+
+
+def _r17_quiet_night():
+    """The local e2e board: the sleeper stays, named once and then only as 床上的人."""
+    return [
+        _shot("夜里，室友侧躺在床上，脸朝房间一侧。", id="s1"),
+        _shot("床上，室友保持侧躺。", id="s2"),
+        _shot("吹风机还在响。床上的人仍在睡。", id="s3", continuity={
+            "start_state": "吹风机对着头发", "end_state": "室友还在睡", "allowed_changes": "",
+        }),
+        _shot("镜头留在床边。床上的人仍在睡。", id="s4"),
+        _shot("床还在画面里。焦点从吹风机移到室友脸上，没有翻身。", id="s5"),
+        _shot("床上的人仍侧躺睡着。", id="s6"),
+        _shot("窗外微亮，床上的人仍侧躺睡着。", id="s7"),
+        _shot("她放下吹风机。床上的人仍侧躺睡着。", id="s8"),
+    ]
+
+
+def test_equivalent_bed_references_keep_the_sleeper_and_the_pose():
+    shots = _r17_quiet_night()
+    plan = {"segments": [{"shots": shots}]}
+    assert background_issues(plan) == []
+    stamped, changed = stamp_background_lines({"shots": shots})
+    assert changed is True
+    filled = {shot["id"]: shot["description"] for shot in stamped["shots"]}
+    assert "室友仍侧躺，朝向不变" in filled["s3"]
+    assert "室友仍侧躺，朝向不变" in filled["s4"]
+    assert "同一套衣服" in filled["s4"]
+    assert "室友" not in shots[3]["description"]
+    assert "仍侧躺" in filled["s5"]
+    assert background_issues(stamped) == []
+    assert background_issues(_board(
+        shots[0], _shot("她还在睡，床没有动。", id="s9"),
+    )) == []
+    missing = _board(shots[0], _shot("镜头回到床边，被子还在。", id="s9"))
+    assert "背景人物没有跟着床入画" in background_issues(missing)
+    assert "背景人物没有跟着床入画" in background_issues(_board(
+        shots[0], _shot("她坐在床沿吹头发。", id="s9"),
+    ))
+    assert "背景人物没有跟着床入画" in background_issues(_board(
+        shots[0], _shot("床是空的，室友已经起来。", id="s9"),
+    ))
+    assert with_background_line("床上没有人。", shots) == "床上没有人。"
+    assert storyboard_content_failure("背景人物没有跟着床入画，这次不采用", ["背景人物没有跟着床入画"])
+    assert storyboard_content_failure("剧情末句还在点题") is False
+
+
+def test_background_contradiction_is_rewritten_once_then_kept_only_if_fixed():
+    director = {"shots": [
+        _shot("夜里，室友侧躺在床上睡着。", id="s1"),
+        _shot("镜头回到床边，被子还在。", id="s2"),
+    ]}
+    fixed = {"shots": [{"shot_id": "s2", "description": "镜头回到床边，室友仍侧躺，朝向不变。"}]}
+    revised = apply_background_rewrite(director, fixed, [{
+        "shot_id": "s2", "description": director["shots"][1]["description"], "name": "室友", "pose": "侧躺",
+    }])
+    assert revised is not None and "室友仍侧躺" in revised["shots"][1]["description"]
+    assert apply_background_rewrite(director, {"shots": [{
+        "shot_id": "s2", "description": "镜头回到床边，被子还在。",
+    }]}, [{"shot_id": "s2", "description": "镜头回到床边，被子还在。", "name": "室友", "pose": "侧躺"}]) is None
+    turned = {"shots": [
+        _shot("夜里，室友侧躺在床上睡着。", id="s1"),
+        _shot("床上的室友面向镜头。", id="s2"),
+    ]}
+    assert apply_background_rewrite(turned, {"shots": [{
+        "shot_id": "s2", "description": "床上的室友面向镜头，看向镜头。",
+    }]}, [{"shot_id": "s2", "description": "床上的室友面向镜头。", "name": "室友", "pose": "侧躺"}]) is None
+
+    async def repair(system, payload, assets, max_tokens=1200):
+        assert payload["task_kind"] == "background_continuity_rewrite"
+        assert payload["shots"][0]["shot_id"] == "s2"
+        return fixed
+
+    called, replacement = asyncio.run(rewrite_background_if_needed(repair, director, director))
+    assert called is True and replacement is not None
+    assert background_issues(replacement) == []
+
+    async def still_wrong(*args, **kwargs):
+        return {"shots": [{"shot_id": "s2", "description": "镜头回到床边，被子还在。"}]}
+
+    called, replacement = asyncio.run(rewrite_background_if_needed(still_wrong, director, director))
+    assert called is True and replacement is None
+
+    async def unused(*args, **kwargs):
+        raise AssertionError("continuous board")
+
+    called, replacement = asyncio.run(rewrite_background_if_needed(unused, {"shots": _r17_quiet_night()}, {"shots": _r17_quiet_night()}))
+    assert called is False and replacement is None
 
 
 def test_two_people_in_one_frame_are_told_apart_on_the_character_sheet():

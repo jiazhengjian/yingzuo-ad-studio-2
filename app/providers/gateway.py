@@ -799,21 +799,18 @@ def _generated_image(results, assets, work_dir, *, kind, character_id=None, key=
     return None
 
 
-def _state_still_inputs(sources, results, assets, project, plan, instruction, work_dir):
-    """Product original, the scene, and the character sheets that own this shot."""
-    from app.design import state_context_characters
-    images = list(sources)
-    scene = _generated_image(results, assets, work_dir, kind="scene", key="scene")
-    if scene is None:
-        raise ValueError("状态参考图需要已生成的场景图")
-    images.append(scene)
-    for person in state_context_characters(project, plan, instruction):
-        cid = person.get("id")
+def _state_still_inputs(sources, results, assets, request, work_dir):
+    """The one reference this state sheet is conditioned on. Never the scene image."""
+    kinds = request.get("reference_kinds") if isinstance(request, dict) else None
+    if kinds == ["character"]:
+        cid = request.get("character_id")
         sheet = _generated_image(results, assets, work_dir, kind="character", character_id=cid, key=f"character_{cid}")
         if sheet is None:
             raise ValueError("状态参考图需要已生成的角色参考")
-        images.append(sheet)
-    return images
+        return [sheet]
+    if not sources:
+        raise ValueError("状态参考图需要商品原图")
+    return list(sources)
 
 
 def data_url(asset):
@@ -2755,7 +2752,9 @@ class Gateway:
                 last_stage_result["_diagnostic_saved"] = True
             error = ProviderError(str(exc))
             error.error_code, error.retryable = exc.error_code, False
-            if any(token in str(exc) for token in ("结构不完整", "未能满足已确认要求", "容量仍未改善")):
+            from app.story_logic import storyboard_content_failure
+            storyboard_level = storyboard_content_failure(str(exc), getattr(exc, "issue_summary", ()))
+            if any(token in str(exc) for token in ("结构不完整", "未能满足已确认要求", "容量仍未改善")) or storyboard_level:
                 error.retryable = True
                 error.retry_action = "retry_planning"
             else:
@@ -2896,7 +2895,7 @@ class Gateway:
                            "size": aspect, "resolution": "1k", "quality": "medium"}
                 image_inputs = sources
                 if kind == "start_frame":
-                    image_inputs = _state_still_inputs(sources, results, assets, project, plan, instruction, work_dir)
+                    image_inputs = _state_still_inputs(sources, results, assets, design_request, work_dir)
                 if kind in ("scene", "start_frame"):
                     payload["images"] = [data_url(item) for item in image_inputs]
                 check_cancelled()
@@ -2980,6 +2979,14 @@ class Gateway:
                     shot_id=instruction.get("shot_id"),
                     state_label=instruction.get("label"),
                 )
+                state_request = receipt.get("design_request") if isinstance(receipt.get("design_request"), dict) else {}
+                state_layout = state_request.get("sheet_layout")
+                if state_layout in ("horizontal_16x9", "grid_2x2"):
+                    design_metadata["sheet_layout"] = state_layout
+                if state_request.get("template_version") == CHARACTER_SHEET_TEMPLATE:
+                    design_metadata["template_version"] = CHARACTER_SHEET_TEMPLATE
+                if isinstance(state_request.get("character_id"), str) and state_request.get("character_id"):
+                    design_metadata["character_id"] = state_request["character_id"]
             if kind == "character":
                 if receipt.get("character_id") != instruction["character_id"]:
                     raise ProviderError("角色图片回执与本方案角色不一致；没有重新提交生成")
@@ -2994,7 +3001,10 @@ class Gateway:
                 if request.get("template_version") == CHARACTER_SHEET_TEMPLATE:
                     design_metadata["template_version"] = CHARACTER_SHEET_TEMPLATE
             if kind == "start_frame":
-                review = "请核对这一状态是否和方案一致，商品外形是否仍是原图"
+                review = (
+                    "请核对是否仍是同一人、同一套衣服，只有这一处状态变了"
+                    if design_metadata.get("sheet_layout") == "horizontal_16x9"
+                    else "请核对是否仍是同一件商品，只有这一处状态变了，背景是否干净")
             elif kind == "scene":
                 review = "请核对场景是否适合商品"
             else:

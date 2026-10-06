@@ -237,7 +237,7 @@ def test_replace_keys_redraws_only_the_finished_old_character_sheet(settings, so
     assert json.loads((folder / "character_char_a_task.json.replaced").read_text())["task_id"] == "old-sheet"
 
 
-def test_state_still_request_includes_the_scene_the_person_and_the_shot(settings, source, tmp_path, monkeypatch):
+def test_state_sheet_request_uses_the_character_sheet_and_not_the_scene(settings, source, tmp_path, monkeypatch):
     import base64
     from PIL import Image
 
@@ -284,16 +284,46 @@ def test_state_still_request_includes_the_scene_the_person_and_the_shot(settings
     monkeypatch.setattr(gateway, "_task", task)
     monkeypatch.setattr(gateway, "download_video", download)
     monkeypatch.setattr("app.providers.gateway.data_url", tagged)
-    asyncio.run(gateway.create_designs({}, [source], plan, tmp_path / "designs"))
-    state_requests = [item for item in requests if "写实静帧" in item["prompt"]]
+    saved = asyncio.run(gateway.create_designs({}, [source], plan, tmp_path / "designs"))
+    state_requests = [item for item in requests if "状态四视图" in item["prompt"]]
     assert len(state_requests) == 2
     for item in state_requests:
+        assert item["size"] == "16:9"
         labels = [base64.b64decode(url.split(",", 1)[1]).decode() for url in item["images"]]
-        assert any(label.startswith("product") for label in labels)
-        assert any(label.startswith("scene:") for label in labels)
-        assert any(label.startswith("character:char_a") for label in labels)
+        assert labels and all(label.startswith("character:char_a") for label in labels)
+        assert not any(label.startswith("scene:") for label in labels)
+        assert not any(label.startswith("product") for label in labels)
+        assert "左侧约40%" in item["prompt"]
+        assert "白或浅灰无缝背景" in item["prompt"]
         assert "灰色连帽卫衣" in item["prompt"]
-        assert "合住卧室" in item["prompt"]
-    assert "灰卫衣女生站在床边吹湿发" in state_requests[0]["prompt"]
-    assert "关掉吹风机" in state_requests[1]["prompt"]
+        assert "合住卧室" not in item["prompt"]
+        assert "床边" not in item["prompt"]
+    assert "头发湿" in state_requests[0]["prompt"] or "湿" in state_requests[0]["prompt"]
+    sheets = [item for item in saved if item["metadata"].get("state_reference")]
+    assert len(sheets) == 2
+    assert all(item["metadata"]["sheet_layout"] == "horizontal_16x9" for item in sheets)
+    assert all(item["metadata"]["template_version"] == "chinese-horizontal-v1" for item in sheets)
+    assert all(item["metadata"]["character_id"] == "char_a" for item in sheets)
     assert requests[0]["images"] and all(not base64.b64decode(url.split(",", 1)[1]).decode().startswith("scene:") for url in requests[0]["images"])
+
+
+def test_state_sheet_inputs_skip_the_scene_image(tmp_path):
+    from PIL import Image
+    from app.providers.gateway import _state_still_inputs
+
+    scene = tmp_path / "scene.png"
+    sheet = tmp_path / "character_girl.chinese-horizontal-v1.png"
+    product = tmp_path / "product.png"
+    Image.new("RGB", (8, 8), "blue").save(scene)
+    Image.new("RGB", (8, 8), "white").save(sheet)
+    Image.new("RGB", (8, 8), "red").save(product)
+    sources = [{"id": "product-1", "kind": "product", "path": str(product), "mime": "image/png"}]
+    person = _state_still_inputs(
+        sources, [], [], {"reference_kinds": ["character"], "character_id": "girl"}, tmp_path)
+    assert [Path(item["path"]).name for item in person] == ["character_girl.chinese-horizontal-v1.png"]
+    assert str(scene) not in [item["path"] for item in person]
+    assert str(product) not in [item["path"] for item in person]
+    goods = _state_still_inputs(sources, [], [], {"reference_kinds": ["product"]}, tmp_path)
+    assert [item["id"] for item in goods] == ["product-1"]
+    with pytest.raises(ValueError, match="角色参考"):
+        _state_still_inputs(sources, [], [], {"reference_kinds": ["character"], "character_id": "nobody"}, tmp_path)

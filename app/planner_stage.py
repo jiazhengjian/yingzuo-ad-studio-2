@@ -21,6 +21,8 @@ def enrich_planner_stage(data, *, legacy_storyboard=False):
         skill_stage = "line_rewrite"
     if data.get("task_kind") == "shot_craft_rewrite":
         skill_stage = "shot_craft_rewrite"
+    if data.get("task_kind") == "background_continuity_rewrite":
+        skill_stage = "storyboard"
     if skill_stage == "storyboard" and legacy_storyboard:
         skill_stage = "legacy_storyboard"
     playbook_form = (resolve_playbook_form(data.get("ad_form"), structure_from_stage_data(data))

@@ -72,10 +72,14 @@ def _reference_lines(segment, spoken=""):
             duty = "场景参考，控制空间、材质、灯光与背景"
         elif role.get("role") == "state":
             label = role.get("label") or "这一状态"
-            if role.get("phase") == "start":
-                duty = f"起始状态参考，只锁定「{label}」。过程镜从这张对齐，停在过程里，不要在这一镜跳到结果。商品外形仍以商品原图为准"
+            if role.get("sheet_layout") == "horizontal_16x9":
+                base = f"状态四视图，只锁定「{label}」这一处变化：干净浅色背景上的同一个人、同一套衣服，版式不进入成片。房间、光线和背景仍以场景参考为准"
             else:
-                duty = f"结果状态参考，只锁定「{label}」。切到结果镜之后再对齐这张，不要在过程镜里渐变过来。商品外形仍以商品原图为准"
+                base = f"商品状态参考，只锁定「{label}」：干净背景上的同一件商品。房间仍以场景参考为准"
+            if role.get("phase") == "start":
+                duty = base + "。过程镜从这张对齐，停在过程里，不要在这一镜跳到结果"
+            else:
+                duty = base + "。切到结果镜之后再对齐这张，不要在过程镜里渐变过来"
         elif role.get("role") == "character":
             cid = role.get("character_id")
             if cid not in characters or cid in referenced_characters:
