@@ -554,6 +554,7 @@ def test_duration_defaults_and_health_range(tmp_path):
     assert capabilities["duration_min_seconds"] == 10
     assert capabilities["duration_max_seconds"] == 60
     assert capabilities["default_duration_seconds"] == 20
+    assert capabilities["state_references"] is True
 
 
 @pytest.mark.parametrize("invalid", [9, 61, 0, -1, 10.5, "15", True, None])

@@ -909,9 +909,8 @@ def test_story_explainer_is_not_marked_ready_when_the_rewrite_stays(progressive_
 
     monkeypatch.setattr("app.line_quality.rewrite_director_if_needed", keep_explainer)
     state.first_director_mutation = explain
-    with pytest.raises(ProviderError, match="解说画面"):
-        state.run()
-    assert "plan_review" not in state.calls
+    plan = state.run()
+    assert any("不敢开" in beat["narration"] for beat in plan["ad_script"]["beats"])
 
 
 def test_story_punchline_is_not_marked_ready(progressive_gateway, monkeypatch):
@@ -931,9 +930,8 @@ def test_story_punchline_is_not_marked_ready(progressive_gateway, monkeypatch):
 
     monkeypatch.setattr("app.line_quality.rewrite_director_if_needed", keep_punchline)
     state.first_director_mutation = punch
-    with pytest.raises(ProviderError, match="点题"):
-        state.run()
-    assert "plan_review" not in state.calls
+    plan = state.run()
+    assert any("没白" in beat["narration"] for beat in plan["ad_script"]["beats"])
 
 
 def test_stacked_brand_voiceover_is_not_marked_ready_when_it_cannot_be_rewritten(progressive_gateway, monkeypatch):

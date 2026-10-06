@@ -76,10 +76,14 @@ def _reference_lines(segment, spoken=""):
                 base = f"状态四视图，只锁定「{label}」这一处变化：干净浅色背景上的同一个人、同一套衣服，版式不进入成片。房间、光线和背景仍以场景参考为准"
             else:
                 base = f"商品状态参考，只锁定「{label}」：干净背景上的同一件商品。房间仍以场景参考为准"
-            if role.get("phase") == "start":
+            cid = role.get("character_id")
+            if role.get("phase") == "start" and cid in characters:
+                referenced_characters.add(cid)
+                duty = base + "。变化之前的每一镜都用这张认人。过程镜从这张对齐，停在过程里，不要在这一镜跳到结果"
+            elif role.get("phase") == "start":
                 duty = base + "。过程镜从这张对齐，停在过程里，不要在这一镜跳到结果"
             else:
-                duty = base + "。切到结果镜之后再对齐这张，不要在过程镜里渐变过来"
+                duty = base + "。从结果镜起按这张，身份和衣服锁在起始那张上。切到结果镜之后再对齐这张，不要在过程镜里渐变过来"
         elif role.get("role") == "character":
             cid = role.get("character_id")
             if cid not in characters or cid in referenced_characters:
@@ -107,8 +111,17 @@ def _reference_lines(segment, spoken=""):
 
 
 def _character_labels(segment):
-    indexes = {role["character_id"]: role["index"] for role in (segment.get("reference_roles") or [])
-               if role.get("role") == "character"}
+    indexes = {}
+    roles = segment.get("reference_roles") or []
+    for role in roles:
+        cid = role.get("character_id")
+        if role.get("role") == "character" and isinstance(cid, str) and type(role.get("index")) is int:
+            indexes[cid] = role["index"]
+    for role in roles:
+        cid = role.get("character_id")
+        if (role.get("role") == "state" and role.get("phase") == "start" and isinstance(cid, str)
+                and cid not in indexes and type(role.get("index")) is int):
+            indexes[cid] = role["index"]
     return {person["id"]: f"{person['name']}（参考图{indexes[person['id']]}）"
             for person in (segment.get("production") or {}).get("characters", [])}
 

@@ -35,6 +35,7 @@ class Settings:
     planner_max_refinements: int = 2
     planner_refinement_format: str = "sparse_or_full"
     planner_speculate_recommended: bool = False
+    state_references_enabled: bool = True
     video_duration_seconds: int = 10
     max_video_submissions: int = 6
     max_active_runs: int = 1
@@ -84,6 +85,13 @@ class Settings:
         speculate = os.getenv("PLANNER_SPECULATE_RECOMMENDED", "false").strip().lower()
         if speculate not in ("true", "false"):
             raise ValueError("PLANNER_SPECULATE_RECOMMENDED must be true or false")
+        state_refs = os.getenv("AD_STATE_REFERENCES", "").strip().lower()
+        if state_refs in ("", "1", "true", "on", "yes"):
+            state_references_enabled = True
+        elif state_refs in ("0", "false", "off", "no"):
+            state_references_enabled = False
+        else:
+            raise ValueError("AD_STATE_REFERENCES must be on or off")
         refinements = os.getenv("PLANNER_MAX_REFINEMENTS", "2").strip()
         if refinements not in ("0", "1", "2"):
             raise ValueError("PLANNER_MAX_REFINEMENTS must be 0, 1 or 2")
@@ -113,6 +121,7 @@ class Settings:
             planner_max_refinements=int(refinements),
             planner_refinement_format=refinement_format,
             planner_speculate_recommended=speculate == "true",
+            state_references_enabled=state_references_enabled,
             planner_provider=provider,
             planner_model=os.getenv("PLANNER_MODEL", "").strip() or default_model,
             tts_voice=os.getenv("TTS_VOICE", "Tingting"),

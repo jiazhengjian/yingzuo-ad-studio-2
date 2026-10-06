@@ -170,6 +170,15 @@ test('non-retryable failures direct the user to materials or plan changes withou
   assert.equal(recoveryForJob(fixture({ progress: { retryable: false, error_code: 'voice_too_long' } })).kind, 'edit_voice');
 });
 
+test('a missed image submission can continue and resubmits only that image', () => {
+  const job = fixture({ phase: 'creating_designs', progress: {
+    error_code: 'image_submission_unavailable', retryable: true, retry_action: 'retry_existing',
+  }, error: '无法连接土豆API，尚未收到任务编号' });
+  assert.equal(recoveryForJob(job).kind, 'retry_existing');
+  assert.equal(recoveryForJob(job).label, '继续制作');
+  assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
+});
+
 test('terminal image failure offers a plan change without another generation attempt', () => {
   const job = fixture({ phase: 'creating_designs', progress: { error_code: 'image_generation_failed', retryable: false },
     error: '图片生成失败；已完成图片保留，请调整方案后开始新版本' });

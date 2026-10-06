@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from .picture_rules import off_camera_locked
 from .production import CHARACTER_SHEET_TEMPLATE, apply_cast_instructions
 from .runtime_skills import compiler_template
@@ -102,6 +103,36 @@ def state_context_characters(project, plan, instruction):
 _PRODUCT_STATE_SUBJECTS = frozenset({"盖子", "瓶盖", "杯", "门", "商品"})
 
 
+_BUN = re.compile(r"丸子头|丸子|盘发|发髻")
+_HAIR_SHOULDER = re.compile(r"落回肩|落到肩|落在肩|肩侧|及肩|齐肩|披肩|中长发")
+_HAIR_SHORT = re.compile(r"短发|寸头|齐耳")
+_HAIR_PONY = re.compile(r"马尾")
+
+
+def _hair_source_text(plan, person):
+    from .story_logic import iter_plan_shots
+    parts = [person.get("description") or ""] if isinstance(person, dict) else []
+    own = person.get("id") if isinstance(person, dict) else None
+    for shot in iter_plan_shots(plan):
+        ids = shot.get("character_ids") if isinstance(shot.get("character_ids"), list) else []
+        if own and ids and own not in ids:
+            continue
+        parts.append(shot.get("description") or "")
+        continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else {}
+        parts.extend(continuity.get(key) or "" for key in ("start_state", "end_state") if isinstance(continuity.get(key), str))
+    return " ".join(part for part in parts if isinstance(part, str))
+
+
+def _hairstyle_line(text):
+    if _HAIR_SHOULDER.search(text or ""):
+        return "头发自然披到肩膀，不要丸子头，不要盘发。"
+    if _HAIR_PONY.search(text or ""):
+        return "头发扎成马尾，不要改成披肩或丸子头。"
+    if _HAIR_SHORT.search(text or ""):
+        return "头发是短发，不要画成长发或丸子头。"
+    return ""
+
+
 def state_sheet_person(project, plan, instruction):
     """The one person this state sheet copies. None for an object, or when nobody is on camera."""
     instruction = instruction or {}
@@ -110,6 +141,11 @@ def state_sheet_person(project, plan, instruction):
     people = state_context_characters(project, plan, instruction)
     if not people:
         return None
+    wanted = instruction.get("character_id")
+    if isinstance(wanted, str) and wanted:
+        chosen = next((person for person in people if person.get("id") == wanted), None)
+        if chosen:
+            return chosen
     production = plan.get("production") if isinstance(plan, dict) and isinstance(plan.get("production"), dict) else {}
     speaker_id = production.get("speaker_id")
     shot = _plan_shot(plan, instruction.get("shot_id")) or {}
@@ -130,10 +166,10 @@ def _state_phase_line(phase):
 def state_design_request(project, plan, instruction):
     """One state, drawn like a reference sheet, not a frame from the film.
 
-    A person keeps the character-sheet layout and is conditioned only on that
-    person's own sheet. An object, or an off-camera film, is the same product
-    on a clean background, conditioned only on the product original. The scene
-    image stays with the video, where it still owns the room.
+    The start sheet is that person's identity: four views, a clean background,
+    and no other image. The result sheet is conditioned only on that start
+    sheet. An object, or an off-camera film, stays the product on a clean
+    background. The scene image stays with the video, where it still owns the room.
     """
     instruction = instruction or {}
     plan = plan if isinstance(plan, dict) else {}
@@ -163,18 +199,32 @@ def state_design_request(project, plan, instruction):
         if hidden:
             prompt += "本片不出镜：不要人脸，不要把独立发束或局部画成真人头。"
         return {**common, "reference_kinds": ["product"], "prompt": prompt}
+    description = _BUN.sub("", person.get("description") or "")
+    hair = _hairstyle_line(_hair_source_text(plan, person))
     instructions, trace = compiler_template("ads-video-asset-prompts", "references/character-template.txt")
-    instructions = apply_cast_instructions(instructions, person.get("description", ""))
-    instructions += (
-        f"\n这张是同一人的状态四视图，只改这一处：{label}。"
-        "身份、衣服和头发长度与这个人自己的角色四视图一致，只有这一处状态不同。"
-        "不要房间，不要其他人物，不要场景里的道具，不要商品。"
-        "参考图只有这一位角色自己的四视图，不要场景图，不要画成故事里的静帧。"
-        + _state_phase_line(phase)
-    )
-    context = {"name": person.get("name") or "角色", "description": person.get("description") or "",
+    instructions = apply_cast_instructions(instructions, description)
+    if phase == "start":
+        instructions += (
+            f"\n这张是同一人的起始状态四视图，也是这个人的身份参考。只表现这一处起始状态：{label}。"
+            + (hair + "\n" if hair else "\n")
+            + "不要房间，不要其他人物，不要场景里的道具，不要商品，不要场景图。"
+            "不要另画一张普通角色四视图。版式不进入成片。"
+            + _state_phase_line(phase)
+        )
+        kinds = []
+    else:
+        instructions += (
+            f"\n这张是同一人的结果状态四视图。只把这一处改成结果：{label}。"
+            + (hair + "\n" if hair else "\n")
+            + "身份、衣服和头发长度与起始状态四视图一致，只有这一处状态不同。"
+            "不要房间，不要其他人物，不要场景里的道具，不要商品。"
+            "参考图只有这一位的起始状态四视图，不要场景图，不要商品原图，不要另一张普通角色四视图。"
+            + _state_phase_line(phase)
+        )
+        kinds = ["state_start"]
+    context = {"name": person.get("name") or "角色", "description": description,
                "state": label, "phase": phase_name}
     return {**common, "character_id": person.get("id"), "sheet_layout": "horizontal_16x9",
-            "template_version": CHARACTER_SHEET_TEMPLATE, "reference_kinds": ["character"],
+            "template_version": CHARACTER_SHEET_TEMPLATE, "reference_kinds": kinds,
             "skill_trace": [trace], "prompt": instructions + "\n已确认角色与这一处状态：\n"
             + json.dumps(context, ensure_ascii=False)}

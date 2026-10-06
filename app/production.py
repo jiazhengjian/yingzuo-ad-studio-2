@@ -206,15 +206,23 @@ def validate_production_plan(plan):
 
 
 def required_designs(plan):
-    """One environment, one contact sheet per character, plus a still per changed state."""
+    """One environment, one sheet per person who does not change, plus start and result stills.
+
+    A person who owns a start still uses that still as their identity. They do
+    not also get an ordinary four-view. With state references off, every person
+    gets one ordinary sheet and no stills are planned.
+    """
     from .story_logic import plan_state_references
     production = _get(plan, "production")
     characters = _get(production, "characters", [])
+    states = plan_state_references(plan)
+    covered = {item.get("character_id") for item in states if item.get("phase") == "start" and item.get("character_id")}
+    sheets = [person for person in characters if _get(person, "id") not in covered]
     return [{"key": "scene", "kind": "scene", "name": "场景参考图"}, *[
         {"key": "character_" + _get(person, "id"), "kind": "character",
          "name": _get(person, "name") + " · 四视图", "character": person,
-         "character_id": _get(person, "id")} for person in characters],
-        *plan_state_references(plan)]
+         "character_id": _get(person, "id")} for person in sheets],
+        *states]
 
 
 def validate_design_assets(plan, assets):

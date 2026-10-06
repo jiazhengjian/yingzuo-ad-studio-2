@@ -55,7 +55,8 @@ def test_story_ending_fails_when_a_home_good_leaves_or_the_shot_is_a_hero_freeze
     assert "剧情末镜写成了英雄定格" in story_ending_issues(hero, strategy)
     presented = _board(_shot("她把吹风机举向镜头。"))
     assert "剧情末镜人物对着镜头举着产品" in story_ending_issues(presented, strategy)
-    assert story_plan_issues(carried, strategy)
+    assert "剧情末镜把家用物品带出了门" in story_ending_issues(carried, strategy)
+    assert story_plan_issues(carried, strategy) == []
 
 
 def test_story_ending_allows_a_push_in_after_the_person_leaves():
@@ -105,7 +106,7 @@ def test_punchline_rewrite_is_rejected_until_the_line_is_in_the_moment():
     scrubbed, changed = scrub_story_purposes(director, strategy)
     assert changed is True
     assert scrubbed["shots"][0]["purpose"] == "停在这一下刚发生的动作上。"
-    assert story_plan_issues(_board(_shot("她转身。"), script=_lines("它让我没白折回来。")), strategy)
+    assert story_plan_issues(_board(_shot("她转身。"), script=_lines("它让我没白折回来。")), strategy) == []
 
 
 def test_each_story_benefit_needs_a_technique_shot():
@@ -143,23 +144,25 @@ def _hair_result(shot_id="s6"):
 
 def test_state_change_splits_the_process_shot_from_a_later_result():
     changed = _hair_process("s0", "头发已经干")
-    assert shot_state_change(changed)[0:2] == ("湿", "已经干")
+    change = shot_state_change(changed)
+    assert change is not None and "湿" in change[0] and "已经干" in change[1]
     assert shot_state_change({"id": "walk", "description": "她从门口走到台前。"}) is None
     assert shot_state_change({"id": "still", "description": "瓶子停在桌角。",
                                "continuity": {"start_state": "同一商品静置", "end_state": "同一商品静置"}}) is None
     same_shot = {"production": {"characters": []}, "segments": [{"shots": [changed]}]}
-    assert [item["phase"] for item in plan_state_references(same_shot)] == ["start"]
-    assert "结果状态没有单独的结果镜" in state_pairing_issues(same_shot)
+    assert [item["phase"] for item in plan_state_references(same_shot)] == ["start", "result"]
+    assert state_pairing_issues(same_shot) == []
     halfway = {"production": {"characters": []}, "segments": [{"shots": [_hair_process("s3", "被吹开一半")]}]}
-    assert "状态结果还停在半程" in state_pairing_issues(halfway)
+    assert state_pairing_issues(halfway) == []
     assert "一半" not in "".join(item["label"] for item in plan_state_references(halfway))
+    assert "状态结果还停在半程" not in story_plan_issues(halfway, _dryer())
     plan = {"production": {"characters": []}, "segments": [{"shots": [
         _hair_process("s3", "被吹开一半"), _hair_result(),
     ]}]}
     refs = plan_state_references(plan)
     assert [item["phase"] for item in refs] == ["start", "result"]
     assert refs[0]["shot_id"] == "s3" and refs[1]["shot_id"] == "s6"
-    assert refs[1]["label"].endswith("顺了")
+    assert "顺" in refs[1]["label"]
     assert "一半" not in refs[1]["label"] and "半干" not in refs[0]["label"]
     assert state_pairing_issues(plan) == []
     assert all(item["kind"] == "start_frame" for item in refs)
@@ -203,7 +206,7 @@ def test_state_change_splits_the_process_shot_from_a_later_result():
              "continuity": {"start_state": "头发是湿的", "end_state": "被吹开一半"},
          }]}]},
         {"phase": "start", "label": "头发湿", "subject": "头发", "state_id": "s3:start", "shot_id": "s3"})
-    assert on_story["reference_kinds"] == ["character"]
+    assert on_story["reference_kinds"] == []
     assert on_story["character_id"] == "girl"
     assert on_story["aspect_ratio"] == "16:9"
     assert on_story["sheet_layout"] == "horizontal_16x9"
@@ -320,7 +323,7 @@ def test_a_dry_cut_between_shots_still_gets_start_and_result_stills():
     refs = plan_state_references(plan)
     assert [item["phase"] for item in refs] == ["start", "result"]
     assert refs[0]["shot_id"] == "sh5" and refs[1]["shot_id"] == "sh6"
-    assert refs[0]["label"].endswith("湿") and refs[1]["label"].endswith("干了")
+    assert "湿" in refs[0]["label"] and "吹干" in refs[1]["label"]
     assert state_pairing_issues(plan) == []
     gapped = {"production": {"characters": []}, "segments": [{"shots": [
         shots[0],
@@ -333,8 +336,69 @@ def test_a_dry_cut_between_shots_still_gets_start_and_result_stills():
         _state_shot("sh4", "头发是湿的", "头发仍是湿的", "她吹着湿发。"),
         _state_shot("sh6", "头发被吹开一半", "头发被吹开一半", "头发被吹开一半。"),
     ]}]}
-    assert "状态结果还停在半程" in state_pairing_issues(halfway)
+    assert state_pairing_issues(halfway) == []
     assert "一半" not in "".join(item["label"] for item in plan_state_references(halfway))
+
+
+def test_r18b_wet_process_then_dry_result_pairs_start_and_result():
+    plan = {"production": {"speaker_id": "girl", "characters": [
+        {"id": "girl", "name": "女生", "description": "丸子头，灰色卫衣"},
+        {"id": "room", "name": "室友", "description": "长发盘起，深蓝睡衣"},
+    ]}, "segments": [{"shots": [
+        {"id": "s03", "character_ids": ["girl", "room"],
+         "description": "中长发湿着，落回肩侧。",
+         "continuity": {"start_state": "头发被吹开、开始顺下来但仍然湿着",
+                        "end_state": "头发被吹开、开始顺下来但仍然湿着"}},
+        {"id": "s04", "character_ids": ["room"], "description": "室友侧躺睡着。",
+         "continuity": {"start_state": "室友侧躺", "end_state": "室友仍侧躺"}},
+        {"id": "s05", "character_ids": ["girl"], "description": "头发已经吹干、顺下来。",
+         "continuity": {"start_state": "头发已经吹干、顺下来", "end_state": "头发已经吹干、顺下来"}},
+    ]}]}
+    refs = plan_state_references(plan)
+    assert [(item["shot_id"], item["phase"]) for item in refs] == [("s03", "start"), ("s05", "result")]
+    assert "湿" in refs[0]["label"] and "吹干" in refs[1]["label"]
+    assert refs[0]["character_id"] == "girl" and refs[1]["character_id"] == "girl"
+    designs = required_designs(plan)
+    assert [item["kind"] for item in designs] == ["scene", "character", "start_frame", "start_frame"]
+    assert designs[1]["character_id"] == "room"
+    request = state_design_request({}, plan, refs[0])
+    assert "披到肩膀" in request["prompt"] and "不要丸子头" in request["prompt"]
+    assert "丸子" not in request["prompt"].split("不要丸子头", 1)[-1]
+    assert request["reference_kinds"] == []
+    result = state_design_request({}, plan, refs[1])
+    assert result["reference_kinds"] == ["state_start"]
+    assert "起始状态四视图" in result["prompt"]
+
+
+def test_state_references_off_gives_every_character_one_ordinary_sheet(monkeypatch):
+    from app.config import Settings
+    from app.story_logic import state_references_enabled
+
+    plan = {"production": {"speaker_id": "girl", "characters": [
+        {"id": "girl", "name": "女生", "description": "中长发"},
+        {"id": "room", "name": "室友", "description": "短发"},
+    ]}, "segments": [{"shots": [
+        {"id": "s03", "character_ids": ["girl"], "description": "中长发湿着。",
+         "continuity": {"start_state": "头发是湿的", "end_state": "头发是湿的"}},
+        {"id": "s05", "character_ids": ["girl"], "description": "头发已经吹干。",
+         "continuity": {"start_state": "头发已经吹干", "end_state": "头发已经吹干"}},
+    ]}]}
+    monkeypatch.setenv("AD_STATE_REFERENCES", "off")
+    assert state_references_enabled() is False
+    assert plan_state_references(plan) == []
+    designs = required_designs(plan)
+    assert [item["kind"] for item in designs] == ["scene", "character", "character"]
+    assert [item["character_id"] for item in designs if item["kind"] == "character"] == ["girl", "room"]
+    assert Settings.from_env().state_references_enabled is False
+    monkeypatch.setenv("AD_STATE_REFERENCES", "maybe")
+    with pytest.raises(ValueError, match="AD_STATE_REFERENCES"):
+        state_references_enabled()
+    monkeypatch.setenv("AD_STATE_REFERENCES", "on")
+    assert Settings.from_env().state_references_enabled is True
+    refs = plan_state_references(plan)
+    assert [item["phase"] for item in refs] == ["start", "result"]
+    assert [item["kind"] for item in required_designs(plan)] == ["scene", "character", "start_frame", "start_frame"]
+    assert required_designs(plan)[1]["character_id"] == "room"
 
 
 def test_background_pose_follows_the_latest_declared_turn():
@@ -507,11 +571,17 @@ def test_story_plan_issues_names_the_blocking_problem():
         script=_lines("它让我没白折回来。"),
     )
     issues = story_plan_issues(plan, strategy)
-    assert "剧情末镜写成了英雄定格" in issues
-    assert "剧情末镜把家用物品带出了门" in issues
-    assert "剧情末句还在点题" in issues
-    assert "剧情卖点没有高光证明镜" in issues
+    assert issues == ["剧情末镜写成了英雄定格"]
+    assert "剧情末镜把家用物品带出了门" in story_ending_issues(plan, strategy)
+    assert "剧情末句还在点题" not in issues
+    assert "剧情卖点没有高光证明镜" not in issues
     assert story_plan_issues(plan, typed("brand_tvc")) == []
+    looking = _board(_shot("她看着镜头，手里拿着吹风机。"))
+    assert "剧情人物看着镜头" in story_plan_issues(looking, strategy)
+    logo = _board(_shot("吹风机立在台面，机身字样朝向镜头。"))
+    assert "剧情末镜把商标朝向镜头" in story_plan_issues(logo, strategy)
+    slogan = _board(_shot("她把吹风机放回台面。"), script=_lines("去看看链接。"))
+    assert "剧情末镜在喊口号或链接" in story_plan_issues(slogan, strategy)
 
 
 def test_story_lines_must_not_score_a_benefit():

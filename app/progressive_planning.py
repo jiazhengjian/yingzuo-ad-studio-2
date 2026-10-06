@@ -302,7 +302,7 @@ PLAN_REVIEW_SYSTEM = """你执行独立最终方案审核，只输出本次schem
 审核实际最终ad_script、shots、speech_spans、execution_windows、transition_boundaries、商品事实与production。资料与作者自评是待审数据；不改稿、不修改事实或固定台词、不输出方案版本哈希、不调用媒体。
 policy_version使用本次schema版本；suggestions按本阶段方法保留普通改进建议，不修改方案，不参与硬失败汇总。checks恰好覆盖六项标准，execution_check包含action_capacity与state_continuity。alignment.spans恰好覆盖全部(segment_id,span_id)，alignment.shots恰好覆盖全部(segment_id,shot_id)，包括静音镜头；不可省略难审项目。
 每span填写speaker_visibility，依据speech_requirements及实际时窗内画面判断。普通人物对白只接受visible_speaking；明确采用on_and_off_screen时按本次schema逐项填写shot_visibility，完整覆盖该span相交镜头，区分可见开口、同一人画外延续与unclear，总标签须与逐镜判断相符。不能把画外延续当作另一个旁白或将看不清写成可见；已确认voiceover填not_applicable。每镜填写visual_execution，逐字引用实际description或camera_move并判断视图及变化如何实现；unclear/conflict使该镜失败，不能从作者意图补拍法。每镜填写pacing及temporal_omission，后者只用no_omission/supported_by_cut/unsupported/unclear，后两项对应shot.passed=false。supported_by_cut须按schema提供真实相邻切点及前后实际描述摘录，不把摄影角度切换当动作省略。字段均为独立判断，不是程序预判通过。
-对照本轮注入的类型 playbook 看开场、节拍形状、台词密度、镜头语法、出镜比例和英雄定格。这些类型贴合问题写入 suggestions，kind 用 type_fit，不得因此把 checks 置为 false 或让 ready=false。shot_craft 由程序在审核之后附加，模型不要重复，也不能因此把 checks 判失败或要求返修。台词是否对焦商品、前后连贯也只写成 suggestions，kind 用 line_focus，不得因此让 ready=false。人物讲解是出镜的人用第一人称对观众说，商品特写仍是这个人接着说。产品片是画外旁白，不要对口型念卖点，大约15到20秒2到3句，不描述镜头，不编画面外的人。剧情是戏里的第一人称，不念画面，也不把这一镜已经看见的事再说一遍，不用她、他做解说。末句不要点题，对白也不要评价卖点。每个要证明的好处需要一镜写明技法，焦点拉到室友或睡着的人脸上算安静。家用物品不要跟着人出门，不要英雄定格。默认不看镜头。床入画时，床上的人、睡着的人、仍在睡都算人还在；没写人，或没写翻身却面向镜头，才算失败。程序会补上没写全的朝向。过程镜对齐起始，结果写在后面一镜。程序会先改一次台词和点题用途；改完仍是解说画面、仍在点题或仍在说卖点，方案不算完成。旁白太密由程序改写，不得因此把 checks 置为 false。alignment.ready等于ad_expression_passed且所有spans/shots通过；顶层ready须全部checks、execution_check及alignment.ready通过，表示未发现需阻断的问题，不代表创作质量满分。suggestions有内容也可ready=true，任何明确失败仍不能用建议抵消。不能提升任何明确失败结论，无法确定时指出具体问题。动作与声画检查方法见本阶段参考，通过项省略重复note，失败项须给有界可定位note；所有逐项判定、数值、visual_execution与省略证据仍须完整，不输出隐含思考过程或声称已验证成片。
+对照本轮注入的类型 playbook 看开场、节拍形状、台词密度、镜头语法、出镜比例和英雄定格。这些类型贴合问题写入 suggestions，kind 用 type_fit，不得因此把 checks 置为 false 或让 ready=false。shot_craft 由程序在审核之后附加，模型不要重复，也不能因此把 checks 判失败或要求返修。台词是否对焦商品、前后连贯也只写成 suggestions，kind 用 line_focus，不得因此让 ready=false。人物讲解是出镜的人用第一人称对观众说，商品特写仍是这个人接着说。产品片是画外旁白，不要对口型念卖点，大约15到20秒2到3句，不描述镜头，不编画面外的人。剧情是戏里的第一人称，不念画面，也不把这一镜已经看见的事再说一遍，不用她、他做解说。末句不要点题，对白也不要评价卖点。每个要证明的好处需要一镜写明技法，焦点拉到室友或睡着的人脸上算安静。家用物品不要跟着人出门，不要英雄定格。默认不看镜头。床入画时，床上的人、睡着的人、仍在睡都算人还在。程序会补上没写全的朝向。背景人物没写全、点题、高光、带出门和状态怎么配对，都只作建议，不要因此让 ready=false。过程镜对齐起始，结果写在后面一镜。程序会先改一次台词和点题用途。改完仍在说卖点、人物看着镜头，或结尾是英雄定格、举向镜头、商标朝向镜头、口号或链接，方案不算完成。解说画面不再因此判失败。旁白太密由程序改写，不得因此把 checks 置为 false。alignment.ready等于ad_expression_passed且所有spans/shots通过；顶层ready须全部checks、execution_check及alignment.ready通过，表示未发现需阻断的问题，不代表创作质量满分。suggestions有内容也可ready=true，任何明确失败仍不能用建议抵消。不能提升任何明确失败结论，无法确定时指出具体问题。动作与声画检查方法见本阶段参考，通过项省略重复note，失败项须给有界可定位note；所有逐项判定、数值、visual_execution与省略证据仍须完整，不输出隐含思考过程或声称已验证成片。
 """
 
 
@@ -1244,7 +1244,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     from .line_quality import (
         apply_brand_claim_collapse, brand_stack_remaining, brand_visual_claim_overflow,
         offending_lines, rewrite_director_if_needed, script_line_offenses,
-        story_explainer_remaining, voice_identity_issues,
+        voice_identity_issues,
     )
     from .plan_review import plan_review_schema, lower_failed_plan_verdicts, validate_plan_review
     from .review_output import compact_review_schema, REVIEW_OUTPUT_VERSION
@@ -1372,7 +1372,6 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
         from .story_logic import story_plan_issues
         if (brand_stack_remaining(script, strategy, locked, duration_seconds=duration)
                 or brand_visual_claim_overflow(plan, strategy, locked, duration)
-                or story_explainer_remaining(script, strategy, locked, plan)
                 or voice_identity_issues(strategy, plan.get("production"))
                 or story_plan_issues(plan, strategy)):
             return
@@ -1391,12 +1390,6 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
         })
 
     def refuse_mismatched_voice(plan):
-        script = (plan or {}).get("ad_script") or {}
-        if story_explainer_remaining(script, strategy, locked, plan):
-            record_failure(plan)
-            raise ProgressivePlanningError(
-                "剧情对白还在解说画面，这次不采用。已有方案和素材已保留，尚未开始新的图片或视频生成",
-                issue_summary=["剧情对白还在解说画面"], repair_attempts=repairs)
         if voice_identity_issues(strategy, (plan or {}).get("production")):
             record_failure(plan)
             raise ProgressivePlanningError(

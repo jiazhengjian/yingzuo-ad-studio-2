@@ -799,9 +799,41 @@ def _generated_image(results, assets, work_dir, *, kind, character_id=None, key=
     return None
 
 
+def _start_state_image(results, assets, character_id):
+    pool = [item for item in (results or []) if isinstance(item, dict)]
+    pool.extend(item for item in assets or [] if isinstance(item, dict))
+    for item in reversed(pool):
+        if item.get("kind") != "start_frame":
+            continue
+        meta = item.get("metadata") or {}
+        if meta.get("phase") != "start":
+            continue
+        if character_id and meta.get("character_id") != character_id:
+            continue
+        path = item.get("path") or item.get("source_path")
+        if path and Path(path).is_file():
+            found = dict(item)
+            found["path"] = path
+            found.setdefault("mime", "image/png")
+            found.setdefault("kind", "start_frame")
+            return found
+    return None
+
+
 def _state_still_inputs(sources, results, assets, request, work_dir):
-    """The one reference this state sheet is conditioned on. Never the scene image."""
+    """The one reference this state sheet is conditioned on. Never the scene image.
+
+    A start sheet of a person has no input image. A result sheet uses that
+    start sheet. An object uses the product original.
+    """
     kinds = request.get("reference_kinds") if isinstance(request, dict) else None
+    if not kinds:
+        return []
+    if kinds == ["state_start"]:
+        sheet = _start_state_image(results, assets, request.get("character_id"))
+        if sheet is None:
+            raise ValueError("结果状态参考需要已生成的起始状态参考")
+        return [sheet]
     if kinds == ["character"]:
         cid = request.get("character_id")
         sheet = _generated_image(results, assets, work_dir, kind="character", character_id=cid, key=f"character_{cid}")
@@ -2876,7 +2908,13 @@ class Gateway:
             if receipt.get("state") in ("submitting", "submitted_unknown") and not receipt.get("task_id"):
                 raise SubmissionError("图片提交状态未知，已停止自动重复提交；请核对平台任务", uncertain=True)
             if receipt.get("state") == "failed":
-                raise failed_image("该图片生成已失败；已完成图片保留，请调整方案后开始新版本")
+                # A connection miss never received a task id, so this image can be sent again.
+                # A failed receipt that already has a task id stays terminal.
+                if not receipt.get("task_id") and receipt.get("error_code") == "image_submission_unavailable":
+                    receipt_path.unlink(missing_ok=True)
+                    receipt = {}
+                else:
+                    raise failed_image("该图片生成已失败；已完成图片保留，请调整方案后开始新版本")
             if receipt and (not isinstance(receipt.get("task_id"), str) or not receipt["task_id"]):
                 raise SubmissionError("图片回执缺少任务编号，已停止自动重复提交；请核对平台任务", uncertain=True)
             if not receipt:
@@ -2896,7 +2934,7 @@ class Gateway:
                 image_inputs = sources
                 if kind == "start_frame":
                     image_inputs = _state_still_inputs(sources, results, assets, design_request, work_dir)
-                if kind in ("scene", "start_frame"):
+                if image_inputs and kind in ("scene", "start_frame"):
                     payload["images"] = [data_url(item) for item in image_inputs]
                 check_cancelled()
                 receipt = {"state": "submitting", "model": self.settings.image_model, "created_at": time.time(),
@@ -2919,12 +2957,20 @@ class Gateway:
                     refusals = getattr(self, "_submission_refusals", None)
                     if isinstance(refusals, list) and refusals:
                         receipt["submission_refusals"] = list(refusals)
-                    atomic_json(receipt_path, receipt)
                     if not exc.uncertain:
-                        exc.retryable = False
-                        if getattr(exc, "error_code", None) not in (
-                                "provider_balance", "provider_auth", "provider_request_rejected"):
-                            exc.error_code = "image_generation_failed"
+                        message = str(exc)
+                        missed = not receipt.get("task_id") and ("无法连接" in message or "尚未收到任务编号" in message)
+                        if missed:
+                            exc.retryable = True
+                            exc.retry_action = "retry_existing"
+                            exc.error_code = "image_submission_unavailable"
+                        else:
+                            exc.retryable = False
+                            if getattr(exc, "error_code", None) not in (
+                                    "provider_balance", "provider_auth", "provider_request_rejected"):
+                                exc.error_code = "image_generation_failed"
+                        receipt["error_code"] = exc.error_code
+                    atomic_json(receipt_path, receipt)
                     raise
                 atomic_json(receipt_path, receipt)
             deadline = time.monotonic() + self.settings.provider_timeout_seconds

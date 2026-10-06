@@ -273,3 +273,45 @@ def test_real_image_adapter_registers_each_completion_before_later_failure(cast_
         retried = execute(cast_setup, gateway, result)
         assert retried["status"] == "failed" and retried["payload"]["design_asset_ids"] == saved_ids
     assert len(submitted) == 3, "Terminal or unknown image receipts must not create another paid request"
+
+
+def test_image_connection_miss_retries_only_the_unsent_image(cast_setup, fake_media, monkeypatch):
+    from PIL import Image
+    from app.providers.gateway import Gateway, SubmissionError
+    store, project, _, settings, job = cast_setup
+    settings.image_model = "TEST_ONLY_IMAGE"
+    gateway, submitted = Gateway(settings), []
+    missed = {"raised": False}
+
+    async def original(asset):
+        return "https://fixture.invalid/original.png"
+
+    async def submit(route, payload):
+        assert route == "/v1/images/generations/async"
+        submitted.append(payload)
+        if len(submitted) == 3 and not missed["raised"]:
+            missed["raised"] = True
+            raise SubmissionError("无法连接土豆API，尚未收到任务编号", uncertain=False)
+        return "image-" + str(len(submitted))
+
+    async def task(task_id):
+        return {"status": "completed", "result": {"images": [{"url": "https://fixture.invalid/" + task_id + ".png"}]}}
+
+    async def download(url, path):
+        Image.new("RGB", (8, 8), "blue").save(path, "PNG")
+
+    monkeypatch.setattr(gateway, "_original_reference_url", original)
+    monkeypatch.setattr(gateway, "_submit", submit)
+    monkeypatch.setattr(gateway, "_task", task)
+    monkeypatch.setattr(gateway, "download_video", download)
+    failed = execute(cast_setup, gateway)
+    assert failed["status"] == "failed"
+    assert failed["progress"]["error_code"] == "image_submission_unavailable"
+    assert failed["progress"]["retryable"] is True
+    assert len(failed["payload"]["design_asset_ids"]) == 2
+    assert store.pending_gate(project["id"], "creative") is None
+    resumed = execute(cast_setup, gateway, failed)
+    assert len(submitted) == 4, "Only the image that never received a task id is submitted again"
+    assert resumed["status"] == "awaiting_input", resumed.get("error")
+    assert store.pending_gate(project["id"], "creative") is not None
+    assert resumed["submission_count"] == 0

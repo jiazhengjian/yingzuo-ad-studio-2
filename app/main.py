@@ -193,8 +193,9 @@ def create_app(settings=None, gateway=None, run_worker=True):
                                  "planner_speculate_recommended": settings.planner_speculate_recommended,
                                  "planner_max_refinements": settings.planner_max_refinements,
                                  "planner_refinement_format": settings.planner_refinement_format,
-                                 "planner_request_deadline_seconds": settings.planner_request_deadline_seconds},
-                "limitations": ["支持10至60秒商品广告；独立主播入口暂未开放，商品广告可按方向安排角色说话", "原生声音、台词与口型需检查成片，暂不自动生成字幕", "商品使用上传原图；每方案一张场景图，有角色时每位一张组合四视图，一起确认后生成视频"]}
+                                 "planner_request_deadline_seconds": settings.planner_request_deadline_seconds,
+                                 "state_references": bool(getattr(settings, "state_references_enabled", True))},
+                "limitations": ["支持10至60秒商品广告；独立主播入口暂未开放，商品广告可按方向安排角色说话", "原生声音、台词与口型需检查成片，暂不自动生成字幕", "商品使用上传原图；每方案一张场景图。状态参考默认开着：会变化的人物用起始状态四视图当身份，其他人一张组合四视图。关掉后每位只出一张普通四视图。一起确认后生成视频"]}
 
     @app.get("/api/projects")
     def projects():

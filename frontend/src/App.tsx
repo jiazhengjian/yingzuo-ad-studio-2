@@ -401,8 +401,10 @@ export default function App() {
   const currentScenes = currentSceneAssets(detail);
   const currentCharacters = currentCharacterAssets(detail);
   const currentStates = currentStateAssets(detail);
-  const expectedStates = planStateReferenceCount(plan);
-  const hasCurrentDesign = hasOriginalProduct && currentScenes.length > 0 && (plan?.production?.characters ?? []).every(character => currentCharacters.some(asset => asset.metadata.character_id === character.id)) && currentStates.length >= expectedStates;
+  const stateReferencesOn = health?.capabilities?.state_references !== false;
+  const expectedStates = planStateReferenceCount(plan, { enabled: stateReferencesOn });
+  const characterCovered = (character: { id: string }) => currentCharacters.some(asset => asset.metadata.character_id === character.id) || currentStates.some(asset => asset.metadata.phase === 'start' && asset.metadata.character_id === character.id);
+  const hasCurrentDesign = hasOriginalProduct && currentScenes.length > 0 && (plan?.production?.characters ?? []).every(characterCovered) && currentStates.length >= expectedStates;
   const hasViewableResult = !!shownRender || currentScenes.length > 0 || currentCharacters.length > 0 || currentStates.length > 0 || segments.length > 0;
   const voiceNeedsEdit = jobRecovery?.kind === 'edit_voice';
   const sceneStatus = activeJob ? `${phaseNames[activeJob.phase] || '正在准备素材'}${activeJob.phase === 'creating_designs' ? '' : '，场景图尚未就绪'}` : failedJob ? `${phaseNames[failedJob.phase] || '准备素材'}未完成` : unresolved ? '本次生成状态需要核对' : '确认方案后生成场景图';

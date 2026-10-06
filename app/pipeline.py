@@ -68,6 +68,8 @@ def video_submission_spec(plan, segment, assets=None):
             if asset["kind"] == "start_frame":
                 role = {"index": index, "role": "state", "phase": meta.get("phase"),
                         "shot_id": meta.get("shot_id"), "label": meta.get("state_label")}
+                if isinstance(meta.get("character_id"), str) and meta.get("character_id"):
+                    role["character_id"] = meta["character_id"]
                 state_layout = meta.get("sheet_layout")
                 if state_layout in ("horizontal_16x9", "grid_2x2"):
                     role["sheet_layout"] = state_layout
@@ -548,6 +550,10 @@ class Pipeline:
             elif getattr(exc, "error_code", None) == "image_generation_failed":
                 progress = dict(self.store.get_job(job_id).get("progress") or {})
                 progress.update(error_code="image_generation_failed", retryable=False, retry_action=None)
+                changes["progress"] = progress
+            elif getattr(exc, "error_code", None) == "image_submission_unavailable":
+                progress = dict(self.store.get_job(job_id).get("progress") or {})
+                progress.update(error_code="image_submission_unavailable", retryable=True, retry_action="retry_existing")
                 changes["progress"] = progress
             self.store.update_job(job_id, **changes)
             self.store.set_project_status(job["project_id"], job["revision"], "partial" if self.store.get_job(job_id)["submission_count"] else "failed")
