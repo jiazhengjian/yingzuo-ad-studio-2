@@ -29,7 +29,7 @@ from app.planning import StrategyDecision, STRATEGY_SYSTEM, STRATEGY_SELECTION_S
 from app.strategy import BriefEvidenceError, CreativeDirection, StrategyRecord, build_direction_candidates, build_strategy, select_rules, validate_brief, require_direction_stories, require_direction_value, require_direction_concepts
 from app.direction_review import (DIRECTION_REVIEW_SYSTEM, direction_review_schema,
                                   salvage_direction_review, review_failure_reasons, reviewed_candidates)
-from app.design import scene_design_request, character_design_request
+from app.design import scene_design_request, character_design_request, state_design_request
 from app.production import (CHARACTER_SHEET_TEMPLATE, current_character_sheet_name, required_designs,
                             validate_design_assets, production_authoring_schema,
                             derive_authored_production_metadata)
@@ -2838,14 +2838,20 @@ class Gateway:
             if receipt and (not isinstance(receipt.get("task_id"), str) or not receipt["task_id"]):
                 raise SubmissionError("图片回执缺少任务编号，已停止自动重复提交；请核对平台任务", uncertain=True)
             if not receipt:
-                design_request = (scene_design_request(project, plan) if kind == "scene"
-                                  else character_design_request(project, plan, instruction["character"]))
+                if kind == "scene":
+                    design_request = scene_design_request(project, plan)
+                elif kind == "character":
+                    design_request = character_design_request(project, plan, instruction["character"])
+                elif kind == "start_frame":
+                    design_request = state_design_request(project, plan, instruction)
+                else:
+                    raise ValueError("不支持的参考图")
                 aspect = design_request.get("aspect_ratio") if isinstance(design_request, dict) else None
                 if aspect not in ("16:9", "9:16"):
-                    aspect = "9:16" if kind == "scene" else "16:9"
+                    aspect = "9:16" if kind in ("scene", "start_frame") else "16:9"
                 payload = {"model": self.settings.image_model, "prompt": design_request["prompt"],
                            "size": aspect, "resolution": "1k", "quality": "medium"}
-                if kind == "scene":
+                if kind in ("scene", "start_frame"):
                     payload["images"] = [data_url(a) for a in sources]
                 check_cancelled()
                 receipt = {"state": "submitting", "model": self.settings.image_model, "created_at": time.time(),
@@ -2920,6 +2926,14 @@ class Gateway:
             # receipt as having been generated with today's improved prompt.
             if isinstance(receipt.get("design_request"), dict):
                 design_metadata["design_request"] = receipt["design_request"]
+            if kind == "start_frame":
+                design_metadata.update(
+                    state_reference=True,
+                    state_id=instruction.get("state_id"),
+                    phase=instruction.get("phase"),
+                    shot_id=instruction.get("shot_id"),
+                    state_label=instruction.get("label"),
+                )
             if kind == "character":
                 if receipt.get("character_id") != instruction["character_id"]:
                     raise ProviderError("角色图片回执与本方案角色不一致；没有重新提交生成")
@@ -2933,14 +2947,19 @@ class Gateway:
                     design_metadata["sheet_layout"] = layout
                 if request.get("template_version") == CHARACTER_SHEET_TEMPLATE:
                     design_metadata["template_version"] = CHARACTER_SHEET_TEMPLATE
-            review = "请核对场景是否适合商品" if kind == "scene" else (
-                "请核对左侧特写和三张全身是否为同一角色，服装是否一致"
-                if design_metadata.get("sheet_layout") == "horizontal_16x9"
-                else "请核对四格是否为同一角色，外貌与服装是否一致")
+            if kind == "start_frame":
+                review = "请核对这一状态是否和方案一致，商品外形是否仍是原图"
+            elif kind == "scene":
+                review = "请核对场景是否适合商品"
+            else:
+                review = (
+                    "请核对左侧特写和三张全身是否为同一角色，服装是否一致"
+                    if design_metadata.get("sheet_layout") == "horizontal_16x9"
+                    else "请核对四格是否为同一角色，外貌与服装是否一致")
             result = {"source_path": path, "path": path, "name": name, "kind": kind, "mime": "image/png", "metadata": {
                 "generated": True, "provider": "tudou", "model": receipt.get("model", self.settings.image_model), "provider_url": receipt["url"],
                 "task_id": receipt["task_id"], "expires_at": receipt.get("expires_at"),
-                "source_asset_ids": [a["id"] for a in sources] if kind == "scene" else [],
+                "source_asset_ids": [a["id"] for a in sources] if kind in ("scene", "start_frame") else [],
                 **design_metadata, "review_required": review}}
             results.append(result)
             if on_asset is not None:
@@ -3038,11 +3057,18 @@ class Gateway:
             except ValueError as exc:
                 raise SubmissionError(str(exc)) from None
         if segment.get("reference_roles") is not None:
+            characters = [asset for asset in design_references if asset["kind"] == "character"]
+            states = [asset for asset in design_references if asset.get("metadata", {}).get("state_reference")]
             expected_roles = [{"index": index, "role": "product"} for index in range(1, len(products) + 1)]
             expected_roles.append({"index": len(products) + 1, "role": "scene"})
-            expected_roles.extend({"index": index, "role": "character",
-                "character_id": asset["metadata"]["character_id"]}
-                for index, asset in enumerate(design_references[1:], start=len(products) + 2))
+            cursor = len(products) + 2
+            for asset in characters:
+                expected_roles.append({"index": cursor, "role": "character",
+                    "character_id": asset["metadata"]["character_id"]})
+                cursor += 1
+            for _asset in states:
+                expected_roles.append({"index": cursor, "role": "state"})
+                cursor += 1
             actual_roles = [{k: v for k, v in role.items() if k in ("index", "role", "character_id")}
                             for role in segment.get("reference_roles", [])]
             if actual_roles != expected_roles:

@@ -60,10 +60,16 @@ def video_submission_spec(plan, segment, assets=None):
         spec["production"] = copy.deepcopy(plan["production"])
     if assets is not None:
         spec["reference_asset_ids"] = [asset["id"] for asset in assets]
-        visible = [asset for asset in assets if asset["kind"] in ("product", "scene", "character")]
+        visible = [asset for asset in assets if asset["kind"] in ("product", "scene", "character") or (
+            asset["kind"] == "start_frame" and (asset.get("metadata") or {}).get("state_reference"))]
         spec["reference_roles"] = []
         for index, asset in enumerate(visible, 1):
-            role = {"index": index, "role": asset["kind"]}
+            meta = asset.get("metadata") or {}
+            if asset["kind"] == "start_frame":
+                role = {"index": index, "role": "state", "phase": meta.get("phase"),
+                        "shot_id": meta.get("shot_id"), "label": meta.get("state_label")}
+            else:
+                role = {"index": index, "role": asset["kind"]}
             if asset["kind"] == "character":
                 role["character_id"] = asset["metadata"]["character_id"]
                 role["name"] = asset["metadata"].get("character_name", asset["name"])
@@ -651,7 +657,8 @@ class Pipeline:
                 raise ValueError("每个视频段至少需要一张原始商品参考图")
             if plan.get("production") is not None:
                 order = {character["id"]: index for index, character in enumerate(plan["production"]["characters"])}
-                assets.sort(key=lambda asset: (0 if asset["kind"] == "product" else 1 if asset["kind"] == "scene" else 2,
+                kind_rank = {"product": 0, "scene": 1, "character": 2, "start_frame": 3}
+                assets.sort(key=lambda asset: (kind_rank.get(asset["kind"], 4),
                                               order.get(asset["metadata"].get("character_id"), len(order))))
             result[segment["id"]] = assets
         return result
@@ -862,7 +869,8 @@ class Pipeline:
                 if not ((a := self.store.get_asset(aid))["kind"] == "product" and a["metadata"].get("generated"))]
         plan = clean
         saved = [self.store.get_asset(aid) for aid in dict.fromkeys(payload.get("design_asset_ids", []))]
-        saved = [asset for asset in saved if asset["kind"] in ("scene", "character")]
+        saved = [asset for asset in saved if asset["kind"] in ("scene", "character") or (
+            asset["kind"] == "start_frame" and asset.get("metadata", {}).get("state_reference"))]
         for asset in saved:
             path = Path(asset["path"]).resolve()
             if (asset["project_id"] != job["project_id"] or not asset["metadata"].get("generated")
@@ -929,8 +937,10 @@ class Pipeline:
             # The final returned list remains supported for older/test gateways.
             self._guard(job["id"], require_current=True)
             kind = result.get("kind")
-            if kind not in ("scene", "character"):
-                raise ValueError("图片服务只能返回场景图或已确认角色四视图，不能重新生成商品")
+            if kind not in ("scene", "character", "start_frame"):
+                raise ValueError("图片服务只能返回场景图、角色四视图或状态参考，不能重新生成商品")
+            if kind == "start_frame" and not (result.get("metadata") or {}).get("state_reference"):
+                raise ValueError("状态参考必须标明它是哪一镜的起始或结果")
             metadata = {**(result.get("metadata") or {}), "generated": True, "review_required": True, "job_id": job["id"]}
             if kind == "character":
                 character = expected_characters.get(metadata.get("character_id"))
@@ -997,10 +1007,15 @@ class Pipeline:
         self._payload(job["id"], design_asset_ids=design_ids, plan=plan)
         progress = dict(self.store.get_job(job["id"]).get("progress") or {})
         self.store.update_job(job["id"], progress={**progress, "design_asset_ids": design_ids})
+        state_count = sum(1 for item in required_designs(plan) if item["kind"] == "start_frame")
         if replace_keys:
             saved_note = "角色参考已按当前横版模板重新生成，场景图仍用已保存的"
+        elif state_count and expected_characters:
+            saved_note = "场景、角色与状态参考图已保存，商品继续使用原图"
         elif expected_characters:
             saved_note = "场景与角色参考图已保存，商品继续使用原图"
+        elif state_count:
+            saved_note = "场景与状态参考图已保存，商品继续使用原图"
         else:
             saved_note = "场景图已保存，商品继续使用原图"
         self.store.add_event(job["project_id"], job["id"], "artifact", saved_note)

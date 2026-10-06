@@ -417,7 +417,7 @@ def test_scene_dialogue_does_not_restate_the_shot():
     from pathlib import Path
 
     opening = "不敢开，怕吵醒她。"
-    script = _lines(opening, "声音也太大了。", "终于不毛躁了。", "想带走，就点下面链接。")
+    script = _lines(opening, "声音也太大了。", "不毛躁了。", "想带走，就点下面链接。")
     shot = "夜里，室友侧躺在床上睡着。她站在镜前，手指停在开关上。"
     plan = {"segments": [{"shots": [
         {"beat_id": "b0", "description": shot},
@@ -450,7 +450,7 @@ def test_scene_dialogue_does_not_restate_the_shot():
         rewrite, director, strategy, 20, plan=plan))
     assert called is True and replacement is not None
     assert [beat["narration"] for beat in replacement["ad_script"]["beats"]] == [
-        "太响了。", "声音也太大了。", "终于不毛躁了。", "想带走，就点下面链接。",
+        "太响了。", "声音也太大了。", "不毛躁了。", "想带走，就点下面链接。",
     ]
 
     async def boom(*args, **kwargs):

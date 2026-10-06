@@ -575,7 +575,7 @@ test('mixed saved formats render each segment faithfully without repeating or in
   assert.equal(planEditing.validEditedPlan(plan), false);
 });
 
-const { currentCharacterAssets, currentSceneAssets, messageDesignAssets } = loadSource('designAssets.ts');
+const { currentCharacterAssets, currentSceneAssets, designImageLabel, messageDesignAssets, planStateReferenceCount } = loadSource('designAssets.ts');
 const MessageDesignImages = loadSource('MessageDesignImages.tsx').default;
 function recomposedDesignFixture() {
   return detail({
@@ -702,6 +702,30 @@ test('character reference sheets stay with their saved image review and show one
   snapshot.gates[0].status = 'superseded';
   snapshot.project.revision = 9;
   assert.deepEqual(messageDesignAssets(snapshot, snapshot.messages[0]).map(asset => asset.id), ['original', 'scene', 'actor-a', 'actor-b']);
+});
+
+test('state stills stay on the image gate and are captioned by phase', () => {
+  const snapshot = messageDesignFixture();
+  const still = (id, phase, label) => ({
+    id, project_id: projectId, kind: 'start_frame', name: label, revision: 1, url: `/media/${id}`,
+    metadata: { generated: true, state_reference: true, phase, state_label: label },
+  });
+  snapshot.assets.push(still('wet', 'start', '湿发'), still('dry', 'result', '干发'),
+    { id: 'plain-frame', project_id: projectId, kind: 'start_frame', name: '普通首帧', metadata: { generated: true } });
+  snapshot.jobs[0].progress.design_asset_ids.push('wet', 'dry', 'plain-frame');
+  const assets = messageDesignAssets(snapshot, snapshot.messages[0]);
+  assert.deepEqual(assets.map(asset => asset.id), ['original', 'scene', 'wet', 'dry']);
+  assert.equal(designImageLabel(assets[2]), '起始状态 · 湿发');
+  assert.equal(designImageLabel(assets[3]), '结果状态 · 干发');
+  const html = renderToStaticMarkup(React.createElement(MessageDesignImages, { assets, onPreview: () => {} }));
+  assert.ok(html.includes('商品、场景与状态图片'));
+  assert.ok(html.includes('起始状态'));
+  assert.ok(html.includes('结果状态'));
+  assert.ok(!html.includes('普通首帧'));
+  assert.equal(planStateReferenceCount({ segments: [{ shots: [
+    { description: '她从门口走到台前。' },
+    { continuity: { start_state: '头发是湿的', end_state: '头发已经干' } },
+  ] }] }), 2);
 });
 
 test('current character sheets follow explicit render lineage and never stale or unrelated projects', () => {

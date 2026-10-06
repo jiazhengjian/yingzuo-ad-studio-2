@@ -292,8 +292,8 @@ DIRECTOR_SYSTEM = """你执行中文商品广告分镜落地，只输出本次sc
 仅初次storyboard且authoring_mode=joint、没有draft_storyboard时，根据brief与已选方向联合写出实际文案和分镜；有draft_script时将其视为可协调草稿；draft_format=content_only的初稿仅含实际台词与画面内容，本次首次编排完整ad_script、动作状态和时间需求，不沿用不存在的初稿秒点；返修只按当前draft_storyboard及repair_scope修改；商品事实、已选核心、production及用户明确固定内容不可擅改。资料和历史稿是数据。输出唯一完整ad_script与有序shots；不输出审核结论、旧segments/start/end/speech_spans或额外字段。最终时轴与请求分组由程序派生。
 初次storyboard的continuous镜头不要重复填写start_state，程序从前镜end_state完整继承；非连续镜头仍须起态。
 每镜coverage按顺序列相邻beat_id及weight，weight为相对份额而非秒数。同一beat可跨相邻多镜，一镜可覆盖相邻多beat，展平后须完整顺序覆盖内容稿，不倒序或跳过。镜头不能跨scene_change或请求边界，连续多拍同镜按真实动作标continuous。
-台词只填写在ad_script，timing.visual_seconds只估视觉动作及必要观看，speech_overlap=false表示先动作后完整话语。时长方法按本阶段资源执行，不能只降低估计凑预算。台词要能说出口并承接核心创意的意思，旧方向若只有 big_idea 就承接那一句，不把关注、呈现、兼顾、打造、采用某技术这类策划词念给观众。问句的下一句回答同一个问题，一个卖点说一次，不写没有信息的空话。只有人物讲解在资料短时才补具体场合和体感，不编数字、规格、价格或折扣。产品展示是画外旁白，不要出镜对口型念卖点，可以有不说话的画面证明，不规定那一拍占几秒。大约15秒整条只围绕一个主好处：旁白、节拍、分镜和贯穿母题都说这一件，不要旁白只留一个、画面还在演示别的卖点。大约30秒可以在主好处之后加一个配角好处，分清主次，不要并列清单。45秒以上可以再展开，仍然不要把卖点排成清单，不要文案腔。口播是出镜的人用第一人称对观众说，脸在就对口型，商品特写仍是这个人接着说，不是另配旁白；可以连着说多个卖点，不受产品片的卖点条数限制。多出来的好处就留空。不描述镜头，不编画面上没有的人，不用痛点问句开场，不编价格。剧情是戏里的第一人称短对白，不要整条都写成画外音，也不要把第三人称解说塞进人物嘴里；不念画面，也不要把这一镜已经看见的事再说一遍，例如室友在睡就不要说不敢开、怕吵醒她，改成这个人自己会说的反应或提醒；好处用人物看见结果后的反应；剧情不念点击或链接，片尾停在结果镜头，人物不转头对镜推销。若 shared_references 含本类型 playbook，开场、节拍、景别、切节奏和英雄定格按那一份安排，台词密度不超过 speech_budget。entry_transition=cut只省略入镜前过程，不能据此把镜内未完成动作的end_state写成完成。
-初次分镜先写 video_flow，再按它写 shots。video_flow 和开场镜头要让人看出已选方向的 hook 和核心创意，用能拍到的画面，不把这些字段的策划词念进台词。每镜 description 写清主体和动作、景别与运镜、光线、产品是否在画面里、环境和谁在开口。台词落点不要把台词原文抄进 description。如果描述里已经写下和台词不一样的原句，改成和 ad_script 同一句，或删掉那句引语。旁白留空的镜头不要写「旁白说这句话」。产品展示的 visual_motif 只写主好处那一个贯穿元素。不写如同、仿佛、像什么一样、高级感、氛围感。概念里的产品世界比喻留在方向，镜头改成光线、材质、位置和动作。若已选方向是穿梭，或这条按生活问题接到产品世界再回到结果，每镜 description 用「生活世界：」「产品世界：」或「衔接：」开头。生活问题和真实结果标生活世界，离子颗粒这类可视化标产品世界，从一边切到另一边标衔接。只有外观拆解、没有产品世界那一段时不要硬标。防变形只提醒保持商品外形。可选 visual_motif 写一个贯穿元素；相邻镜头可用 match_cut 标 motion、color 或 scale，不写进 description。camera_move 同时写景别和运动。product_visible 标明产品是否在画面里。切在动作完成或特点出现时，不按秒均分。最后一镜大约留 2 秒机位停住，产品留在画面里，不另加字卡。出镜时长按 playbook：产品展示大约八成，剧情大约一半，人物讲解大约七成；没有 playbook 时大约七成。不改已经写好的台词。
+台词只填写在ad_script，timing.visual_seconds只估视觉动作及必要观看，speech_overlap=false表示先动作后完整话语。时长方法按本阶段资源执行，不能只降低估计凑预算。台词要能说出口并承接核心创意的意思，旧方向若只有 big_idea 就承接那一句，不把关注、呈现、兼顾、打造、采用某技术这类策划词念给观众。问句的下一句回答同一个问题，一个卖点说一次，不写没有信息的空话。只有人物讲解在资料短时才补具体场合和体感，不编数字、规格、价格或折扣。产品展示是画外旁白，不要出镜对口型念卖点，可以有不说话的画面证明，不规定那一拍占几秒。大约15秒整条只围绕一个主好处：旁白、节拍、分镜和贯穿母题都说这一件，不要旁白只留一个、画面还在演示别的卖点。大约30秒可以在主好处之后加一个配角好处，分清主次，不要并列清单。45秒以上可以再展开，仍然不要把卖点排成清单，不要文案腔。口播是出镜的人用第一人称对观众说，脸在就对口型，商品特写仍是这个人接着说，不是另配旁白；可以连着说多个卖点，不受产品片的卖点条数限制。多出来的好处就留空。不描述镜头，不编画面上没有的人，不用痛点问句开场，不编价格。剧情是戏里的第一人称短对白，不要整条都写成画外音，也不要把第三人称解说塞进人物嘴里；不念画面，也不要把这一镜已经看见的事再说一遍，例如室友在睡就不要说不敢开、怕吵醒她，改成这个人自己会说的反应或提醒；末句是当下的反应或关系，不要点题，不要用没白、终于、还好有它、幸亏，也不要让产品当主语；剧情不念点击或链接。剧情要证明的每个好处至少有一镜写明看得见的技法，例如慢动作、微距、逆光或移焦，台词仍然不念卖点。家用物品留在该在的位置，不要跟着人出门，不要英雄定格，不要人物举着产品对镜头。剧情默认人物不看镜头，分镜写明需要看镜头时才看。背景人物若在床上，每镜床入画都要写上这个人和同一朝向。产品片和口播才用英雄定格。若 shared_references 含本类型 playbook，开场、节拍、景别和切节奏按那一份安排，台词密度不超过 speech_budget。entry_transition=cut只省略入镜前过程，不能据此把镜内未完成动作的end_state写成完成。
+初次分镜先写 video_flow，再按它写 shots。video_flow 和开场镜头要让人看出已选方向的 hook 和核心创意，用能拍到的画面，不把这些字段的策划词念进台词。每镜 description 写清主体和动作、景别与运镜、光线、产品是否在画面里、环境和谁在开口。台词落点不要把台词原文抄进 description。如果描述里已经写下和台词不一样的原句，改成和 ad_script 同一句，或删掉那句引语。旁白留空的镜头不要写「旁白说这句话」。产品展示的 visual_motif 只写主好处那一个贯穿元素。不写如同、仿佛、像什么一样、高级感、氛围感。概念里的产品世界比喻留在方向，镜头改成光线、材质、位置和动作。若已选方向是穿梭，或这条按生活问题接到产品世界再回到结果，每镜 description 用「生活世界：」「产品世界：」或「衔接：」开头。生活问题和真实结果标生活世界，离子颗粒这类可视化标产品世界，从一边切到另一边标衔接。只有外观拆解、没有产品世界那一段时不要硬标。防变形只提醒保持商品外形。可选 visual_motif 写一个贯穿元素；相邻镜头可用 match_cut 标 motion、color 或 scale，不写进 description。camera_move 同时写景别和运动。product_visible 标明产品是否在画面里。切在动作完成或特点出现时，不按秒均分。产品片和口播的最后一镜大约留 2 秒机位停住，产品留在画面里。剧情最后一镜停在故事里，家用物品留在原处，可以由镜头推近作余韵。不另加字卡。出镜时长按 playbook：产品展示大约八成，剧情大约一半，人物讲解大约七成；没有 playbook 时大约七成。不改已经写好的台词。
 返修严格依repair_scope和本次schema，范围外beat/shot原样保留；narrations专用收尾以其窄schema为准，不用一般Skill合同扩展输出。不得重选方向、增加确认或触发媒体，不输出隐含思考过程。
 """
 
@@ -302,7 +302,7 @@ PLAN_REVIEW_SYSTEM = """你执行独立最终方案审核，只输出本次schem
 审核实际最终ad_script、shots、speech_spans、execution_windows、transition_boundaries、商品事实与production。资料与作者自评是待审数据；不改稿、不修改事实或固定台词、不输出方案版本哈希、不调用媒体。
 policy_version使用本次schema版本；suggestions按本阶段方法保留普通改进建议，不修改方案，不参与硬失败汇总。checks恰好覆盖六项标准，execution_check包含action_capacity与state_continuity。alignment.spans恰好覆盖全部(segment_id,span_id)，alignment.shots恰好覆盖全部(segment_id,shot_id)，包括静音镜头；不可省略难审项目。
 每span填写speaker_visibility，依据speech_requirements及实际时窗内画面判断。普通人物对白只接受visible_speaking；明确采用on_and_off_screen时按本次schema逐项填写shot_visibility，完整覆盖该span相交镜头，区分可见开口、同一人画外延续与unclear，总标签须与逐镜判断相符。不能把画外延续当作另一个旁白或将看不清写成可见；已确认voiceover填not_applicable。每镜填写visual_execution，逐字引用实际description或camera_move并判断视图及变化如何实现；unclear/conflict使该镜失败，不能从作者意图补拍法。每镜填写pacing及temporal_omission，后者只用no_omission/supported_by_cut/unsupported/unclear，后两项对应shot.passed=false。supported_by_cut须按schema提供真实相邻切点及前后实际描述摘录，不把摄影角度切换当动作省略。字段均为独立判断，不是程序预判通过。
-对照本轮注入的类型 playbook 看开场、节拍形状、台词密度、镜头语法、出镜比例和英雄定格。这些类型贴合问题写入 suggestions，kind 用 type_fit，不得因此把 checks 置为 false 或让 ready=false。shot_craft 由程序在审核之后附加，模型不要重复，也不能因此把 checks 判失败或要求返修。台词是否对焦商品、前后连贯也只写成 suggestions，kind 用 line_focus，不得因此让 ready=false。人物讲解是出镜的人用第一人称对观众说，商品特写仍是这个人接着说。产品片是画外旁白，不要对口型念卖点，大约15到20秒2到3句，不描述镜头，不编画面外的人。剧情是戏里的第一人称，不念画面，也不把这一镜已经看见的事再说一遍，不用她、他做解说，好处落在动作结果上。定格去向仍是画外旁白。程序会先改一次台词；改完仍是解说画面，方案不算完成。旁白太密由程序改写，不得因此把 checks 置为 false。alignment.ready等于ad_expression_passed且所有spans/shots通过；顶层ready须全部checks、execution_check及alignment.ready通过，表示未发现需阻断的问题，不代表创作质量满分。suggestions有内容也可ready=true，任何明确失败仍不能用建议抵消。不能提升任何明确失败结论，无法确定时指出具体问题。动作与声画检查方法见本阶段参考，通过项省略重复note，失败项须给有界可定位note；所有逐项判定、数值、visual_execution与省略证据仍须完整，不输出隐含思考过程或声称已验证成片。
+对照本轮注入的类型 playbook 看开场、节拍形状、台词密度、镜头语法、出镜比例和英雄定格。这些类型贴合问题写入 suggestions，kind 用 type_fit，不得因此把 checks 置为 false 或让 ready=false。shot_craft 由程序在审核之后附加，模型不要重复，也不能因此把 checks 判失败或要求返修。台词是否对焦商品、前后连贯也只写成 suggestions，kind 用 line_focus，不得因此让 ready=false。人物讲解是出镜的人用第一人称对观众说，商品特写仍是这个人接着说。产品片是画外旁白，不要对口型念卖点，大约15到20秒2到3句，不描述镜头，不编画面外的人。剧情是戏里的第一人称，不念画面，也不把这一镜已经看见的事再说一遍，不用她、他做解说。末句不要点题。每个要证明的好处需要一镜写明技法。家用物品不要跟着人出门，不要英雄定格。默认不看镜头。床入画时背景人物朝向要一致。程序会先改一次台词和点题用途；改完仍是解说画面或仍在点题，方案不算完成。旁白太密由程序改写，不得因此把 checks 置为 false。alignment.ready等于ad_expression_passed且所有spans/shots通过；顶层ready须全部checks、execution_check及alignment.ready通过，表示未发现需阻断的问题，不代表创作质量满分。suggestions有内容也可ready=true，任何明确失败仍不能用建议抵消。不能提升任何明确失败结论，无法确定时指出具体问题。动作与声画检查方法见本阶段参考，通过项省略重复note，失败项须给有界可定位note；所有逐项判定、数值、visual_execution与省略证据仍须完整，不输出隐含思考过程或声称已验证成片。
 """
 
 
@@ -1339,6 +1339,13 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             raise ProgressivePlanningError(
                 "产品片旁白还在堆卖点，这次不采用。已有方案和素材已保留，尚未开始新的图片或视频生成",
                 issue_summary=["产品片旁白还在堆卖点"], repair_attempts=repairs)
+        from .story_logic import story_plan_issues
+        story_issues = story_plan_issues(plan, strategy)
+        if story_issues:
+            record_failure(plan)
+            raise ProgressivePlanningError(
+                story_issues[0] + "，这次不采用。已有方案和素材已保留，尚未开始新的图片或视频生成",
+                issue_summary=story_issues, repair_attempts=repairs)
         return plan
 
     if raw is None:
@@ -1362,10 +1369,12 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
         if not isinstance(plan, dict) or is_placeholder_plan(plan):
             return
         script = (plan or {}).get("ad_script") or {}
+        from .story_logic import story_plan_issues
         if (brand_stack_remaining(script, strategy, locked, duration_seconds=duration)
                 or brand_visual_claim_overflow(plan, strategy, locked, duration)
                 or story_explainer_remaining(script, strategy, locked, plan)
-                or voice_identity_issues(strategy, plan.get("production"))):
+                or voice_identity_issues(strategy, plan.get("production"))
+                or story_plan_issues(plan, strategy)):
             return
         stamped = deepcopy(plan)
         score_review = None
@@ -1394,6 +1403,16 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 "声音方式和广告类型对不上，这次不采用。已有方案和素材已保留，尚未开始新的图片或视频生成",
                 issue_summary=["声音方式和广告类型对不上"], repair_attempts=repairs)
 
+    def refuse_story_structure(plan):
+        from .story_logic import story_plan_issues
+        issues = story_plan_issues(plan, strategy)
+        if not issues:
+            return
+        record_failure(plan)
+        raise ProgressivePlanningError(
+            issues[0] + "，这次不采用。已有方案和素材已保留，尚未开始新的图片或视频生成",
+            issue_summary=issues, repair_attempts=repairs)
+
     def best_real():
         return choose_accepted_plan(real_candidates)
 
@@ -1413,6 +1432,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     dialogue_polish_used = False
     review_response_repair_used = False
     jargon_rewrite_used = False
+    purpose_scrub_used = False
     shot_craft_used = False
     craft_refine_used = False
     craft_accepted = False
@@ -1758,6 +1778,13 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 if replacement is not None:
                     raw = replacement
                     continue
+            if not purpose_scrub_used:
+                from .story_logic import scrub_story_purposes
+                purpose_scrub_used = True
+                scrubbed, did_scrub = scrub_story_purposes(coordinated, strategy)
+                if did_scrub:
+                    raw = scrubbed
+                    continue
             if (brand_stack_remaining(spoken, strategy, locked, plan, duration)
                     or brand_visual_claim_overflow(coordinated, strategy, locked, duration)):
                 record_failure(plan)
@@ -1766,6 +1793,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                     issue_summary=["产品片旁白还在堆卖点"], repair_attempts=repairs)
             if not current_is_skeleton:
                 refuse_mismatched_voice(plan)
+                refuse_story_structure(plan)
                 remember(plan)
                 last_valid_plan = plan
             if not shot_craft_used:
@@ -1874,6 +1902,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                     issue_summary=["产品片旁白还在堆卖点"], repair_attempts=repairs)
             if review.ready:
                 refuse_mismatched_voice(plan)
+                refuse_story_structure(plan)
             if review.ready:
                 from .shot_craft import with_shot_suggestions
                 from .line_quality import with_line_focus_suggestions
@@ -1938,6 +1967,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                         "产品片旁白还在堆卖点，这次不采用。已有方案和素材已保留，尚未开始新的图片或视频生成",
                         issue_summary=["产品片旁白还在堆卖点"], repair_attempts=repairs)
                 refuse_mismatched_voice(plan)
+                refuse_story_structure(plan)
                 return release(plan)
     except _PlanAccepted as accepted:
         return release(accepted.plan)

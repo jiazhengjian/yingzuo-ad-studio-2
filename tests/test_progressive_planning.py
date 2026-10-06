@@ -872,7 +872,7 @@ def test_story_explainer_is_rewritten_before_the_plan_is_ready(progressive_gatew
         beats = value["ad_script"]["beats"]
         beats[0]["narration"] = "不敢开，怕吵醒她。"
         beats[1]["narration"] = "太吵了。"
-        beats[2]["narration"] = "终于不毛躁了。"
+        beats[2]["narration"] = "不毛躁了。"
         value["shots"][0]["description"] = "夜里，室友侧躺在床上睡着。她站在镜前，手指停在开关上。"
 
     async def speak_as_the_character(stage_call, director, strategy, duration_seconds, locked_lines=(), plan=None):
@@ -901,7 +901,7 @@ def test_story_explainer_is_not_marked_ready_when_the_rewrite_stays(progressive_
         beats = value["ad_script"]["beats"]
         beats[0]["narration"] = "不敢开，怕吵醒她。"
         beats[1]["narration"] = "太吵了。"
-        beats[2]["narration"] = "终于不毛躁了。"
+        beats[2]["narration"] = "不毛躁了。"
         value["shots"][0]["description"] = "夜里，室友侧躺在床上睡着。她站在镜前，手指停在开关上。"
 
     async def keep_explainer(*args, **kwargs):
@@ -910,6 +910,28 @@ def test_story_explainer_is_not_marked_ready_when_the_rewrite_stays(progressive_
     monkeypatch.setattr("app.line_quality.rewrite_director_if_needed", keep_explainer)
     state.first_director_mutation = explain
     with pytest.raises(ProviderError, match="解说画面"):
+        state.run()
+    assert "plan_review" not in state.calls
+
+
+def test_story_punchline_is_not_marked_ready(progressive_gateway, monkeypatch):
+    state = progressive_gateway
+    raw = state.strategy.model_dump()
+    raw["brief"]["ad_form"] = "scene_story"
+    state.strategy = _lock_speech(StrategyRecord.model_validate(raw), "character_dialogue")
+
+    def punch(value):
+        beats = value["ad_script"]["beats"]
+        beats[0]["narration"] = "算了，先吹干。"
+        beats[1]["narration"] = "轻点。"
+        beats[2]["narration"] = "它让我没白折回来。"
+
+    async def keep_punchline(*args, **kwargs):
+        return True, None
+
+    monkeypatch.setattr("app.line_quality.rewrite_director_if_needed", keep_punchline)
+    state.first_director_mutation = punch
+    with pytest.raises(ProviderError, match="点题"):
         state.run()
     assert "plan_review" not in state.calls
 

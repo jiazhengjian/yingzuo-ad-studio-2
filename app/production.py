@@ -206,23 +206,34 @@ def validate_production_plan(plan):
 
 
 def required_designs(plan):
-    """One environment plus one contact sheet per approved character."""
+    """One environment, one contact sheet per character, plus a still per changed state."""
+    from .story_logic import plan_state_references
     production = _get(plan, "production")
     characters = _get(production, "characters", [])
     return [{"key": "scene", "kind": "scene", "name": "场景参考图"}, *[
         {"key": "character_" + _get(person, "id"), "kind": "character",
          "name": _get(person, "name") + " · 四视图", "character": person,
-         "character_id": _get(person, "id")} for person in characters]]
+         "character_id": _get(person, "id")} for person in characters],
+        *plan_state_references(plan)]
 
 
 def validate_design_assets(plan, assets):
     """Check confirmed identities and ownership upstream; no semantic claims."""
     scenes = [asset for asset in assets if asset["kind"] == "scene" and asset["metadata"].get("generated")]
     characters = [asset for asset in assets if asset["kind"] == "character" and asset["metadata"].get("generated")]
-    expected = [item["character_id"] for item in required_designs(plan) if item["kind"] == "character"]
+    designs = required_designs(plan)
+    expected = [item["character_id"] for item in designs if item["kind"] == "character"]
     actual = [asset["metadata"].get("character_id") for asset in characters]
     if len(scenes) != 1 or any(not isinstance(cid, str) for cid in actual) or sorted(actual) != sorted(expected):
         raise ValueError("请先准备并确认本方案的场景图及每位角色的四视图")
     if any(asset["metadata"].get("view_layout") != "four_view" for asset in characters):
         raise ValueError("角色参考必须是本方案已确认的四视图")
-    return scenes + [next(asset for asset in characters if asset["metadata"]["character_id"] == cid) for cid in expected]
+    ordered = scenes + [next(asset for asset in characters if asset["metadata"]["character_id"] == cid) for cid in expected]
+    needed = [item for item in designs if item["kind"] == "start_frame"]
+    if not needed:
+        return ordered
+    states = [asset for asset in assets if asset["kind"] == "start_frame" and asset["metadata"].get("state_reference")]
+    by_id = {asset["metadata"].get("state_id"): asset for asset in states}
+    if any(item["state_id"] not in by_id for item in needed):
+        raise ValueError("请先准备并确认状态变化的起始与结果参考图")
+    return ordered + [by_id[item["state_id"]] for item in needed]

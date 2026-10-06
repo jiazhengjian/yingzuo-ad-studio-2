@@ -58,7 +58,7 @@ _OPENING_DEICTIC = re.compile(r"^(?:就这|这么|这|那|它|转)")
 _CLAIM_WORDS = ("根治", "治愈", "美白", "减肥", "抗衰", "医用", "治疗")
 _LINE_STYLES = {
     "brand_tvc": "产品展示：画外旁白，画面里的人不对口型念卖点。可以有不说话、只给画面证明的一拍，不规定那一拍占几秒。画面和产品声音先承担意思，句子仍要有感官。大约15秒整条只围绕一个主好处，旁白、节拍和画面都说这一件。大约30秒可以在主好处之后加一个配角好处，分清主次。45秒以上可以再展开，仍然不要并列清单，不要文案腔。不描述镜头，不编画面上没有的人，不用痛点问句开头。多出来的卖点留空。口播不受这条限制。",
-    "scene_story": "剧情：戏里的人用自己的第一人称说短对白，要有来有回。意图、反应、对照或包袱，每句大约4到10字。不念画面上的动作，也不把这一镜已经看见的事再说一遍，不用她、他做第三人称解说。抱怨、态度或一句提醒可以，口播卖点不行。好处最多一句，是看见结果后的反应，并且要和这条的主好处是同一件。不念点击或链接，片尾停在结果上，人物不对镜举着产品硬广。",
+    "scene_story": "剧情：戏里的人用自己的第一人称说短对白，要有来有回。意图、反应、对照或包袱，每句大约4到10字。不念画面上的动作，也不把这一镜已经看见的事再说一遍，不用她、他做第三人称解说。抱怨、态度或一句提醒可以，口播卖点不行。末句是当下的反应或关系，不要点题，不要用没白、终于、还好有它、幸亏收束，也不要让产品当主语。好处最多一句，并且要和这条的主好处是同一件。不念点击或链接，片尾停在故事里，人物不对镜举着产品硬广。",
     "presenter_pitch": "人物讲解：出镜的人用第一人称对着观众说，第一句就是钩子。脸在画面里就对口型；切到商品特写时仍是这个人接着说，不是另配旁白。每一句卖点都要有主语，用这款、它，或我用它。卖点之间用而且、还、另外、所以或关键是接上。资料短时可以补具体场合。可以连着说多个卖点。",
 }
 _TARGET_LENGTH = {
@@ -835,6 +835,22 @@ def _script_line_offenses(script, strategy, locked_lines, plan=None, duration_se
             tags = _claim_tags(text)
             if axis and tags and axis not in tags:
                 add(beat, indexes.get(id(beat), 0), "主轴拧了")
+        content_lines = [beat for beat in spoken if not _CTA_LINE.search(beat["narration"]) and not _SCENE_FREEZE_CTA.search(beat["narration"])]
+        if content_lines:
+            from .story_logic import line_is_punchline, purpose_is_punchline
+            last = content_lines[-1]
+            if line_is_punchline(last["narration"]):
+                add(last, indexes.get(id(last), 0), "在点题")
+            for beat in spoken:
+                purposes = []
+                for shot in _iter_shots(plan):
+                    covered = list(shot.get("beat_ids") or [])
+                    if shot.get("beat_id"):
+                        covered.append(shot["beat_id"])
+                    if beat.get("id") in covered and purpose_is_punchline(shot.get("purpose")):
+                        purposes.append(shot.get("purpose"))
+                if purposes:
+                    add(beat, indexes.get(id(beat), 0), "在点题")
         mentioned = any(
             _STORY_PRODUCT.search(beat["narration"]) or _STORY_RESULT.search(beat["narration"])
             or _SCENE_PITCH.search(beat["narration"]) or _has_product_subject(beat["narration"], names)
@@ -1489,6 +1505,11 @@ def rewrite_schema(lines: list[dict], beat_cap: int) -> dict:
             one["properties"]["narration"]["description"] = (
                 "这句的好处和这条的主好处不是同一件。改成对主好处的反应或态度。"
                 "不要换成另一条卖点，也不要写固定套话。")
+        elif "在点题" in offenses:
+            one["properties"]["narration"]["minLength"] = 1
+            one["properties"]["narration"]["description"] = (
+                "这句在给整件事做总结，或让产品当主语。改成这个人当下会说的反应或关系。"
+                "不要用没白、终于、还好有它、幸亏，也不要写成它让我。不要指定某一句替换。")
         elif "在念画面" in offenses or "第三人称解说" in offenses:
             one["properties"]["narration"]["minLength"] = 1
             one["properties"]["narration"]["description"] = (
@@ -1542,6 +1563,8 @@ def apply_line_rewrite(script: dict, raw, *, limits: dict, locked_lines=(), fact
             if form_now in ("brand_tvc", "scene_story"):
                 leftover = _script_line_offenses(revised, strategy, locked_lines, duration_seconds=duration_seconds)
                 blocked = {"电报体", "主轴拧了"}
+                if form_now == "scene_story":
+                    blocked.add("在点题")
                 if form_now == "brand_tvc":
                     blocked.update({"旁白像文案", "旁白在堆卖点", "一句里塞了两个卖点", "标签式旁白"})
                 if any(name in blocked for item in leftover for name in item["offenses"]):
@@ -1575,7 +1598,7 @@ LINE_REWRITE_SYSTEM = """你只重写列出的中文广告台词，只输出 JSO
 产品展示大约15秒整条只围绕一个主好处，像跟人说话。大约30秒可以在这一个主好处之后再留一个配角好处，分清主次。45秒以上可以再展开一句，仍然不要并列清单。不要文案腔，不要「是它的脸」「先到了」「肩线这一圈」，也不要「十万转高速马达」「一亿负离子」这种参数清单。短的口语好处不要改长，也不要补主语。例如「这风不吵。」「几下就干。」「是……的」这种电报标签要改成说得出口的一句，不要指定某一句替换。顺、顺滑、不毛躁是同一个好处。不要描述镜头里的光和动作，不要用痛点问句或场景交代开场。旁白太密，或超过本片时长还能说的卖点，那些句子 narration 留空。至少留一拍只有产品的声音。不编价格。口播不受这条限制，卖点之间仍用而且接上。
 人物讲解的每一句卖点都要有主语：这款、它，或「我用它」。不要用「风大」「带负离子」这种没有主语的开头。卖点之间用而且、还、另外、所以或关键是接上。
 产品片不必每句点名。直接、短地说画面证明不了的好处。不要描述镜头里的光、银线或发丝飘起。
-剧情对白是意图、反应、对照或包袱，每句大约4到10字，用这个人自己的第一人称。不要把这一镜已经看见的事再说一遍，也不要用她、他做第三人称解说。画面是室友在睡、她没按开关时，不要说「不敢开，怕吵醒她。」改成这个人自己会说的反应、态度，或一句画面带不走的话。不要念室友在睡、她拿吹风机，也不要改成口播卖点。好处最多一句，写成人物看见结果后的反应，并且和这条的主好处是同一件。剧情不念点击或链接，片尾停在结果上。人物不要转头对着镜头推销。数字和功效只在 facts 里已经有时才能写。若某句带了 picture，那就是这一镜已经拍到的内容。口播是出镜的人用第一人称对观众说，商品特写仍是这个人接着说，不是另配旁白，卖点可以连着说。产品展示是画外旁白，不要对口型念卖点，可以留不说话的画面，不规定那一拍占几秒。
+剧情对白是意图、反应、对照或包袱，每句大约4到10字，用这个人自己的第一人称。不要把这一镜已经看见的事再说一遍，也不要用她、他做第三人称解说。画面是室友在睡、她没按开关时，不要说「不敢开，怕吵醒她。」改成这个人自己会说的反应、态度，或一句画面带不走的话。不要念室友在睡、她拿吹风机，也不要改成口播卖点。末句不要点题，不要用没白、终于、还好有它、幸亏，也不要让产品当主语说它让我。好处最多一句，并且和这条的主好处是同一件。剧情不念点击或链接，片尾停在故事里。人物不要转头对着镜头推销。数字和功效只在 facts 里已经有时才能写。若某句带了 picture，那就是这一镜已经拍到的内容。口播是出镜的人用第一人称对观众说，商品特写仍是这个人接着说，不是另配旁白，卖点可以连着说。产品展示是画外旁白，不要对口型念卖点，可以留不说话的画面，不规定那一拍占几秒。
 tagline_policy.enabled 为 false 时不加独立口号字卡。为 true 时只有收束句可以是不超过10字的口播，仍然不写购买、下单、抢购。
 不输出其他字段，不解释。"""
 
