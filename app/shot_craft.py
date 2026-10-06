@@ -274,7 +274,10 @@ def shot_suggestions(plan, strategy=None) -> list[dict]:
               else f"/segments/{last_segment}/shots/{last_index}/continuity/camera_move")
     if last_duration is not None and quote:
         if last_duration < _tenths(HOLD_ADVICE_FLOOR):
-            item = _suggestion(3, target, quote, "结尾镜头不到2秒，英雄定格站不住。这是建议，不会为此重排时间。")
+            hold_note = ("结尾镜头不到2秒，余韵站不住。这是建议，不会为此重排时间。"
+                         if _form(strategy) == "scene_story"
+                         else "结尾镜头不到2秒，英雄定格站不住。这是建议，不会为此重排时间。")
+            item = _suggestion(3, target, quote, hold_note)
             if item:
                 suggestions.append(item)
         elif not _hold_ok(description, camera):

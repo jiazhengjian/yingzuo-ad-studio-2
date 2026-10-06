@@ -19,13 +19,19 @@ export function messageDesignAssets(detail: Detail | null, message: Message): As
       for (const id of asset.metadata.source_asset_ids) if (typeof id === 'string') ids.add(id);
     }
   }
-  return oneImagePerCharacter(assets.filter(asset => ids.has(asset.id)
-    && (asset.kind === 'product' && !asset.metadata.generated || ['scene', 'character'].includes(asset.kind) && asset.metadata.generated))
+  return oneImagePerCharacter(assets.filter(asset => ids.has(asset.id) && designAssetVisible(asset))
     .sort((a, b) => designOrder(a) - designOrder(b)));
 }
 
+function designAssetVisible(asset: Asset): boolean {
+  if (asset.kind === 'product' && !asset.metadata.generated) return true;
+  if (asset.kind === 'scene' && asset.metadata.generated) return true;
+  if (asset.kind === 'character' && asset.metadata.generated) return true;
+  return asset.kind === 'start_frame' && !!asset.metadata.generated && asset.metadata.state_reference === true;
+}
+
 /** Resolve only references belonging to this plan or its current finished render. */
-function currentGeneratedDesignAssets(detail: Detail | null, kind: 'scene' | 'character'): Asset[] {
+function currentGeneratedDesignAssets(detail: Detail | null, kind: 'scene' | 'character' | 'start_frame'): Asset[] {
   if (!detail) return [];
   const { project, assets, jobs, renders, gates } = detail;
   // New requirements cannot silently inherit a previous plan's design state.
@@ -62,11 +68,12 @@ function currentGeneratedDesignAssets(detail: Detail | null, kind: 'scene' | 'ch
     }
   }
   return [...new Map(assets.filter(asset => asset.project_id === project.id && asset.kind === kind && asset.metadata.generated
+    && (kind !== 'start_frame' || asset.metadata.state_reference === true)
     && (sourceIds.has(asset.id) || asset.revision === project.revision || typeof asset.metadata.job_id === 'string' && sourceJobIds.has(asset.metadata.job_id)))
     .map(asset => [asset.id, asset])).values()];
 }
 
-const designOrder = (asset: Asset) => asset.kind === 'product' ? 0 : asset.kind === 'scene' ? 1 : 2;
+const designOrder = (asset: Asset) => asset.kind === 'product' ? 0 : asset.kind === 'scene' ? 1 : asset.kind === 'character' ? 2 : 3;
 
 /** A character is represented by one saved reference sheet, not separate view tiles. */
 function oneImagePerCharacter(assets: Asset[]): Asset[] {
@@ -93,5 +100,48 @@ export function designImageLabel(asset: Asset): string {
     const name = typeof asset.metadata.character_name === 'string' && asset.metadata.character_name.trim() ? asset.metadata.character_name.trim() : asset.name;
     return `${asset.metadata.view_layout === 'four_view' ? '角色四视图' : '角色参考'} · ${name}`;
   }
+  if (asset.kind === 'start_frame' && asset.metadata.state_reference === true) {
+    const phase = asset.metadata.phase === 'start' ? '起始状态' : '结果状态';
+    const label = typeof asset.metadata.state_label === 'string' && asset.metadata.state_label.trim() ? asset.metadata.state_label.trim() : '';
+    return label ? `${phase} · ${label}` : phase;
+  }
   return '场景图';
 }
+
+const STATEY = /湿|干|乱|顺|毛|关|开|满|空|皱|平|脏|净|合/;
+const FROM_TO = /(?:由|从)([^，。；\s]{1,6}?)(?:到|变成|变为)([^，。；\s]{1,6})/;
+const STATE_PAIRS: [string, string[]][] = [
+  ['湿', ['干了', '变干', '吹干', '干燥', '干发', '已经干', '是干']],
+  ['乱', ['顺了', '变顺', '梳顺', '顺滑', '已经顺']],
+  ['毛躁', ['顺了', '顺滑', '不毛躁', '梳顺']],
+  ['关上', ['打开', '开了', '敞开']],
+  ['合上', ['打开', '敞开', '开了']],
+  ['满', ['空了', '倒空', '见底']],
+  ['皱', ['平整', '展平', '抚平']],
+];
+
+function shotStateChange(shot: { description?: string; purpose?: string; continuity?: { start_state?: string; end_state?: string; allowed_changes?: string } | null }): boolean {
+  const continuity = shot.continuity ?? {};
+  const start = continuity.start_state ?? '';
+  const end = continuity.end_state ?? '';
+  const allowed = continuity.allowed_changes ?? '';
+  const description = shot.description ?? '';
+  const blob = [start, end, allowed, description].filter(Boolean).join(' ');
+  const match = FROM_TO.exec(blob);
+  if (match && STATEY.test(match[1]) && STATEY.test(match[2])) return true;
+  return STATE_PAIRS.some(([left, rights]) => left && start.includes(left) && !end.includes(left) && rights.some(right => end.includes(right) || allowed.includes(right) || description.includes(right)));
+}
+
+/** How many start/result stills this plan should show. Capped at three changes. */
+export function planStateReferenceCount(plan: { segments?: { shots?: { description?: string; purpose?: string; continuity?: { start_state?: string; end_state?: string; allowed_changes?: string } | null }[] }[] } | null | undefined): number {
+  const shots = plan?.segments?.flatMap(segment => segment.shots ?? []) ?? [];
+  let changes = 0;
+  for (const shot of shots) {
+    if (!shotStateChange(shot)) continue;
+    changes += 1;
+    if (changes >= 3) break;
+  }
+  return changes * 2;
+}
+
+export const currentStateAssets = (detail: Detail | null): Asset[] => currentGeneratedDesignAssets(detail, 'start_frame');

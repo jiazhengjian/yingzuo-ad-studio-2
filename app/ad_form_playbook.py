@@ -263,8 +263,10 @@ def ending_policy(form: str | None, cta_target: str | None = None) -> dict:
     hold = "结尾留出至少2秒不说话，商品停在画面里。不编链接、地址、门牌或价格。"
     if form == "scene_story":
         instruction = (
-            "剧情片尾停在结果镜头，产品定格约2秒。不念点击、链接、私信或到店，转化靠平台按钮。"
-            "人物不对镜举着产品硬广。" + hold
+            "剧情片尾停在故事里。家用物品留在它该在的位置，例如放回台面或支架，不要跟着人出门。"
+            "产品可以出现在最后一镜，但只能由镜头自己发现：人离开后镜头推近留在原处的产品，这是余韵。"
+            "不要人物举着产品对镜头，不要棚拍、logo居中或英雄定格，不要口号、卖点旁白或点击引导。"
+            "转化靠平台按钮。" + hold
         )
         return {
             "form": "scene_story",
@@ -279,7 +281,7 @@ def ending_policy(form: str | None, cta_target: str | None = None) -> dict:
             line = cta_line(cta_target)
         instruction = (
             f"结尾必须说出「{line}」。人物讲解由出镜的人说。产品片由旁白说这句短的品牌收束。"
-            f"剧情在商品定格上用这句短旁白说完，人物不要转头对着镜头推销。"
+            f"剧情不念这句去向，转化靠平台按钮，人物不要转头对着镜头推销。"
             f"这句话要在停留之前说完。{hold}"
         )
     else:
@@ -293,8 +295,8 @@ def ending_policy(form: str | None, cta_target: str | None = None) -> dict:
                 "然后人和商品停住。"
             ),
             "scene_story": (
-                "结尾留在剧情里，产品定格约2秒。没有指定去向时不要另加去哪里、点链接、私信或到店。"
-                "人物不要转头对着镜头推销。"
+                "结尾留在剧情里。家用物品放回原处，镜头可以推近作余韵，不要英雄定格。"
+                "没有指定去向时不要另加去哪里、点链接、私信或到店。人物不要转头对着镜头推销。"
             ),
         }
         instruction = instructions.get(form or "", "结尾约2秒产品留在画面里并停住。不要另加去哪里的话。") + hold

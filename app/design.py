@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from .picture_rules import off_camera_locked
 from .production import CHARACTER_SHEET_TEMPLATE, apply_cast_instructions
 from .runtime_skills import compiler_template
 
@@ -53,3 +54,36 @@ def character_design_request(project, plan, character):
             "template_version": CHARACTER_SHEET_TEMPLATE,
             "skill_trace": [trace], "prompt": instructions + "\n已确认角色：\n"
             + json.dumps(context, ensure_ascii=False)}
+
+
+def state_design_request(project, plan, instruction):
+    """One still of one state. Not a before/after collage and not a video frame API."""
+    phase = instruction.get("phase")
+    label = instruction.get("label") or "这一状态"
+    subject = instruction.get("subject") or "主体"
+    brief = ((plan.get("strategy") or {}).get("brief") or {})
+    brief_text = " ".join(part for part in (
+        brief.get("product_name") or "",
+        project.get("brief") if isinstance(project, dict) else "",
+        " ".join(fact.get("text") or "" for fact in brief.get("facts") or [] if isinstance(fact, dict)),
+    ) if isinstance(part, str))
+    hidden = off_camera_locked(brief_text, (plan.get("facts") or {}).get("name") or "")
+    phase_name = "起始" if phase == "start" else "结果"
+    prompt = (
+        f"生成一张写实静帧，只表现「{subject}」的{phase_name}状态：{label}。"
+        "同一场景、同一人物或物体。不要渐变，不要前后对比拼图，不要分格，不要可读文字、字幕或口号。"
+        "商品外形、颜色和标识以商品原图为准，不重画商品，不改商标。"
+    )
+    if hidden:
+        prompt += "本片不出镜：不要人脸，不要把独立发束或局部画成真人头。"
+    else:
+        prompt += "若画面里有人，外貌与已确认角色一致，不换脸。"
+    return {
+        "version": "state-still-v1",
+        "aspect_ratio": "9:16",
+        "state_id": instruction.get("state_id"),
+        "phase": phase,
+        "shot_id": instruction.get("shot_id"),
+        "state_label": label,
+        "prompt": prompt,
+    }

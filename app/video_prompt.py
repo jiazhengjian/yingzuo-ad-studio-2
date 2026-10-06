@@ -7,6 +7,7 @@ import re
 from .cta import strip_guidance
 from .picture_rules import prepare_prompt_shot, unlock_wet_identity
 from .production import cast_appearance_clause
+from .story_logic import state_prompt_lines, story_gaze_line, story_needs_lens, with_background_line
 from .runtime_skills import compiler_template
 
 
@@ -66,6 +67,10 @@ def _reference_lines(segment, spoken=""):
             duty = "商品原图，保持商品外形、比例、颜色与已有标识"
         elif role.get("role") == "scene":
             duty = "场景参考，控制空间、材质、灯光与背景"
+        elif role.get("role") == "state":
+            phase = "起始状态" if role.get("phase") == "start" else "结果状态"
+            label = role.get("label") or "这一状态"
+            duty = f"{phase}参考，只锁定「{label}」。对应镜头硬切到这张静帧，不要在一镜里渐变。商品外形仍以商品原图为准"
         elif role.get("role") == "character":
             cid = role.get("character_id")
             if cid not in characters or cid in referenced_characters:
@@ -133,14 +138,20 @@ def _voice_lines(production, director, spans, characters, *, ad_form=None):
         if production.get("speech_delivery") == "on_and_off_screen":
             if ad_form == "scene_story":
                 return [
-                    f"声音方式：同一人物{name}在戏里开口说台词，嘴型与字同步，不转头看镜头。"
-                    f"只有切到看不见这个说话人的嘴时，才由她本人在画外接着说。其余角色不说话。声音：{voice}。"
+                    f"声音方式：同一人物{name}在戏里开口说台词，嘴型与字同步，默认不看镜头，不转头看镜头。"
+                    f"只有这一镜写明要看镜头时才看。只有切到看不见这个说话人的嘴时，才由她本人在画外接着说。其余角色不说话。声音：{voice}。"
                     "声线保持连贯是执行要求，不是已验证的声纹。"
                 ]
             return [
                 f"声音方式：同一人物{name}用第一人称对观众说全部台词。只要她的脸在画面里，就看着镜头亲口说，嘴型与字同步；"
                 f"只有切到看不见嘴的商品特写时，才由她本人在画外接着说，不是另配旁白。其余角色不说话。声音：{voice}。"
                 "声线保持连贯是执行要求，不是已验证的声纹。"
+            ]
+        if ad_form == "scene_story":
+            return [
+                f"声音方式：人物在戏里开口。{name}默认不看镜头，只有某一镜写明要看镜头时才看。"
+                f"亲口说出下方每一句台词，从第一句的第一个字开始就张嘴说话，"
+                f"嘴型与每个字同步，表情自然。这不是画外音，不另配旁白。声音：{voice}。"
             ]
         return [
             f"声音方式：人物出镜讲话。{name}面对镜头，亲口说出下方每一句台词，从第一句的第一个字开始就张嘴说话，"
@@ -325,6 +336,8 @@ def _compile_grouped_video(segment, template):
                 break
     for index, shot in enumerate(shots):
         last = index == last_index
+        if segment.get("ad_form") == "scene_story":
+            shot = {**shot, "description": with_background_line(shot.get("description") or "", shots)}
         shot_view = prepare_prompt_shot(shot, spoken_blob)
         lines.extend(shot_prompt_lines(
             shot_view, hold_tail=last and closes_film, continue_tail=last and not closes_film,
@@ -343,7 +356,8 @@ def _compile_grouped_video(segment, template):
             face_visible = _speaker_face_visible(shot_view, speaker_name, other_names)
             if speaking_here and speaker_id in shot.get("character_ids", []) and face_visible:
                 if segment.get("ad_form") == "scene_story":
-                    lines.append(f"  本镜{name}在戏里开口说，嘴型与台词同步，不转头看镜头。")
+                    gaze = "" if story_needs_lens(shot_view) else "，不转头看镜头"
+                    lines.append(f"  本镜{name}在戏里开口说，嘴型与台词同步{gaze}。")
                 else:
                     lines.append(f"  本镜{name}面向镜头说话，嘴型与台词同步。")
                 if shot.get("id") == first_speaking_shot:
@@ -366,6 +380,10 @@ def _compile_grouped_video(segment, template):
         if speaking_face and isinstance(continuity, dict):
             continuity = {**continuity, "start_state": _mouth_open_state(continuity.get("start_state"))}
         lines.extend(_continuity_lines(continuity, shot_view.get("description") or ""))
+        gaze = story_gaze_line(shot_view, segment.get("ad_form"))
+        if gaze:
+            lines.append(gaze)
+        lines.extend(state_prompt_lines(shot_view, segment.get("reference_roles")))
         hand_line = _hand_product_line(shot_view)
         if hand_line:
             lines.append(hand_line)

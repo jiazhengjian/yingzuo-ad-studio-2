@@ -555,11 +555,11 @@
     {
       "id": "ad-form-playbook-scene-story",
       "path": "shared/ad-form-playbooks/scene-story.md",
-      "version": "1.4.4",
+      "version": "1.5.0",
       "stages": ["strategy", "direction_review", "ad_script", "content_draft", "storyboard", "plan_refinement", "plan_review"],
       "ad_forms": ["scene_story"],
       "source_refs": [{"source_id": "tvc-director-local", "path": "tvc-director-examples.md", "sha256": "c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1"}],
-      "adaptation_note": "剧情/场景的处境开场、一个包袱、短对白、反应镜头和英雄定格。台词例子为映作原创。分镜补充七要素和字面画面。"
+      "adaptation_note": "剧情/场景的处境开场、一个包袱、短对白、反应镜头和余韵。末句不点题，家用物品留在原处，不写英雄定格。台词例子为映作原创。分镜补充七要素和字面画面。"
     },
     {
       "id": "ad-form-playbook-presenter-pitch",
