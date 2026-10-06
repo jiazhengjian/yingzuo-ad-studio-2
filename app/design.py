@@ -37,6 +37,9 @@ def scene_design_request(project, plan):
             context["legacy_visual_context"] = accepted
         else:
             context["legacy_original_brief"] = str(project.get("brief", ""))
+    lighting = visual_direction.get("lighting") if isinstance(visual_direction.get("lighting"), str) else ""
+    if lighting.strip():
+        instructions += f"\n光线方向按已确认方案执行：{lighting.strip()}。窗户、窗帘和光斑要落在这个方向，不要改到相反的一侧。"
     return {"version": "scene-context-v4" if isinstance(intent, dict) else "scene-context-v3", "scenario": scenario, "skill_trace": [trace],
             "prompt": instructions + "\n已确认的场景与视觉方案：\n" + json.dumps(context, ensure_ascii=False)}
 
@@ -48,6 +51,10 @@ def character_design_request(project, plan, character):
         raise ValueError("角色四视图必须引用本次已确认方案中的角色")
     instructions, trace = compiler_template("ads-video-asset-prompts", "references/character-template.txt")
     instructions = apply_cast_instructions(instructions, character.get("description", ""))
+    from .story_logic import cast_distinction_line
+    distinction = cast_distinction_line(plan, character)
+    if distinction:
+        instructions += "\n" + distinction
     context = {"name": character["name"], "description": character["description"]}
     return {"version": "character-context-v2", "character_id": character["id"],
             "aspect_ratio": "16:9", "sheet_layout": "horizontal_16x9",

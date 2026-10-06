@@ -44,6 +44,14 @@ def test_legacy_scene_request_uses_accepted_visual_context_without_each_shot():
     assert not data["confirmed_scenario"]
 
 
+def test_scene_prompt_states_the_confirmed_light_direction():
+    plan = sample_plan()
+    plan["visual_direction"] = {"scene": "合住房间", "lighting": "晨光从左侧进来"}
+    request = scene_design_request({}, plan)
+    assert "光线方向按已确认方案执行：晨光从左侧进来" in request["prompt"]
+    assert "不要改到相反的一侧" in request["prompt"]
+
+
 def test_scene_request_uses_selected_setting_when_brief_has_no_scene():
     plan = sample_plan()
     plan["strategy"]["brief"]["scenario"] = ""

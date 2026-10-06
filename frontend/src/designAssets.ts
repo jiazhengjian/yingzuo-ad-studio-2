@@ -174,6 +174,12 @@ function endFromShot(shot: StateShot): string | null {
   return null;
 }
 
+function subjectKeyFromText(text: string): string {
+  if (text.includes('头发') || text.includes('发丝')) return '头发';
+  if (text.includes('盖')) return '盖子';
+  return '主体';
+}
+
 /** How many start/result stills this plan should show. One pair per subject, result on a later shot. */
 export function planStateReferenceCount(plan: { segments?: { shots?: StateShot[] }[] } | null | undefined): number {
   const shots = plan?.segments?.flatMap(segment => segment.shots ?? []) ?? [];
@@ -186,6 +192,29 @@ export function planStateReferenceCount(plan: { segments?: { shots?: StateShot[]
     const group = groups.get(key) ?? [];
     group.push({ index, before: change[0], after: change[1] });
     groups.set(key, group);
+  });
+  const open = new Map<string, { index: number; label: string }>();
+  shots.forEach((shot, index) => {
+    const start = shot.continuity?.start_state ?? '';
+    const end = shot.continuity?.end_state ?? '';
+    const key = subjectKeyFromText(`${start} ${end} ${shot.description ?? ''}`);
+    if (shotChange(shot)) {
+      open.delete(key);
+      return;
+    }
+    const result = endFromLabel(start) || endFromLabel(end);
+    const halfway = INTERMEDIATE.test(start) || INTERMEDIATE.test(end);
+    if ((result || halfway) && open.has(key) && !groups.has(key)) {
+      const proc = open.get(key)!;
+      groups.set(key, [
+        { index: proc.index, before: proc.label, after: proc.label },
+        { index, before: start || end, after: result || start || end },
+      ]);
+      open.delete(key);
+      return;
+    }
+    const startLabel = canonicalStart(end);
+    if (startLabel && !endFromLabel(end)) open.set(key, { index, label: startLabel });
   });
   let count = 0;
   for (const group of groups.values()) {

@@ -8,9 +8,9 @@ from app.line_quality import apply_line_rewrite, script_line_offenses
 from app.picture_rules import action_issues, state_change_issues
 from app.production import required_designs, validate_design_assets
 from app.story_logic import (
-    background_issues, line_is_punchline, plan_state_references, proof_highlight_issues,
-    scrub_story_purposes, shot_state_change, state_pairing_issues, story_ending_issues,
-    story_gaze_line, story_plan_issues, with_background_line,
+    background_issues, cast_distinction_issues, line_is_punchline, plan_state_references,
+    proof_highlight_issues, scrub_story_purposes, shot_state_change, state_pairing_issues,
+    story_ending_issues, story_gaze_line, story_plan_issues, with_background_line,
 )
 from app.strategy import StrategyRecord
 from app.video_prompt import compile_grouped_video
@@ -266,6 +266,105 @@ def test_a_background_person_stays_with_the_bed():
     segment["shots"][1]["character_ids"] = ["char_host"]
     prompt = compile_grouped_video(segment)
     assert "室友仍侧躺，朝向不变" in prompt
+
+
+def _state_shot(shot_id, start, end, description):
+    return {
+        "id": shot_id, "description": description,
+        "continuity": {"start_state": start, "end_state": end, "allowed_changes": ""},
+    }
+
+
+def test_a_dry_cut_between_shots_still_gets_start_and_result_stills():
+    # r16: sh4/sh5 stay wet, sh6 opens already dry. No single shot contains the change.
+    shots = [
+        _state_shot("sh4", "吹风机已启动并对着头发，头发仍是湿的", "头发仍是湿的，吹风机仍对着发根吹", "她快速分区吹湿发。"),
+        _state_shot("sh5", "头发仍是湿的，吹风机对着发根", "头发仍是湿的，吹风机仍握在她手里运转", "近景，一缕湿发。"),
+        _state_shot("sh6", "省略继续吹干的过程后，头发已经吹干，吹风机刚停下", "头发吹干且顺，吹风机在她手里刚停", "她把已经吹干的头发从发根拨到发尾。"),
+    ]
+    assert all(shot_state_change(shot) is None for shot in shots)
+    plan = {"production": {"characters": []}, "segments": [{"shots": shots}]}
+    refs = plan_state_references(plan)
+    assert [item["phase"] for item in refs] == ["start", "result"]
+    assert refs[0]["shot_id"] == "sh5" and refs[1]["shot_id"] == "sh6"
+    assert refs[0]["label"].endswith("湿") and refs[1]["label"].endswith("干了")
+    assert state_pairing_issues(plan) == []
+    gapped = {"production": {"characters": []}, "segments": [{"shots": [
+        shots[0],
+        _state_shot("sh5", "室友侧躺、脸朝房间一侧睡着", "室友保持睡姿", "过肩看床上的室友。"),
+        shots[2],
+    ]}]}
+    gapped_refs = plan_state_references(gapped)
+    assert [item["shot_id"] for item in gapped_refs] == ["sh4", "sh6"]
+    halfway = {"production": {"characters": []}, "segments": [{"shots": [
+        _state_shot("sh4", "头发是湿的", "头发仍是湿的", "她吹着湿发。"),
+        _state_shot("sh6", "头发被吹开一半", "头发被吹开一半", "头发被吹开一半。"),
+    ]}]}
+    assert "状态结果还停在半程" in state_pairing_issues(halfway)
+    assert "一半" not in "".join(item["label"] for item in plan_state_references(halfway))
+
+
+def test_background_pose_follows_the_latest_declared_turn():
+    shots = [
+        {"id": "sh1", "description": "清晨房间，床上室友长发散在枕上，背对房间侧睡。"},
+        {"id": "sh2", "description": "床还在后面，室友还睡着。"},
+        {"id": "sh3", "description": "过肩看床。室友翻了个身，脸朝房间一侧，仍闭着眼睡着。"},
+        {"id": "sh4", "description": "背景床上，室友还睡着。"},
+    ]
+    plan = {"segments": [{"shots": shots}]}
+    assert background_issues(plan) == []
+    turned = with_background_line(shots[2]["description"], shots, 2)
+    assert "仍背对" not in turned
+    assert "脸朝房间一侧" in turned
+    carried = with_background_line(shots[3]["description"], shots, 3)
+    assert "室友仍脸朝房间" in carried
+    assert "仍背对" not in carried
+    assert "同一套衣服" in carried
+    earlier = with_background_line(shots[1]["description"], shots, 1)
+    assert "室友仍背对" in earlier
+    assert background_issues(_board(
+        _shot("夜里，室友侧躺在床上睡着。"),
+        _shot("床上的室友面向镜头。"),
+    ))
+
+
+def test_two_people_in_one_frame_are_told_apart_on_the_character_sheet():
+    from app.design import character_design_request
+    lead = {"id": "xia", "name": "小夏", "description": "及肩黑发，穿浅色碎花睡衣"}
+    roommate = {"id": "room", "name": "室友", "description": "长黑发，穿粉色碎花睡衣，侧躺"}
+    plan = {"production": {"speaker_id": "xia", "characters": [lead, roommate]}, "segments": [{"shots": [
+        {"id": "sh3", "description": "小夏看向床上的室友。", "character_ids": ["xia", "room"]},
+    ]}]}
+    lead_prompt = character_design_request({}, plan, lead)["prompt"]
+    assert "同框区分" in lead_prompt and "纯色" in lead_prompt and "不要碎花" in lead_prompt
+    assert "粉色碎花睡衣" in lead_prompt
+    roommate_prompt = character_design_request({}, plan, roommate)["prompt"]
+    assert "明显不同的颜色" in roommate_prompt and "不要碎花" in roommate_prompt
+    alone = {"id": "xia", "name": "小夏", "description": "及肩黑发，纯色白上衣"}
+    solo = {"production": {"characters": [alone]}, "segments": [{"shots": [
+        {"id": "sh1", "description": "她站在台前。", "character_ids": ["xia"]},
+    ]}]}
+    assert "同框区分" not in character_design_request({}, solo, alone)["prompt"]
+    assert cast_distinction_issues(plan) == ["同框角色的衣服和发型太接近"]
+    distinct = {"production": {"speaker_id": "xia", "characters": [
+        {"id": "xia", "name": "小夏", "description": "及肩黑发，纯色白上衣"},
+        {"id": "room", "name": "室友", "description": "长发盘起，深蓝色睡衣"},
+    ]}, "segments": plan["segments"]}
+    assert cast_distinction_issues(distinct) == []
+
+
+def test_story_ending_does_not_aim_the_logo_at_the_camera():
+    segment = _segment(ad_form="scene_story")
+    segment["shots"][1]["description"] = "她把吹风机放回台面，机身 Laifen 字样朝向镜头，筒口朝上。"
+    segment["shots"][1]["continuity"] = {
+        "entry_transition": "cut", "start_state": "吹风机握在手里", "allowed_changes": "放回台面",
+        "end_state": "吹风机立在台面，机身 Laifen 字样朝镜头", "camera_move": "推近后停住",
+    }
+    ending = _shot_block(compile_grouped_video(segment), "镜头2 |")
+    assert "字样朝向镜头" not in ending and "字样朝镜头" not in ending
+    assert "正面朝镜头" not in ending
+    assert "按放下时的样子留在原位" in ending
+    assert "正面朝镜头" in compile_grouped_video(_segment())
 
 
 def test_existing_door_and_vapor_checks_stay():

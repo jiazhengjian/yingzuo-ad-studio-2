@@ -7,7 +7,10 @@ import re
 from .cta import strip_guidance
 from .picture_rules import prepare_prompt_shot, unlock_wet_identity
 from .production import cast_appearance_clause
-from .story_logic import state_prompt_lines, story_gaze_line, story_needs_lens, with_background_line
+from .story_logic import (
+    _STORY_HOLD_LINE, rest_product_for_story_ending, state_prompt_lines,
+    story_gaze_line, story_needs_lens, with_background_line,
+)
 from .runtime_skills import compiler_template
 
 
@@ -339,11 +342,14 @@ def _compile_grouped_video(segment, template):
     for index, shot in enumerate(shots):
         last = index == last_index
         if segment.get("ad_form") == "scene_story":
-            shot = {**shot, "description": with_background_line(shot.get("description") or "", shots)}
+            shot = {**shot, "description": with_background_line(shot.get("description") or "", shots, index)}
+            if last:
+                shot = rest_product_for_story_ending(shot)
         shot_view = prepare_prompt_shot(shot, spoken_blob)
         lines.extend(shot_prompt_lines(
             shot_view, hold_tail=last and closes_film, continue_tail=last and not closes_film,
-            label=labels.get(shot.get("id"))))
+            label=labels.get(shot.get("id")),
+            hold_line=_STORY_HOLD_LINE if segment.get("ad_form") == "scene_story" and last and closes_film else None))
         if shot.get("character_ids"):
             if not set(shot["character_ids"]).issubset(characters):
                 raise ValueError("镜头引用了未绑定参考图的角色")

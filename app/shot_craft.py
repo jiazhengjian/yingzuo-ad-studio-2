@@ -584,7 +584,7 @@ def _motion_sentence(clause: str, *, index: int) -> str:
     return f"{lead}，变化限于本镜允许变化。"
 
 
-def shot_prompt_lines(shot, *, hold_tail: bool, continue_tail: bool = False, label: str | None = None) -> list[str]:
+def shot_prompt_lines(shot, *, hold_tail: bool, continue_tail: bool = False, label: str | None = None, hold_line: str | None = None) -> list[str]:
     """Same request, more specific time. Shots of 4 seconds or less stay one line.
 
     hold_tail is the film's last shot. continue_tail is the last shot of an
@@ -606,7 +606,7 @@ def shot_prompt_lines(shot, *, hold_tail: bool, continue_tail: bool = False, lab
         lines.append("  分阶段：同一条视频请求内，每段只做一个运动。")
         for begin, finish, is_hold in windows:
             if is_hold:
-                text = _HOLD_LINE
+                text = hold_line or _HOLD_LINE
             else:
                 clause = clauses[motion_index] if motion_index < len(clauses) else ""
                 text = _motion_sentence(clause, index=motion_index)
@@ -618,7 +618,7 @@ def shot_prompt_lines(shot, *, hold_tail: bool, continue_tail: bool = False, lab
     duration = end - start
     if hold_tail and duration >= _tenths(HERO_HOLD_SECONDS):
         hold_at = end - _tenths(HERO_HOLD_SECONDS)
-        lines.append(f"  {hold_at / 10:g}–{end / 10:g}秒：{_HOLD_LINE}")
+        lines.append(f"  {hold_at / 10:g}–{end / 10:g}秒：{hold_line or _HOLD_LINE}")
     elif continue_tail:
         lines.append(f"  段末：{_CONTINUE_LINE}")
     return lines
