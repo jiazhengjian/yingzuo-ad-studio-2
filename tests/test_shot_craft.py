@@ -356,7 +356,7 @@ def test_initial_schema_asks_for_flow_without_changing_the_stored_contract():
     assert "product_visible" in shot["required"]
     assert shot["properties"]["product_visible"]["type"] == "boolean"
     plain = director_schema()
-    assert set(plain["properties"]) == {"title", "ad_script", "visual_direction", "shots"}
+    assert set(plain["properties"]) == {"title", "ad_script", "visual_direction", "shots", "state_changes"}
 
 
 def test_empty_flow_stays_out_of_old_plans_and_refinement_keeps_it(source):

@@ -9,8 +9,8 @@ from app.picture_rules import action_issues, state_change_issues
 from app.production import required_designs, validate_design_assets
 from app.story_logic import (
     apply_background_rewrite, background_issues, cast_distinction_issues, line_is_punchline,
-    plan_state_references, proof_highlight_issues, rewrite_background_if_needed,
-    scrub_story_purposes, shot_state_change, stamp_background_lines, state_pairing_issues,
+    align_declared_continuity, plan_state_references, proof_highlight_issues, rewrite_background_if_needed,
+    scrub_story_purposes, stamp_background_lines, state_change_warnings, state_pairing_issues,
     story_ending_issues, story_gaze_line, story_plan_issues, storyboard_content_failure,
     with_background_line,
 )
@@ -142,27 +142,29 @@ def _hair_result(shot_id="s6"):
     }
 
 
+def _declared(start_shot, result_shot, owner="product", subject="头发", start="湿", result="干顺"):
+    return {"subject_label": subject, "owner": owner, "start": start, "result": result,
+            "start_shot": start_shot, "result_shot": result_shot}
+
+
 def test_state_change_splits_the_process_shot_from_a_later_result():
     changed = _hair_process("s0", "头发已经干")
-    change = shot_state_change(changed)
-    assert change is not None and "湿" in change[0] and "已经干" in change[1]
-    assert shot_state_change({"id": "walk", "description": "她从门口走到台前。"}) is None
-    assert shot_state_change({"id": "still", "description": "瓶子停在桌角。",
-                               "continuity": {"start_state": "同一商品静置", "end_state": "同一商品静置"}}) is None
-    same_shot = {"production": {"characters": []}, "segments": [{"shots": [changed]}]}
-    assert [item["phase"] for item in plan_state_references(same_shot)] == ["start", "result"]
+    same_shot = {"production": {"characters": []}, "segments": [{"shots": [changed]}],
+                 "state_changes": [_declared("s0", "s0")]}
+    assert plan_state_references(same_shot) == []
+    assert state_change_warnings(same_shot)
     assert state_pairing_issues(same_shot) == []
     halfway = {"production": {"characters": []}, "segments": [{"shots": [_hair_process("s3", "被吹开一半")]}]}
     assert state_pairing_issues(halfway) == []
-    assert "一半" not in "".join(item["label"] for item in plan_state_references(halfway))
+    assert plan_state_references(halfway) == []
     assert "状态结果还停在半程" not in story_plan_issues(halfway, _dryer())
     plan = {"production": {"characters": []}, "segments": [{"shots": [
         _hair_process("s3", "被吹开一半"), _hair_result(),
-    ]}]}
+    ]}], "state_changes": [_declared("s3", "s6")]}
     refs = plan_state_references(plan)
     assert [item["phase"] for item in refs] == ["start", "result"]
     assert refs[0]["shot_id"] == "s3" and refs[1]["shot_id"] == "s6"
-    assert "顺" in refs[1]["label"]
+    assert refs[0]["label"] == "头发湿·起始" and refs[1]["label"] == "头发干顺·结果"
     assert "一半" not in refs[1]["label"] and "半干" not in refs[0]["label"]
     assert state_pairing_issues(plan) == []
     assert all(item["kind"] == "start_frame" for item in refs)
@@ -325,18 +327,19 @@ def test_a_dry_cut_between_shots_still_gets_start_and_result_stills():
         _state_shot("sh5", "头发仍是湿的，吹风机对着发根", "头发仍是湿的，吹风机仍握在她手里运转", "近景，一缕湿发。"),
         _state_shot("sh6", "省略继续吹干的过程后，头发已经吹干，吹风机刚停下", "头发吹干且顺，吹风机在她手里刚停", "她把已经吹干的头发从发根拨到发尾。"),
     ]
-    assert all(shot_state_change(shot) is None for shot in shots)
-    plan = {"production": {"characters": []}, "segments": [{"shots": shots}]}
+    assert plan_state_references({"production": {"characters": []}, "segments": [{"shots": shots}]}) == []
+    plan = {"production": {"characters": []}, "segments": [{"shots": shots}],
+            "state_changes": [_declared("sh5", "sh6", start="湿", result="吹干")]}
     refs = plan_state_references(plan)
     assert [item["phase"] for item in refs] == ["start", "result"]
     assert refs[0]["shot_id"] == "sh5" and refs[1]["shot_id"] == "sh6"
-    assert "湿" in refs[0]["label"] and "吹干" in refs[1]["label"]
+    assert refs[0]["label"] == "头发湿·起始" and refs[1]["label"] == "头发吹干·结果"
     assert state_pairing_issues(plan) == []
     gapped = {"production": {"characters": []}, "segments": [{"shots": [
         shots[0],
         _state_shot("sh5", "室友侧躺、脸朝房间一侧睡着", "室友保持睡姿", "过肩看床上的室友。"),
         shots[2],
-    ]}]}
+    ]}], "state_changes": [_declared("sh4", "sh6", start="湿", result="吹干")]}
     gapped_refs = plan_state_references(gapped)
     assert [item["shot_id"] for item in gapped_refs] == ["sh4", "sh6"]
     halfway = {"production": {"characters": []}, "segments": [{"shots": [
@@ -344,7 +347,7 @@ def test_a_dry_cut_between_shots_still_gets_start_and_result_stills():
         _state_shot("sh6", "头发被吹开一半", "头发被吹开一半", "头发被吹开一半。"),
     ]}]}
     assert state_pairing_issues(halfway) == []
-    assert "一半" not in "".join(item["label"] for item in plan_state_references(halfway))
+    assert plan_state_references(halfway) == []
 
 
 def test_r18b_wet_process_then_dry_result_pairs_start_and_result():
@@ -360,10 +363,10 @@ def test_r18b_wet_process_then_dry_result_pairs_start_and_result():
          "continuity": {"start_state": "室友侧躺", "end_state": "室友仍侧躺"}},
         {"id": "s05", "character_ids": ["girl"], "description": "头发已经吹干、顺下来。",
          "continuity": {"start_state": "头发已经吹干、顺下来", "end_state": "头发已经吹干、顺下来"}},
-    ]}]}
+    ]}], "state_changes": [_declared("s03", "s05", owner="girl", start="湿", result="吹干")]}
     refs = plan_state_references(plan)
     assert [(item["shot_id"], item["phase"]) for item in refs] == [("s03", "start"), ("s05", "result")]
-    assert "湿" in refs[0]["label"] and "吹干" in refs[1]["label"]
+    assert refs[0]["label"] == "头发湿·起始" and refs[1]["label"] == "头发吹干·结果"
     assert refs[0]["character_id"] == "girl" and refs[1]["character_id"] == "girl"
     designs = required_designs(plan)
     assert [item["kind"] for item in designs] == ["scene", "character", "start_frame", "start_frame"]
@@ -393,10 +396,12 @@ def test_r19_state_label_is_the_subject_and_later_shots_use_the_result_sheet():
     plan = {"production": {"speaker_id": "girl", "characters": [
         {"id": "girl", "name": "女生", "description": "炭灰软裤，居家拖鞋"},
     ]}, "segments": [{"shots": [blown, dry]}]}
+    assert plan_state_references(plan) == []
+    plan["state_changes"] = [_declared("s3", "s5", owner="girl")]
     refs = plan_state_references(plan)
     assert [item["phase"] for item in refs] == ["start", "result"]
-    assert "湿" in refs[0]["label"] and "吹风机" not in refs[0]["label"]
-    assert "干顺" in refs[1]["label"] or "干" in refs[1]["label"]
+    assert refs[0]["label"] == "头发湿·起始" and "吹风机" not in refs[0]["label"]
+    assert refs[1]["label"] == "头发干顺·结果"
     start_prompt = state_design_request({}, plan, refs[0])["prompt"]
     assert "湿" in start_prompt and "吹风机" not in start_prompt
     assert "双手空手" in start_prompt and "不要商品" in start_prompt and "不要道具" in start_prompt
@@ -422,10 +427,14 @@ def test_r19_state_label_is_the_subject_and_later_shots_use_the_result_sheet():
     }).subject_states[0].start == "湿"
     named = {"production": {"speaker_id": "girl", "characters": [
         {"id": "girl", "name": "女生", "description": "炭灰软裤，居家拖鞋"},
-    ]}, "segments": [{"shots": [declared]}]}
+    ]}, "segments": [{"shots": [declared]}],
+            "state_changes": [_declared("s3", "s3", owner="girl")]}
+    assert plan_state_references(named) == []
+    named["state_changes"] = [_declared("s3", "s5", owner="girl")]
+    named["segments"][0]["shots"].append(dry)
     named_refs = plan_state_references(named)
-    assert named_refs[0]["label"] == "她的头发湿"
-    assert named_refs[1]["label"] == "她的头发干顺"
+    assert named_refs[0]["label"] == "头发湿·起始"
+    assert named_refs[1]["label"] == "头发干顺·结果"
     assert "吹风机" not in named_refs[0]["label"] and "吹风机" not in named_refs[1]["label"]
     start_request = state_design_request({}, named, named_refs[0])
     result_request = state_design_request({}, named, named_refs[1])
@@ -470,6 +479,87 @@ def test_r19_state_label_is_the_subject_and_later_shots_use_the_result_sheet():
     assert "女生（参考图5）" in later and "结果状态参考图5" in later and "参考图4" not in later
 
 
+def test_r20_dryer_and_clothes_are_not_state_refs_and_hair_is_one_pair():
+    girl = {"id": "girl", "name": "女生", "description": "灰色卫衣，居家拖鞋，发梢半湿"}
+    shots = [
+        {"id": "s2", "character_ids": ["girl"], "description": "她按下吹风机，机器开着。",
+         "continuity": {"start_state": "主体仍关着", "end_state": "主体已经开着", "allowed_changes": "按下开关"}},
+        {"id": "s3", "character_ids": ["girl"], "description": "同一套衣服，她站在床边。",
+         "continuity": {"start_state": "同一套衣服", "end_state": "同一套衣服", "allowed_changes": ""}},
+        {"id": "s5", "character_ids": ["girl"], "description": "发梢湿成缕。",
+         "continuity": {"start_state": "头发是湿的，发梢成缕", "end_state": "头发仍是湿的", "allowed_changes": "风吹过"}},
+        {"id": "s7", "character_ids": ["girl"], "description": "头发已经干了，她拨了拨。",
+         "continuity": {"start_state": "头发已经干顺", "end_state": "头发已经干顺", "allowed_changes": ""}},
+        {"id": "s8", "character_ids": ["girl"], "description": "头发干顺，蓬松披肩。",
+         "continuity": {"start_state": "头发干顺", "end_state": "头发干顺，蓬松披肩", "allowed_changes": ""}},
+        {"id": "s9", "character_ids": ["girl"], "description": "她关掉吹风机。",
+         "continuity": {"start_state": "吹风机已经关掉", "end_state": "吹风机已经关掉", "allowed_changes": "关掉"}},
+    ]
+    declared = {"subject_label": "头发", "owner": "girl", "start": "湿，发梢成缕",
+                "result": "干顺，蓬松披肩", "start_shot": "s5", "result_shot": "s8"}
+    plan = {"production": {"speaker_id": "girl", "characters": [
+        girl, {"id": "room", "name": "室友", "description": "碎花睡衣"}]},
+        "segments": [{"duration_seconds": 15, "shots": shots}],
+        "state_changes": [
+            {"subject_label": "衣服", "owner": "nobody", "start": "皱", "result": "平",
+             "start_shot": "s3", "result_shot": "s5"},
+            {"subject_label": "吹风机", "owner": "product", "start": "关", "result": "开",
+             "start_shot": "s9", "result_shot": "s2"},
+            declared,
+            {"subject_label": "头发", "owner": "girl", "start": "乱", "result": "顺",
+             "start_shot": "s2", "result_shot": "s3"},
+        ]}
+    warnings = state_change_warnings(plan)
+    assert any("主体不存在" in item for item in warnings)
+    assert any("起始镜不在结果镜之前" in item for item in warnings)
+    assert any("只保留一条" in item for item in warnings)
+    refs = plan_state_references(plan)
+    assert [(item["shot_id"], item["phase"], item["label"]) for item in refs] == [
+        ("s5", "start", "头发湿·起始"), ("s8", "result", "头发干顺·结果")]
+    assert refs[0]["state_change_id"] == refs[1]["state_change_id"]
+    assert "衣服" not in "".join(item["subject"] for item in refs)
+    assert "主体" not in "".join(item["label"] for item in refs)
+    start_prompt = state_design_request({}, plan, refs[0])["prompt"]
+    result_prompt = state_design_request({}, plan, refs[1])["prompt"]
+    assert "半湿" not in start_prompt and "半湿" not in result_prompt
+    assert "灰色卫衣" in start_prompt and "灰色卫衣" in result_prompt
+    assert "湿，发梢成缕" in start_prompt
+    assert "干顺，蓬松披肩" in result_prompt
+    assert "吹风机" not in start_prompt and "同一套衣服" not in start_prompt
+
+
+def test_r20_dryer_handoff_follows_the_next_start_without_a_keyword_table():
+    board = {"shots": [
+        {"id": "s8", "description": "她关掉吹风机。", "continuity": {
+            "start_state": "吹风机开着", "end_state": "吹风机开着", "allowed_changes": "她把风机关上",
+            "entry_transition": "cut"}},
+        {"id": "s9", "description": "吹风机已经停了。", "continuity": {
+            "start_state": "吹风机已经关掉", "end_state": "吹风机已经关掉", "allowed_changes": "",
+            "entry_transition": "cut"}},
+    ], "state_changes": []}
+    aligned, changed = align_declared_continuity(board)
+    assert changed is True
+    assert aligned["shots"][0]["continuity"]["end_state"] == "吹风机已经关掉"
+    assert aligned["shots"][1]["continuity"]["start_state"] == "吹风机已经关掉"
+    hair = {"segments": [{"shots": [
+        {"id": "s5", "continuity": {"start_state": "湿发", "end_state": "仍湿", "entry_transition": "opening"}},
+        {"id": "s7", "continuity": {"start_state": "已经干", "end_state": "已经干", "entry_transition": "continuous"}},
+        {"id": "s8", "continuity": {"start_state": "干了一点", "end_state": "干了一点", "entry_transition": "continuous"}},
+        {"id": "s9", "continuity": {"start_state": "吹风机开着", "end_state": "吹风机开着",
+                                    "entry_transition": "continuous"}},
+    ]}], "state_changes": [_declared("s5", "s8", owner="product", start="湿，发梢成缕", result="干顺，蓬松披肩")]}
+    fixed, did = align_declared_continuity(hair)
+    assert did is True
+    states = [shot["continuity"] for shot in fixed["segments"][0]["shots"]]
+    assert states[0]["end_state"] == "湿，发梢成缕"
+    assert states[1]["start_state"] == "湿，发梢成缕" and states[1]["end_state"] == "湿，发梢成缕"
+    assert states[2]["start_state"] == "干顺，蓬松披肩" and states[2]["end_state"] == "干顺，蓬松披肩"
+    assert states[2]["entry_transition"] == "cut"
+    assert states[3]["start_state"] == "干顺，蓬松披肩"
+    again, twice = align_declared_continuity(fixed)
+    assert twice is False and again == fixed
+
+
 def test_state_references_off_gives_every_character_one_ordinary_sheet(monkeypatch):
     from app.config import Settings
     from app.story_logic import state_references_enabled
@@ -482,7 +572,7 @@ def test_state_references_off_gives_every_character_one_ordinary_sheet(monkeypat
          "continuity": {"start_state": "头发是湿的", "end_state": "头发是湿的"}},
         {"id": "s05", "character_ids": ["girl"], "description": "头发已经吹干。",
          "continuity": {"start_state": "头发已经吹干", "end_state": "头发已经吹干"}},
-    ]}]}
+    ]}], "state_changes": [_declared("s03", "s05", owner="girl", start="湿", result="吹干")]}
     monkeypatch.setenv("AD_STATE_REFERENCES", "off")
     assert state_references_enabled() is False
     assert plan_state_references(plan) == []
@@ -723,7 +813,7 @@ def test_generated_state_stills_pass_the_creative_gate(tmp_path):
     project = store.create_project("状态参考过确认", "product", duration_seconds=20)
     story = {"production": {"characters": []}, "segments": [{"shots": [
         _hair_process("s3", "被吹开一半"), _hair_result(),
-    ]}]}
+    ]}], "state_changes": [_declared("s3", "s6")]}
     refs = plan_state_references(story)
     assert [item["phase"] for item in refs] == ["start", "result"]
     saved = store.update_plan(project["id"], {"title": "先确认方案", "segments": [

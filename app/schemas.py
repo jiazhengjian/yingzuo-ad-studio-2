@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 from .strategy import DirectionCandidates, ProductBrief, StrategyRecord
 from .ad_script import AdScript, ScriptReview, script_narration, validate_script
 from .generation_policy import generation_groups, validate_generation_durations
-from .directing import VisualDirection, ShotContinuity, validate_directing_plan
+from .directing import StateChange, VisualDirection, ShotContinuity, validate_directing_plan
 from .production import ProductionPlan, validate_production_plan
 from .ad_form import AdForm
 
@@ -256,6 +256,8 @@ class Plan(BaseModel):
     script_review: ScriptReview | None = None
     video_flow: str = Field(default="", max_length=400, exclude_if=lambda value: not value,
         description="整条成片的观看顺序，供分镜对照；历史方案可缺省")
+    state_changes: list[StateChange] = Field(default_factory=list, max_length=8, exclude_if=lambda value: not value,
+        description="文字锁不住的可见外观变化。代码只按这份列表做状态参考，不从镜头正文猜测。历史方案可缺省")
 
     @field_validator("skill_trace", mode="before")
     @classmethod

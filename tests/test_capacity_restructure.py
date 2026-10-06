@@ -124,7 +124,7 @@ def test_refinement_requests_only_editable_fields_and_preserves_fixed_scene(prog
     plan = state.run()
     request = state.contexts[3]
     properties = request["schema"]["oneOf"][1]["properties"]
-    assert set(properties) == {"ad_script", "shots"}
+    assert set(properties) == {"ad_script", "shots", "state_changes"}
     assert "core_message" not in request["schema"]["$defs"]["AdScript"]["properties"]
     assert plan["title"] == "桌角轮廓"
     assert plan["visual_direction"]["scene"] == "办公桌与办公椅"

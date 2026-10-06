@@ -680,6 +680,31 @@ def _submission_retry_delays(settings):
     return tuple(delays)
 
 
+def _image_rate_limited(exc):
+    """A concurrency or rate refusal. The same unpaid image can be sent again, one at a time."""
+    status = getattr(exc, "status_code", None)
+    excerpt = " ".join(part for part in (getattr(exc, "excerpt", None), str(exc)) if isinstance(part, str))
+    if status in (408, 409, 429):
+        return True
+    return bool(_TRANSIENT_REFUSAL.search(excerpt or ""))
+
+
+def _reopen_unpaid_image(work_dir, instruction):
+    """Drop a rate-limited receipt that never received a task id so the serial pass can send it."""
+    key = instruction.get("key") if isinstance(instruction, dict) else None
+    if not isinstance(key, str) or not key:
+        return
+    path = Path(work_dir) / f"{key}_task.json"
+    if not path.is_file():
+        return
+    try:
+        receipt = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return
+    if isinstance(receipt, dict) and not receipt.get("task_id") and receipt.get("state") == "failed":
+        path.unlink(missing_ok=True)
+
+
 def _classify_submission_refusal(status, excerpt):
     """Definite HTTP refusal. Transient means the same unpaid request may be posted again."""
     if status in (401, 402):
@@ -799,16 +824,17 @@ def _generated_image(results, assets, work_dir, *, kind, character_id=None, key=
     return None
 
 
-def _start_state_image(results, assets, character_id):
+def _start_state_image(results, assets, state_change_id):
+    """The start sheet of this declared change. A later start of someone else is not used."""
+    if not isinstance(state_change_id, str) or not state_change_id:
+        return None
     pool = [item for item in (results or []) if isinstance(item, dict)]
     pool.extend(item for item in assets or [] if isinstance(item, dict))
-    for item in reversed(pool):
+    for item in pool:
         if item.get("kind") != "start_frame":
             continue
         meta = item.get("metadata") or {}
-        if meta.get("phase") != "start":
-            continue
-        if character_id and meta.get("character_id") != character_id:
+        if meta.get("phase") != "start" or meta.get("state_change_id") != state_change_id:
             continue
         path = item.get("path") or item.get("source_path")
         if path and Path(path).is_file():
@@ -816,6 +842,8 @@ def _start_state_image(results, assets, character_id):
             found["path"] = path
             found.setdefault("mime", "image/png")
             found.setdefault("kind", "start_frame")
+            if item.get("id"):
+                found["id"] = item["id"]
             return found
     return None
 
@@ -878,7 +906,7 @@ def _state_still_inputs(sources, results, assets, request, work_dir):
     if not kinds:
         return []
     if kinds == ["state_start"]:
-        sheet = _start_state_image(results, assets, request.get("character_id"))
+        sheet = _start_state_image(results, assets, request.get("state_change_id"))
         if sheet is None:
             raise ValueError("结果状态参考需要已生成的起始状态参考")
         return [sheet]
@@ -2898,6 +2926,47 @@ class Gateway:
             return False
         return state == "completed" or bool(receipt.get("url"))
 
+    async def _run_image_wave(self, instructions, produce, work_dir):
+        """Submit one wave together. A rate limit sends the rest back to one at a time."""
+        if not instructions:
+            return []
+        limit = int(getattr(self.settings, "image_concurrency", 3) or 3)
+        limit = max(1, min(limit, 8))
+        if getattr(self, "_image_force_serial", False) or limit == 1 or len(instructions) == 1:
+            return [await produce(item) for item in instructions]
+        sem = asyncio.Semaphore(limit)
+        outcomes = {}
+        fallback = False
+
+        async def one(index, item):
+            nonlocal fallback
+            if fallback:
+                return
+            async with sem:
+                if fallback:
+                    return
+                try:
+                    outcomes[index] = await produce(item)
+                except SubmissionError as exc:
+                    if exc.uncertain or not _image_rate_limited(exc):
+                        raise
+                    fallback = True
+                    outcomes[index] = exc
+
+        await asyncio.gather(*(one(index, item) for index, item in enumerate(instructions)))
+        if not fallback:
+            return [outcomes[index] for index in range(len(instructions))]
+        self._image_force_serial = True
+        ordered = []
+        for index, item in enumerate(instructions):
+            done = outcomes.get(index)
+            if done is not None and not isinstance(done, Exception):
+                ordered.append(done)
+                continue
+            _reopen_unpaid_image(work_dir, item)
+            ordered.append(await produce(item))
+        return ordered
+
     async def create_designs(self, project, assets, plan, work_dir: Path, cancelled=None, on_skill=None, on_asset=None, replace_keys=None):
         def check_cancelled():
             if cancelled and cancelled():
@@ -2931,8 +3000,11 @@ class Gateway:
         if any(item["kind"] == "scene" for item in instructions):
             await self._original_reference_url(sources[0])
         check_cancelled()
-        results = []
-        for instruction in instructions:
+        self._image_force_serial = False
+        ready = []
+        asset_lock = asyncio.Lock()
+
+        async def produce(instruction):
             kind, name, key = instruction["kind"], instruction["name"], instruction["key"]
             image_inputs = sources
             check_cancelled()
@@ -2981,7 +3053,7 @@ class Gateway:
                            "size": aspect, "resolution": "1k", "quality": "medium"}
                 image_inputs = sources
                 if kind == "start_frame":
-                    image_inputs = _state_still_inputs(sources, results, assets, design_request, work_dir)
+                    image_inputs = _state_still_inputs(sources, ready, assets, design_request, work_dir)
                 if image_inputs and kind in ("scene", "start_frame"):
                     encoded = [data_url(item) for item in image_inputs]
                     # A result sheet is an edit of the start sheet. gpt-image-2-all
@@ -3081,6 +3153,7 @@ class Gateway:
                 prompt = request.get("prompt") if isinstance(request.get("prompt"), str) else ""
             if isinstance(prompt, str) and prompt:
                 design_metadata["image_prompt"] = prompt
+            recorded_inputs = None
             if "image_inputs" in receipt:
                 recorded_inputs = _stored_image_inputs(receipt.get("image_inputs"))
                 if recorded_inputs is not None:
@@ -3093,6 +3166,8 @@ class Gateway:
                     shot_id=instruction.get("shot_id"),
                     state_label=instruction.get("label"),
                 )
+                if isinstance(instruction.get("state_change_id"), str) and instruction.get("state_change_id"):
+                    design_metadata["state_change_id"] = instruction["state_change_id"]
                 state_request = receipt.get("design_request") if isinstance(receipt.get("design_request"), dict) else {}
                 state_layout = state_request.get("sheet_layout")
                 if state_layout in ("horizontal_16x9", "grid_2x2"):
@@ -3129,12 +3204,27 @@ class Gateway:
             result = {"source_path": path, "path": path, "name": name, "kind": kind, "mime": "image/png", "metadata": {
                 "generated": True, "provider": "tudou", "model": receipt.get("model", self.settings.image_model), "provider_url": receipt["url"],
                 "task_id": receipt["task_id"], "expires_at": receipt.get("expires_at"),
-                "source_asset_ids": [a["id"] for a in (image_inputs if kind == "start_frame" else sources) if a.get("id")] if kind in ("scene", "start_frame") else [],
+                "source_asset_ids": (
+                    [item["asset_id"] for item in recorded_inputs if item.get("asset_id")]
+                    if recorded_inputs is not None else
+                    [a["id"] for a in (image_inputs if kind == "start_frame" else sources) if a.get("id")]
+                ) if kind in ("scene", "start_frame") else [],
                 **design_metadata, "review_required": review}}
-            results.append(result)
-            if on_asset is not None:
-                on_asset(result)
-        return results
+            async with asset_lock:
+                if on_asset is not None:
+                    on_asset(result)
+                ready.append(result)
+            return result
+
+        independent, dependent = [], []
+        for instruction in instructions:
+            if instruction.get("kind") == "start_frame" and instruction.get("phase") == "result":
+                dependent.append(instruction)
+            else:
+                independent.append(instruction)
+        produced = await self._run_image_wave(independent, produce, work_dir)
+        produced.extend(await self._run_image_wave(dependent, produce, work_dir))
+        return produced
 
     @staticmethod
     def _video_input_hash(segment):

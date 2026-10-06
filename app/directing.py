@@ -45,6 +45,15 @@ class SubjectState(_DirectingModel):
     result: _StateWord = Field(description="结果时主体本身的状态，短词，例如干顺；不写动作或道具")
 
 
+class StateChange(_DirectingModel):
+    subject_label: _StateSubject = Field(description="会变化的主体，例如头发。只写人的头发或一件物品，不写动作")
+    owner: _Identifier = Field(description="这个主体属于哪一位角色的 id；商品本身写 product")
+    start: _Text = Field(description="起始外观，例如湿，发梢成缕。只写看得见的样子，不写动作或道具")
+    result: _Text = Field(description="结果外观，例如干顺，蓬松披肩。只写看得见的样子，不写动作或道具")
+    start_shot: _Identifier = Field(description="还是起始外观的那一镜 id，必须早于结果镜")
+    result_shot: _Identifier = Field(description="已经变成结果外观的那一镜 id")
+
+
 class ShotContinuity(_DirectingModel):
     start_state: _Text = Field(description="镜头开始时主体的物理状态、位置或动作阶段；不要把机位或景别写进主体状态")
     allowed_changes: _Text = Field(description="本镜头允许发生的明确动作和状态变化；静止展示则明确不改变主体状态")
@@ -106,7 +115,7 @@ _CONTINUITY_FIELDS = {
 _VISUAL_FIELDS = {
     "version", "product_anchor_ids", "scene", "lighting", "color_palette", "camera_style", "sound",
 }
-_DIRECTOR_FIELDS = {"title", "video_flow", "ad_script", "visual_direction", "shots"}
+_DIRECTOR_FIELDS = {"title", "video_flow", "ad_script", "visual_direction", "shots", "state_changes"}
 _NEUTRAL_START = "画面开始时，商品和人物停在本镜将要拍到的位置。"
 _QUOTE_CLOSE = {"“": "”", "\"": "\"", "「": "」", "『": "』"}
 

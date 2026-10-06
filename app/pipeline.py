@@ -964,6 +964,7 @@ class Pipeline:
                 mime = {".png": "image/png", ".webp": "image/webp", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}.get(suffix, "image/png")
                 asset = self.store.add_asset(job["project_id"], kind, result.get("name", "视觉设计图"),
                                              result["source_path"], mime, job["revision"], metadata)
+            result["id"] = asset["id"]
             if asset["kind"] != kind or not asset["metadata"].get("generated"):
                 raise ValueError("场景图与角色图必须是本次真实生成并登记的素材")
             if kind == "character" and (asset["metadata"].get("character_id") != metadata["character_id"]

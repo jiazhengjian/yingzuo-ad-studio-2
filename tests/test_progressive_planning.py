@@ -203,7 +203,7 @@ def test_three_real_stages_own_final_seconds_and_preserve_generation_policy(prog
 
 def test_schema_has_no_model_owned_final_seconds_or_review_results():
     schema = director_schema()
-    assert set(schema["properties"]) == {"title", "ad_script", "visual_direction", "shots"}
+    assert set(schema["properties"]) == {"title", "ad_script", "visual_direction", "shots", "state_changes"}
     shot = schema["$defs"]["DirectedShot"]["properties"]
     assert not {"start", "end", "speech_spans", "narration", "passed"}.intersection(shot)
 

@@ -36,6 +36,7 @@ class Settings:
     planner_refinement_format: str = "sparse_or_full"
     planner_speculate_recommended: bool = False
     state_references_enabled: bool = True
+    image_concurrency: int = 3
     video_duration_seconds: int = 10
     max_video_submissions: int = 6
     max_active_runs: int = 1
@@ -92,6 +93,9 @@ class Settings:
             state_references_enabled = False
         else:
             raise ValueError("AD_STATE_REFERENCES must be on or off")
+        concurrency = os.getenv("IMAGE_CONCURRENCY", "3").strip()
+        if not concurrency.isdigit() or not 1 <= int(concurrency) <= 8:
+            raise ValueError("IMAGE_CONCURRENCY must be an integer from 1 to 8")
         refinements = os.getenv("PLANNER_MAX_REFINEMENTS", "2").strip()
         if refinements not in ("0", "1", "2"):
             raise ValueError("PLANNER_MAX_REFINEMENTS must be 0, 1 or 2")
@@ -122,6 +126,7 @@ class Settings:
             planner_refinement_format=refinement_format,
             planner_speculate_recommended=speculate == "true",
             state_references_enabled=state_references_enabled,
+            image_concurrency=int(concurrency),
             planner_provider=provider,
             planner_model=os.getenv("PLANNER_MODEL", "").strip() or default_model,
             tts_voice=os.getenv("TTS_VOICE", "Tingting"),

@@ -232,7 +232,7 @@ def test_full_candidate_changed_identity_keeps_remaining_estimate_repair(progres
     first, second = state.contexts[3:5]
     assert first["refinement_output_format"] == "sparse_or_full"
     assert "refinement_output_format" not in second
-    assert set(second["schema"]["properties"]) == {"ad_script", "shots"}
+    assert set(second["schema"]["properties"]) == {"ad_script", "shots", "state_changes"}
     assert second["review_feedback"]["kind"] == "unsupported_timing_reduction"
     assert second["repair_scope"] == first["repair_scope"]
     assert second["repair_scope"]["shot_ids"] == ["shot_0"]
@@ -262,7 +262,7 @@ def test_capacity_restructure_still_offers_and_accepts_complete_output(progressi
     repair = state.contexts[2]
     assert repair["repair_scope"]["allow_beat_restructure"]
     assert repair["refinement_output_format"] == "sparse_or_full"
-    assert set(repair["schema"]["oneOf"][1]["properties"]) == {"ad_script", "shots"}
+    assert set(repair["schema"]["oneOf"][1]["properties"]) == {"ad_script", "shots", "state_changes"}
     assert len(plan["ad_script"]["beats"]) == 2 and plan["plan_review"]["ready"]
 
 

@@ -167,6 +167,22 @@ _EMPTY_HANDS = "双手空手，不要商品，不要道具，背景只用白或�
 _APPEARANCE_LEAD = "外观原文照抄，脸、五官、肤色、身材、头发长度和发色、衣服、鞋子都按这句："
 
 
+def _neutral_description(description, phrases):
+    """Drop clauses that repeat a declared state phrase. The face and clothes stay."""
+    description = (description or "").strip()
+    if not description or not phrases:
+        return description
+    kept = []
+    for clause in re.split(r"[，。；、]", description):
+        clause = clause.strip()
+        if not clause:
+            continue
+        if any(isinstance(phrase, str) and phrase and phrase in clause for phrase in phrases):
+            continue
+        kept.append(clause)
+    return "，".join(kept)
+
+
 def _appearance_line(description):
     """The same face, body, outfit and shoes sentence for the start sheet and the result edit."""
     description = (description or "").strip()
@@ -189,6 +205,7 @@ def state_design_request(project, plan, instruction):
     hidden = off_camera_locked(_state_brief_text(project, plan), (plan.get("facts") or {}).get("name") or "")
     phase_name = "起始" if phase == "start" else "结果"
     person = state_sheet_person(project, plan, instruction)
+    state_text = instruction.get("state_text") if isinstance(instruction.get("state_text"), str) and instruction.get("state_text").strip() else label
     common = {
         "version": "state-sheet-v1",
         "state_id": instruction.get("state_id"),
@@ -197,9 +214,11 @@ def state_design_request(project, plan, instruction):
         "state_label": label,
         "aspect_ratio": "16:9",
     }
+    if isinstance(instruction.get("state_change_id"), str) and instruction.get("state_change_id"):
+        common["state_change_id"] = instruction["state_change_id"]
     if person is None:
         prompt = (
-            f"生成一张商品状态参考，只表现「{subject}」的{phase_name}状态：{label}。"
+            f"生成一张商品状态参考，只表现「{subject}」的{phase_name}状态：{label}。状态原文：{state_text}。"
             "干净的白或浅灰无缝背景，同一件商品，只有这一处状态不同。"
             "不要房间，不要人物，不要场景道具，不要把商品放进故事画面，不要前后对比拼图，不要可读文字。"
             "商品外形、颜色和标识以商品原图为准，不重画商标。"
@@ -209,14 +228,16 @@ def state_design_request(project, plan, instruction):
         if hidden:
             prompt += "本片不出镜：不要人脸，不要把独立发束或局部画成真人头。"
         return {**common, "reference_kinds": ["product"], "prompt": prompt}
-    description = _BUN.sub("", person.get("description") or "").strip("，,、 \n")
+    description = _neutral_description(
+        _BUN.sub("", person.get("description") or "").strip("，,、 \n"),
+        instruction.get("appearance_phrases") or [])
     hair = _hairstyle_line(_hair_source_text(plan, person))
     instructions, trace = compiler_template("ads-video-asset-prompts", "references/character-template.txt")
     instructions = apply_cast_instructions(instructions, description)
     appearance = _appearance_line(description)
     if phase == "start":
         instructions += (
-            f"\n这张是同一人的起始状态四视图，也是这个人的身份参考。只表现这一处起始状态：{label}。"
+            f"\n这张是同一人的起始状态四视图，也是这个人的身份参考。只表现这一处起始状态：{label}。状态原文：{state_text}。"
             + (hair + "\n" if hair else "\n")
             + appearance + "。"
             + _EMPTY_HANDS
@@ -228,7 +249,7 @@ def state_design_request(project, plan, instruction):
         identity_edit = False
     else:
         instructions += (
-            f"\n这是对起始状态四视图的改图，不是重画一个人。唯一主参考就是这张起始图，只把声明的状态改成：{label}。"
+            f"\n这是对起始状态四视图的改图，不是重画一个人。唯一主参考就是这张起始图，只把声明的状态改成：{label}。状态原文：{state_text}。"
             + (hair + "\n" if hair else "\n")
             + appearance + "。"
             + "脸、五官、肤色、身材、头发长度和发色、衣服、鞋子都锁在起始图上，只有这一处状态可以不同。"

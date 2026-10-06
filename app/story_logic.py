@@ -38,12 +38,6 @@ _CLAIM_VISUAL = {
     "smooth": re.compile(r"顺|梳|发丝|毛躁"),
     "ions": re.compile(r"离子|光点|微粒"),
 }
-# Reached only when a result word is present and a not-yet word is not.
-# This stays small on purpose: process words are not a third state.
-_UNFINISHED = re.compile(r"仍|还是|还没|未干|没有干|半湿|半干|一半|湿着|是湿")
-_REACHED = re.compile(r"已经|干了|吹干|干透|干燥|顺了|顺开|打开|空了|平整|见底")
-_STATEY = re.compile(r"湿|干|乱|顺|毛|关|开|满|空|皱|平|脏|净|合")
-_OBJECT_SUBJECTS = frozenset({"杯", "盖子", "瓶盖", "门", "商品"})
 _STATE_REF_ON = frozenset({"1", "true", "on", "yes"})
 _STATE_REF_OFF = frozenset({"0", "false", "off", "no"})
 _SLOGAN = re.compile(r"口号|标语")
@@ -256,243 +250,251 @@ def state_references_enabled():
     raise ValueError("AD_STATE_REFERENCES must be on or off")
 
 
-def _reached(text):
-    if not isinstance(text, str) or not text.strip() or _UNFINISHED.search(text):
-        return False
-    return bool(_REACHED.search(text))
+_STATE_FIELDS = ("subject_label", "owner", "start", "result", "start_shot", "result_shot")
 
 
-def _continuity_field(shot, key):
-    continuity = shot.get("continuity") if isinstance(shot, dict) and isinstance(shot.get("continuity"), dict) else {}
-    value = continuity.get(key)
-    return value if isinstance(value, str) else ""
+def _shot_order(shots):
+    order = {}
+    for index, shot in enumerate(shots):
+        shot_id = shot.get("id") if isinstance(shot, dict) else None
+        if isinstance(shot_id, str) and shot_id and shot_id not in order:
+            order[shot_id] = index
+    return order
 
 
-def _named_subject(*parts):
-    blob = " ".join(part for part in parts if isinstance(part, str))
-    for word in ("头发", "发丝", "盖子", "瓶盖", "杯", "门", "衣服", "商品"):
-        if word in blob:
-            return "头发" if word in ("头发", "发丝") else word
-    return "主体"
-
-
-def _state_subject(shot):
-    start = _continuity_field(shot, "start_state")
-    end = _continuity_field(shot, "end_state")
-    description = shot.get("description") if isinstance(shot.get("description"), str) else ""
-    if not _STATEY.search(" ".join((start, end, description))):
+def _plan_seconds(container):
+    if not isinstance(container, dict):
         return None
-    return _named_subject(start, end, description)
-
-
-def _clauses(text):
-    return [part.strip() for part in re.split(r"[，。；、]", text or "") if isinstance(part, str) and part.strip()]
-
-
-def _mentions_subject(clause, subject):
-    if subject and subject in clause:
-        return True
-    return bool(subject in ("头发", "发丝") and "发" in clause)
-
-
-def _declared_state(shot, subject):
-    """Planner short words win: subject=她的头发, start=湿, result=干顺."""
-    continuity = shot.get("continuity") if isinstance(shot, dict) and isinstance(shot.get("continuity"), dict) else {}
-    items = continuity.get("subject_states")
-    if not isinstance(items, list):
+    segments = container.get("segments")
+    if not isinstance(segments, list) or not segments:
         return None
-    for item in items:
-        if not isinstance(item, dict):
+    total = 0.0
+    seen = False
+    for segment in segments:
+        if not isinstance(segment, dict):
             continue
-        name, start, result = item.get("subject"), item.get("start"), item.get("result")
-        if not all(isinstance(value, str) and value.strip() for value in (name, start, result)):
+        duration = segment.get("duration_seconds")
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)):
             continue
-        name, start, result = name.strip(), start.strip(), result.strip()
-        if subject and (subject == name or subject in name or name in subject):
-            return name, start, result
-    return None
+        total += float(duration)
+        seen = True
+    return total if seen else None
 
 
-def _tight_state(clause, subject):
-    """A hair clause that never names 头发 keeps only the character before 发."""
-    clause = (clause or "").strip()
-    if subject in ("头发", "发丝") and "发" in clause and subject not in clause:
-        index = clause.rfind("发")
-        if index > 0:
-            return clause[index - 1:index]
-    return clause[:16]
-
-
-def _phase_word(text, pattern):
-    found = list(pattern.finditer(text or ""))
-    if not found:
-        return ""
-    found.sort(key=lambda item: len(item.group(0)), reverse=True)
-    return found[0].group(0)
-
-
-def _state_words(text, subject, phase):
-    """The clause about this subject. Actions and props in other clauses stay out."""
-    wanted = _UNFINISHED if phase == "start" else _REACHED
-    other = _REACHED if phase == "start" else _UNFINISHED
-    clauses = _clauses(text)
-    mentioned = [clause for clause in clauses if _mentions_subject(clause, subject)]
-    preferred = [clause for clause in mentioned if wanted.search(clause) and not other.search(clause)]
-    if preferred:
-        return _tight_state(preferred[0], subject)
-    signaled = next((clause for clause in clauses if wanted.search(clause) and not other.search(clause)), "")
-    if signaled:
-        return _phase_word(signaled, wanted)
-    if mentioned:
-        return _tight_state(mentioned[0], subject)
-    return ""
-
-
-def _compose_label(subject, words, name=None):
-    words = (words or "").strip()
-    if not words:
-        return ""
-    title = (name or subject or "").strip()
-    if title and title in words:
-        return words[:24]
-    if title:
-        return f"{title}{words}"[:24]
-    return words[:24]
-
-
-def _phase_label(shot, subject, phase):
-    declared = _declared_state(shot, subject)
-    if declared:
-        name, start, result = declared
-        word = start if phase == "start" else result
-        if word:
-            return _compose_label(subject, word, name)
-    start = _continuity_field(shot, "start_state")
-    end = _continuity_field(shot, "end_state")
-    if phase == "start":
-        text = start if start and not _reached(start) else end
-    else:
-        text = end if _reached(end) else start
-    words = _state_words(text, subject, phase) or _state_words(start or end, subject, phase)
-    return _compose_label(subject, words)
-
-
-def _start_label(shot, subject):
-    return _phase_label(shot, subject, "start")
-
-
-def _result_label(shot, subject):
-    return _phase_label(shot, subject, "result")
-
-
-def _state_character_id(container, shot, subject):
-    if subject in _OBJECT_SUBJECTS or not isinstance(shot, dict):
-        return None
-    ids = [item for item in (shot.get("character_ids") or []) if isinstance(item, str) and item]
+def _known_owners(container):
     production = container.get("production") if isinstance(container, dict) and isinstance(container.get("production"), dict) else {}
-    speaker = production.get("speaker_id")
-    if isinstance(speaker, str) and speaker in ids:
-        return speaker
-    return ids[0] if ids else None
+    owners = {"product"}
+    for person in production.get("characters") or []:
+        if isinstance(person, dict) and isinstance(person.get("id"), str) and person["id"].strip():
+            owners.add(person["id"].strip())
+    return owners
+
+
+def _change_record(item):
+    if not isinstance(item, dict):
+        return None
+    values = []
+    for key in _STATE_FIELDS:
+        value = item.get(key)
+        if not isinstance(value, str) or not value.strip():
+            return None
+        values.append(value.strip())
+    return dict(zip(_STATE_FIELDS, values))
+
+
+def accepted_state_changes(container, *, enabled_only=True):
+    """Keep structurally valid declared changes. Never invent one from shot prose."""
+    if not isinstance(container, dict) or (enabled_only and not state_references_enabled()):
+        return [], []
+    raw = container.get("state_changes")
+    if not raw:
+        return [], []
+    if not isinstance(raw, list):
+        return [], ["状态变化列表无法读取，已放下。"]
+    shots = iter_plan_shots(container)
+    order = _shot_order(shots)
+    owners = _known_owners(container)
+    seconds = _plan_seconds(container)
+    kept, warnings, seen = [], [], {}
+    for item in raw:
+        change = _change_record(item)
+        if change is None:
+            warnings.append("状态变化缺少主体、起止或镜头，已放下。")
+            continue
+        start_at, result_at = order.get(change["start_shot"]), order.get(change["result_shot"])
+        if start_at is None or result_at is None:
+            warnings.append("状态变化的镜头不存在，已放下。")
+            continue
+        if start_at >= result_at:
+            warnings.append("状态变化的起始镜不在结果镜之前，已放下。")
+            continue
+        if change["owner"] not in owners:
+            warnings.append("状态变化的主体不存在，已放下。")
+            continue
+        if seconds is not None and seconds <= 15 and seen.get(change["owner"]):
+            warnings.append("15秒及以内每个角色只保留一条状态变化，多出来的已放下。")
+            continue
+        seen[change["owner"]] = True
+        kept.append(change)
+    return kept, warnings
+
+
+def state_change_warnings(container):
+    _, warnings = accepted_state_changes(container)
+    return warnings
+
+
+def _short_state(text):
+    first = re.split(r"[，。；、]", text, maxsplit=1)[0].strip()
+    return (first or text)[:16]
+
+
+def _declared_label(subject, text, phase_name):
+    return f"{subject}{_short_state(text)}·{phase_name}"[:40]
+
+
+def state_phrases(*texts):
+    """Phrases the planner wrote for this change. Used only to un-lock that wording."""
+    phrases = []
+    for text in texts:
+        if not isinstance(text, str):
+            continue
+        for part in re.split(r"[，。；、]", text):
+            part = part.strip()
+            if part and part not in phrases:
+                phrases.append(part)
+    return phrases
+
+
+def _change_id(change, index):
+    def safe(value, fallback):
+        token = re.sub(r"[^a-zA-Z0-9_]", "_", value or "")
+        return token or fallback
+    return f"{safe(change['owner'], 'owner')}_{safe(change['start_shot'], 'start')}_{safe(change['result_shot'], 'result')}_{index}"
 
 
 def _shot_identity(shot, index):
     shot_id = shot.get("id") if isinstance(shot, dict) and isinstance(shot.get("id"), str) and shot.get("id") else f"n{index}"
-    safe = re.sub(r"[^a-zA-Z0-9_]", "_", shot_id)
-    return shot_id, safe
+    return shot_id
 
 
-def _push_state(refs, shot, index, phase, label, subject, character_id=None):
-    shot_id, safe = _shot_identity(shot, index)
+def _push_state(refs, shot, index, phase, label, subject, character_id, change_id, state_text, phrases):
+    shot_id = _shot_identity(shot, index)
     item = {
-        "key": f"state_{safe}_{phase}",
+        "key": f"state_{change_id}_{phase}",
         "kind": "start_frame",
-        "name": f"{label} · {'起始' if phase == 'start' else '结果'}",
-        "state_id": f"{safe}:{phase}",
+        "name": label,
+        "state_id": f"{change_id}:{phase}",
         "phase": phase,
         "shot_id": shot_id,
         "label": label,
         "subject": subject,
+        "state_change_id": change_id,
+        "state_text": state_text,
+        "appearance_phrases": list(phrases),
     }
     if character_id:
         item["character_id"] = character_id
     refs.append(item)
 
 
-def shot_state_change(shot):
-    """One shot that opens not-yet and closes on the result. A cut between shots stays None."""
-    if not isinstance(shot, dict):
-        return None
-    start = _continuity_field(shot, "start_state")
-    end = _continuity_field(shot, "end_state")
-    description = shot.get("description") if isinstance(shot.get("description"), str) else ""
-    if not start or not end or not _STATEY.search(start + end + description):
-        return None
-    if _reached(start) or not _reached(end):
-        return None
-    subject = _named_subject(start, end, description)
-    before, after = _start_label(shot, subject), _result_label(shot, subject)
-    if not before or not after:
-        return None
-    return before, after, subject
-
-
 def plan_state_references(container, *, limit=3):
-    """One start still and one result still per subject. The model fills the gap.
+    """One start still and one result still per declared state change.
 
-    The shot that still shows the not-yet state gets the start. The first shot
-    whose declared start or end has reached the result gets the result. Both
-    can sit on the same shot. A subject that never reaches still gets one start
-    still and does not fail the plan. At most `limit` subjects. All ad types.
-    AD_STATE_REFERENCES=off plans nothing.
+    Shot prose is not scanned. A row is kept only when both shots exist, the
+    start shot is earlier, and the owner is a known character or product.
+    Anything else is dropped. At most `limit` changes. AD_STATE_REFERENCES=off
+    plans nothing.
     """
     if not state_references_enabled():
         return []
-    groups, order = {}, []
-    for index, shot in enumerate(iter_plan_shots(container)):
-        subject = _state_subject(shot)
-        if subject is None:
-            continue
-        if subject not in groups:
-            order.append(subject)
-            groups[subject] = []
-        groups[subject].append((index, shot))
+    kept, _warnings = accepted_state_changes(container)
+    shots = iter_plan_shots(container)
+    order = _shot_order(shots)
     refs = []
-    for subject in order:
+    for index, change in enumerate(kept):
         if len(refs) >= limit * 2:
             break
-        chain = groups[subject]
-        result = next((
-            (index, shot) for index, shot in chain
-            if _reached(_continuity_field(shot, "end_state")) or _reached(_continuity_field(shot, "start_state"))
-        ), None)
-        if result is None:
-            index, shot = chain[0]
-            label = _start_label(shot, subject)
-            if label:
-                _push_state(refs, shot, index, "start", label, subject, _state_character_id(container, shot, subject))
-            continue
-        result_index, result_shot = result
-        earlier = [
-            (index, shot) for index, shot in chain
-            if index < result_index and not _reached(_continuity_field(shot, "end_state"))
-        ]
-        if earlier:
-            start_index, start_shot = earlier[-1]
-        elif not _reached(_continuity_field(result_shot, "start_state")):
-            start_index, start_shot = result_index, result_shot
-        else:
-            start_shot = None
-        if start_shot is not None:
-            label = _start_label(start_shot, subject)
-            if label:
-                _push_state(refs, start_shot, start_index, "start", label, subject,
-                            _state_character_id(container, start_shot, subject))
-        result_label = _result_label(result_shot, subject)
-        if result_label:
-            _push_state(refs, result_shot, result_index, "result", result_label, subject,
-                        _state_character_id(container, result_shot, subject))
+        change_id = _change_id(change, index)
+        phrases = state_phrases(change["start"], change["result"])
+        character_id = None if change["owner"] == "product" else change["owner"]
+        start_at, result_at = order[change["start_shot"]], order[change["result_shot"]]
+        _push_state(refs, shots[start_at], start_at, "start",
+                    _declared_label(change["subject_label"], change["start"], "起始"),
+                    change["subject_label"], character_id, change_id, change["start"], phrases)
+        _push_state(refs, shots[result_at], result_at, "result",
+                    _declared_label(change["subject_label"], change["result"], "结果"),
+                    change["subject_label"], character_id, change_id, change["result"], phrases)
     return refs
+
+
+def _continuity_of(shot):
+    continuity = shot.get("continuity") if isinstance(shot, dict) else None
+    return continuity if isinstance(continuity, dict) else None
+
+
+def _write_state(shot, key, value):
+    continuity = _continuity_of(shot)
+    if continuity is None or not isinstance(value, str) or not value or continuity.get(key) == value:
+        return False
+    continuity[key] = value
+    return True
+
+
+def align_declared_continuity(container):
+    """Line up declared appearance and the next shot's start. No keyword table.
+
+    A declared result shot opens on the result text. Every earlier shot of that
+    change still ends on the start text. Elsewhere, a shot whose start and end
+    are the same while an action is allowed takes the next shot's start as its
+    end, and a continuous next shot copies the previous end.
+    """
+    if not isinstance(container, dict):
+        return container, False
+    revised = deepcopy(container)
+    shots = iter_plan_shots(revised)
+    kept, _warnings = accepted_state_changes(revised, enabled_only=False)
+    order = _shot_order(shots)
+    result_ids = {change["result_shot"] for change in kept}
+    changed = False
+    for change in kept:
+        start_i, result_i = order[change["start_shot"]], order[change["result_shot"]]
+        for index in range(start_i, result_i):
+            changed = _write_state(shots[index], "end_state", change["start"]) or changed
+            if index + 1 < result_i:
+                changed = _write_state(shots[index + 1], "start_state", change["start"]) or changed
+        changed = _write_state(shots[result_i], "start_state", change["result"]) or changed
+        changed = _write_state(shots[result_i], "end_state", change["result"]) or changed
+        previous = _continuity_of(shots[result_i - 1]) if result_i else None
+        current = _continuity_of(shots[result_i])
+        if (isinstance(previous, dict) and isinstance(current, dict)
+                and current.get("entry_transition") == "continuous"
+                and previous.get("end_state") != current.get("start_state")):
+            current["entry_transition"] = "cut"
+            changed = True
+        if result_i + 1 < len(shots):
+            following = _continuity_of(shots[result_i + 1])
+            if isinstance(following, dict) and following.get("entry_transition") in (None, "", "continuous"):
+                changed = _write_state(shots[result_i + 1], "start_state", change["result"]) or changed
+    for index in range(len(shots) - 1):
+        nxt = shots[index + 1]
+        if isinstance(nxt, dict) and nxt.get("id") in result_ids:
+            continue
+        current, following = _continuity_of(shots[index]), _continuity_of(nxt)
+        if not isinstance(current, dict) or not isinstance(following, dict):
+            continue
+        start = current.get("start_state") if isinstance(current.get("start_state"), str) else ""
+        end = current.get("end_state") if isinstance(current.get("end_state"), str) else ""
+        allowed = current.get("allowed_changes") if isinstance(current.get("allowed_changes"), str) else ""
+        next_start = following.get("start_state") if isinstance(following.get("start_state"), str) else ""
+        if start and end and start == end and allowed.strip() and next_start and next_start != end:
+            current["end_state"] = next_start
+            end = next_start
+            changed = True
+        if following.get("entry_transition") == "continuous" and isinstance(end, str) and end and following.get("start_state") != end:
+            following["start_state"] = end
+            changed = True
+    return revised, changed
 
 
 def state_pairing_issues(container):
