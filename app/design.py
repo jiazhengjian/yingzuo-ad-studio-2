@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 from .picture_rules import off_camera_locked
-from .production import CHARACTER_SHEET_TEMPLATE, apply_cast_instructions
+from .production import CHARACTER_SHEET_TEMPLATE, apply_cast_instructions, cast_appearance_clause
 from .runtime_skills import compiler_template
 
 
@@ -164,6 +164,13 @@ def _state_phase_line(phase):
 
 
 _EMPTY_HANDS = "双手空手，不要商品，不要道具，背景只用白或浅灰。"
+_APPEARANCE_LEAD = "外观原文照抄，脸、五官、肤色、身材、头发长度和发色、衣服、鞋子都按这句："
+
+
+def _appearance_line(description):
+    """The same face, body, outfit and shoes sentence for the start sheet and the result edit."""
+    description = (description or "").strip()
+    return _APPEARANCE_LEAD + cast_appearance_clause(description) + description
 
 
 def state_design_request(project, plan, instruction):
@@ -206,31 +213,36 @@ def state_design_request(project, plan, instruction):
     hair = _hairstyle_line(_hair_source_text(plan, person))
     instructions, trace = compiler_template("ads-video-asset-prompts", "references/character-template.txt")
     instructions = apply_cast_instructions(instructions, description)
+    appearance = _appearance_line(description)
     if phase == "start":
         instructions += (
             f"\n这张是同一人的起始状态四视图，也是这个人的身份参考。只表现这一处起始状态：{label}。"
             + (hair + "\n" if hair else "\n")
+            + appearance + "。"
             + _EMPTY_HANDS
             + "不要房间，不要其他人物，不要场景里的道具，不要商品，不要场景图。"
             "不要另画一张普通角色四视图。版式不进入成片。"
             + _state_phase_line(phase)
         )
         kinds = []
+        identity_edit = False
     else:
-        outfit = f"外观原文照抄：{description}。" if description else ""
         instructions += (
-            f"\n这张是同一人的结果状态四视图。只把这一处改成结果：{label}。"
+            f"\n这是对起始状态四视图的改图，不是重画一个人。唯一主参考就是这张起始图，只把声明的状态改成：{label}。"
             + (hair + "\n" if hair else "\n")
-            + f"衣服、鞋子和头发长度与起始状态四视图完全一致，{outfit}只有这一处状态可以不同。"
+            + appearance + "。"
+            + "脸、五官、肤色、身材、头发长度和发色、衣服、鞋子都锁在起始图上，只有这一处状态可以不同。"
             + _EMPTY_HANDS
             + "不要房间，不要其他人物，不要场景里的道具，不要商品。"
             "参考图只有这一位的起始状态四视图，不要场景图，不要商品原图，不要另一张普通角色四视图。"
             + _state_phase_line(phase)
         )
         kinds = ["state_start"]
+        identity_edit = True
     context = {"name": person.get("name") or "角色", "description": description,
                "state": label, "phase": phase_name}
     return {**common, "character_id": person.get("id"), "sheet_layout": "horizontal_16x9",
             "template_version": CHARACTER_SHEET_TEMPLATE, "reference_kinds": kinds,
+            "identity_edit": identity_edit,
             "skill_trace": [trace], "prompt": instructions + "\n已确认角色与这一处状态：\n"
             + json.dumps(context, ensure_ascii=False)}

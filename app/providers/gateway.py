@@ -2935,7 +2935,13 @@ class Gateway:
                 if kind == "start_frame":
                     image_inputs = _state_still_inputs(sources, results, assets, design_request, work_dir)
                 if image_inputs and kind in ("scene", "start_frame"):
-                    payload["images"] = [data_url(item) for item in image_inputs]
+                    encoded = [data_url(item) for item in image_inputs]
+                    # A result sheet is an edit of the start sheet. gpt-image-2-all
+                    # rejects input_fidelity; the primary image is the strong lock.
+                    if design_request.get("identity_edit"):
+                        encoded = encoded[:1]
+                        payload["image"] = encoded[0]
+                    payload["images"] = encoded
                 check_cancelled()
                 receipt = {"state": "submitting", "model": self.settings.image_model, "created_at": time.time(),
                            "design_request": design_request, "kind": kind,

@@ -299,10 +299,20 @@ def test_state_sheet_request_uses_the_character_sheet_and_not_the_scene(settings
         assert "合住卧室" not in item["prompt"]
         assert "床边" not in item["prompt"]
         assert "场景图" not in item["prompt"] or "不要场景图" in item["prompt"]
+    appearance = (
+        "外观原文照抄，脸、五官、肤色、身材、头发长度和发色、衣服、鞋子都按这句："
+        "默认出镜为中国人，East Asian Chinese appearance，日常大陆长相。灰色连帽卫衣，黑长发"
+    )
+    assert appearance in state_requests[0]["prompt"]
+    assert appearance in state_requests[1]["prompt"]
+    assert "image" not in state_requests[0]
     assert "湿" in state_requests[0]["prompt"]
     assert "吹风机" not in state_requests[0]["prompt"]
+    assert "改图" in state_requests[1]["prompt"] and "不是重画一个人" in state_requests[1]["prompt"]
     assert "起始状态四视图" in state_requests[1]["prompt"]
-    assert "灰色连帽卫衣，黑长发" in state_requests[1]["prompt"]
+    assert state_requests[1]["images"] == [state_requests[1]["image"]]
+    assert len(state_requests[1]["images"]) == 1
+    assert base64.b64decode(state_requests[1]["image"].split(",", 1)[1]).decode().startswith("start_frame:char_a")
     for item in state_requests:
         assert "双手空手，不要商品，不要道具，背景只用白或浅灰。" in item["prompt"]
     sheets = [item for item in saved if item["metadata"].get("state_reference")]

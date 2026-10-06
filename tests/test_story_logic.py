@@ -427,8 +427,17 @@ def test_r19_state_label_is_the_subject_and_later_shots_use_the_result_sheet():
     assert named_refs[0]["label"] == "她的头发湿"
     assert named_refs[1]["label"] == "她的头发干顺"
     assert "吹风机" not in named_refs[0]["label"] and "吹风机" not in named_refs[1]["label"]
+    start_request = state_design_request({}, named, named_refs[0])
     result_request = state_design_request({}, named, named_refs[1])
+    appearance = (
+        "外观原文照抄，脸、五官、肤色、身材、头发长度和发色、衣服、鞋子都按这句："
+        "默认出镜为中国人，East Asian Chinese appearance，日常大陆长相。炭灰软裤，居家拖鞋"
+    )
+    assert appearance in start_request["prompt"] and appearance in result_request["prompt"]
+    assert start_request["identity_edit"] is False
+    assert result_request["identity_edit"] is True
     assert result_request["reference_kinds"] == ["state_start"]
+    assert "不是重画一个人" in result_request["prompt"]
     assert "炭灰软裤，居家拖鞋" in result_request["prompt"]
     assert "双手空手，不要商品，不要道具，背景只用白或浅灰。" in result_request["prompt"]
     segment = _segment(ad_form="scene_story")
