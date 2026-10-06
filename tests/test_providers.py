@@ -470,6 +470,7 @@ def test_image_receipts_resume_poll_and_download_without_recreating(settings, in
     assert result[0]["metadata"]["expires_at"] == 2000000000
     assert result[0]["metadata"]["source_asset_ids"] == [source["id"]]
     assert "design_request" not in result[0]["metadata"], "Legacy image receipts must not claim today's scene requirements"
+    assert "image_prompt" not in result[0]["metadata"] and "image_inputs" not in result[0]["metadata"]
     assert (folder / "scene.png").is_file() and not (folder / "product.png").exists()
     assert (folder / "product_task.json").read_bytes() == legacy_receipt
     asyncio.run(gateway.create_designs({}, [source], plan, folder))
@@ -1135,6 +1136,9 @@ def test_scene_submission_saves_actual_setting_and_resume_preserves_it(settings,
     assert '办公室茶水区，背景看见工位' in saved['prompt']
     assert '拉远时看见办公桌' not in saved['prompt']
     assert result[0]['metadata']['design_request'] == saved
+    assert result[0]['metadata']['image_prompt'] == submitted[0]['prompt']
+    assert result[0]['metadata']['image_inputs'] == [{"role": "product", "label": "商品原图", "asset_id": source["id"]}]
+    assert json.loads((tmp_path / 'scene_task.json').read_text())['image_prompt'] == submitted[0]['prompt']
     assert recorded_skills == saved['skill_trace']
     recorded_skills.clear()
     before = len(calls)
@@ -1142,6 +1146,8 @@ def test_scene_submission_saves_actual_setting_and_resume_preserves_it(settings,
     resumed = asyncio.run(gateway.create_designs({}, [source], plan, tmp_path, on_skill=recorded_skills.append))
     assert len(calls) == before, 'Recovery must reuse the saved receipt, never charge for a replacement'
     assert resumed[0]['metadata']['design_request'] == saved
+    assert resumed[0]['metadata']['image_prompt'] == submitted[0]['prompt']
+    assert resumed[0]['metadata']['image_inputs'] == [{"role": "product", "label": "商品原图", "asset_id": source["id"]}]
     assert recorded_skills == saved['skill_trace']
 
 

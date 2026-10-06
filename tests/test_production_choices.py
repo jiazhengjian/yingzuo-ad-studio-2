@@ -177,6 +177,9 @@ def test_one_contact_sheet_per_character_and_resume_never_redraws(settings, sour
     assert all(item["metadata"]["template_version"] == "chinese-horizontal-v1" for item in results[1:])
     assert len(requests) == 3 and requests[0]["images"]
     assert all("images" not in request and request["size"] == "16:9" for request in requests[1:])
+    assert results[1]["metadata"]["image_prompt"] == requests[1]["prompt"]
+    assert results[1]["metadata"]["image_inputs"] == []
+    assert results[2]["metadata"]["image_inputs"] == []
     assert {trace["compiled_resource"] for trace in traces} == {"references/scene-template.txt", "references/character-template.txt"}
     repeated = asyncio.run(gateway.create_designs({}, [source], plan, folder))
     assert len(requests) == 3 and repeated == results
@@ -321,11 +324,27 @@ def test_state_sheet_request_uses_the_character_sheet_and_not_the_scene(settings
     assert all(item["metadata"]["template_version"] == "chinese-horizontal-v1" for item in sheets)
     assert all(item["metadata"]["character_id"] == "char_a" for item in sheets)
     assert requests[0]["images"] and all(not base64.b64decode(url.split(",", 1)[1]).decode().startswith("scene:") for url in requests[0]["images"])
+    scene, start, result_sheet = saved
+    assert scene["metadata"]["image_prompt"] == requests[0]["prompt"]
+    assert scene["metadata"]["model"] == settings.image_model
+    assert scene["metadata"]["image_inputs"] == [{"role": "product", "label": "商品原图", "asset_id": source["id"]}]
+    assert start["metadata"]["image_prompt"] == state_requests[0]["prompt"]
+    assert start["metadata"]["image_inputs"] == []
+    assert result_sheet["metadata"]["image_prompt"] == state_requests[1]["prompt"]
+    assert result_sheet["metadata"]["image_inputs"] == [{"role": "state_start", "label": "起始状态参考"}]
+    receipts = [json.loads(path.read_text()) for path in (tmp_path / "designs").glob("*_task.json")]
+    result_receipt = next(item for item in receipts if "改图" in (item.get("image_prompt") or ""))
+    assert result_receipt["image_prompt"] == state_requests[1]["prompt"]
+    assert result_receipt["image_inputs"] == [{"role": "state_start", "label": "起始状态参考"}]
+    again = asyncio.run(gateway.create_designs({}, [source], plan, tmp_path / "designs"))
+    assert len(requests) == 3
+    assert again[2]["metadata"]["image_prompt"] == state_requests[1]["prompt"]
+    assert again[2]["metadata"]["image_inputs"] == [{"role": "state_start", "label": "起始状态参考"}]
 
 
 def test_state_sheet_inputs_skip_the_scene_image(tmp_path):
     from PIL import Image
-    from app.providers.gateway import _state_still_inputs
+    from app.providers.gateway import _image_input_records, _state_still_inputs
 
     scene = tmp_path / "scene.png"
     sheet = tmp_path / "character_girl.chinese-horizontal-v1.png"
@@ -345,5 +364,11 @@ def test_state_sheet_inputs_skip_the_scene_image(tmp_path):
     assert str(product) not in [item["path"] for item in result]
     goods = _state_still_inputs(sources, [], [], {"reference_kinds": ["product"]}, tmp_path)
     assert [item["id"] for item in goods] == ["product-1"]
+    assert _image_input_records("start_frame", {"reference_kinds": ["product"]}, goods) == [
+        {"role": "product", "label": "商品原图", "asset_id": "product-1"}]
+    assert _image_input_records("character", {}, sources) == []
+    assert _image_input_records(
+        "start_frame", {"reference_kinds": ["state_start"], "identity_edit": True}, [start, sources[0]]) == [
+        {"role": "state_start", "label": "起始状态参考"}]
     with pytest.raises(ValueError, match="起始状态"):
         _state_still_inputs(sources, [], [], {"reference_kinds": ["state_start"], "character_id": "girl"}, tmp_path)

@@ -53,3 +53,9 @@
 
 .plan-idea{margin:10px 0;color:#cfc4db;font-size:13px;line-height:1.7;overflow-wrap:anywhere}
 .shot-details>.shot-edit{display:flex;align-items:center;gap:6px;margin:14px 0 4px}
+
+.image-prompt-panel{display:flex;flex-direction:column;gap:8px;min-height:0}
+.image-prompt-panel h4{font-size:13px;font-weight:500}
+.image-prompt-meta{font-size:11px;line-height:1.6;color:#9a8eaa}
+.image-prompt-text{margin:0;max-height:28vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#e4dced;background:#16141c;border:1px solid #332c3c;border-radius:10px;padding:12px}
+.image-prompt-panel>.button{width:100%;min-height:36px}

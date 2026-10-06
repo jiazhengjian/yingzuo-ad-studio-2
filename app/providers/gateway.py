@@ -820,6 +820,54 @@ def _start_state_image(results, assets, character_id):
     return None
 
 
+def _image_input_records(kind, request, image_inputs):
+    """References actually attached to this submission. Never file bytes or data URLs."""
+    if kind not in ("scene", "start_frame") or not image_inputs:
+        return []
+    request = request if isinstance(request, dict) else {}
+    kinds = request.get("reference_kinds")
+    if kind == "scene" or kinds == ["product"]:
+        role, label = "product", "商品原图"
+    elif kinds == ["state_start"]:
+        role, label = "state_start", "起始状态参考"
+    elif kinds == ["character"]:
+        role, label = "character", "角色参考"
+    else:
+        role, label = "reference", "参考图"
+    sent = list(image_inputs)
+    if request.get("identity_edit"):
+        sent = sent[:1]
+    records = []
+    for item in sent:
+        if not isinstance(item, dict):
+            continue
+        record = {"role": role, "label": label}
+        asset_id = item.get("id")
+        if isinstance(asset_id, str) and asset_id:
+            record["asset_id"] = asset_id
+        records.append(record)
+    return records
+
+
+def _stored_image_inputs(value):
+    """Keep role, label and asset id. Drop anything else a receipt might carry."""
+    if not isinstance(value, list):
+        return None
+    records = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        role, label = item.get("role"), item.get("label")
+        if not isinstance(role, str) or not role.strip() or not isinstance(label, str) or not label.strip():
+            continue
+        record = {"role": role.strip(), "label": label.strip()}
+        asset_id = item.get("asset_id")
+        if isinstance(asset_id, str) and asset_id.strip():
+            record["asset_id"] = asset_id.strip()
+        records.append(record)
+    return records
+
+
 def _state_still_inputs(sources, results, assets, request, work_dir):
     """The one reference this state sheet is conditioned on. Never the scene image.
 
@@ -2945,7 +2993,9 @@ class Gateway:
                 check_cancelled()
                 receipt = {"state": "submitting", "model": self.settings.image_model, "created_at": time.time(),
                            "design_request": design_request, "kind": kind,
-                           "character_id": instruction.get("character_id")}
+                           "character_id": instruction.get("character_id"),
+                           "image_prompt": payload["prompt"],
+                           "image_inputs": _image_input_records(kind, design_request, image_inputs)}
                 atomic_json(receipt_path, receipt)
                 report_design_skill(design_request)
                 try:
@@ -3023,6 +3073,18 @@ class Gateway:
             # receipt as having been generated with today's improved prompt.
             if isinstance(receipt.get("design_request"), dict):
                 design_metadata["design_request"] = receipt["design_request"]
+            # The receipt keeps the prompt and inputs from the submission that
+            # was actually sent. A later resume must not invent either one.
+            prompt = receipt.get("image_prompt")
+            if not isinstance(prompt, str) or not prompt:
+                request = receipt.get("design_request") if isinstance(receipt.get("design_request"), dict) else {}
+                prompt = request.get("prompt") if isinstance(request.get("prompt"), str) else ""
+            if isinstance(prompt, str) and prompt:
+                design_metadata["image_prompt"] = prompt
+            if "image_inputs" in receipt:
+                recorded_inputs = _stored_image_inputs(receipt.get("image_inputs"))
+                if recorded_inputs is not None:
+                    design_metadata["image_inputs"] = recorded_inputs
             if kind == "start_frame":
                 design_metadata.update(
                     state_reference=True,
