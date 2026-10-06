@@ -1,6 +1,6 @@
 import { LoaderCircle, Pencil, RefreshCw, Sparkles, TriangleAlert, X } from 'lucide-react';
 import type { Job } from './api';
-import { cardMessage, recoveryForJob, sanitizeCardText } from './jobRecovery';
+import { cardMessage, recoveryForJob, sanitizeCardText, storyboardContentFailure } from './jobRecovery';
 
 interface Props {
   job: Job;
@@ -29,7 +29,7 @@ export default function JobRecoveryCard({ job, busy, canEditVoice, canShorten, h
     : recovery.kind === 'reconcile' ? '提交结果待核对' : retryingVideo ? '视频片段未生成' : '本次制作未完成';
   const message = cardMessage(job, recovery);
   const shownError = error ? sanitizeCardText(error) : '';
-  const issues = planning && recovery.kind === 'edit_plan' && Array.isArray(job.progress.issue_summary)
+    const issues = planning && (recovery.kind === 'edit_plan' || (recovery.kind === 'retry_planning' && storyboardContentFailure(job))) && Array.isArray(job.progress.issue_summary)
     ? job.progress.issue_summary.filter((issue): issue is string => typeof issue === 'string' && !!issue.trim() && sanitizeCardText(issue) === issue.trim()).slice(0, 4) : [];
   return <div className="alert-card" role="status"><TriangleAlert size={17}/><div>
     <strong>{title}</strong><p>{message}</p>

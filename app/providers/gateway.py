@@ -2755,7 +2755,9 @@ class Gateway:
                 last_stage_result["_diagnostic_saved"] = True
             error = ProviderError(str(exc))
             error.error_code, error.retryable = exc.error_code, False
-            if any(token in str(exc) for token in ("结构不完整", "未能满足已确认要求", "容量仍未改善")):
+            from app.story_logic import storyboard_content_failure
+            storyboard_level = storyboard_content_failure(str(exc), getattr(exc, "issue_summary", ()))
+            if any(token in str(exc) for token in ("结构不完整", "未能满足已确认要求", "容量仍未改善")) or storyboard_level:
                 error.retryable = True
                 error.retry_action = "retry_planning"
             else:

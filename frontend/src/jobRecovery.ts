@@ -13,6 +13,14 @@ export type JobRecovery =
   | { kind: 'retry_existing'; label: '继续制作' | '重新合成' }
   | { kind: 'retry_failed_segments'; label: '重试失败片段' };
 
+const STORYBOARD_CONTENT = /背景人物没有跟着床入画|背景人物朝向和前面不一致|剧情卖点没有高光证明镜|状态结果还停在半程|结果状态没有单独的结果镜|结果状态和过程写在同一镜|剧情末镜写成了英雄定格|剧情末镜人物对着镜头举着产品|剧情末镜把家用物品带出了门/;
+
+export function storyboardContentFailure(job?: Job): boolean {
+  if (!job) return false;
+  const issues = Array.isArray(job.progress?.issue_summary) ? job.progress.issue_summary.join('') : '';
+  return STORYBOARD_CONTENT.test(`${job.error || ''}${issues}`);
+}
+
 /** A failed request alone is not permission to repeat a provider submission. */
 export function recoveryForJob(job?: Job): JobRecovery | null {
   if (!job) return null;
@@ -22,6 +30,9 @@ export function recoveryForJob(job?: Job): JobRecovery | null {
   // Older planning jobs have no classification and are treated conservatively.
   if (job.kind === 'plan') {
     if (/结构不完整|未能满足已确认要求|容量仍未改善/.test(job.error || '')) return { kind: 'retry_planning', label: '继续处理' };
+    if (job.progress.error_code === 'planning_content_failed' && storyboardContentFailure(job)) {
+      return { kind: 'retry_planning', label: '继续处理' };
+    }
     if (job.progress.error_code === 'planning_configuration_failed') return { kind: 'check_connection' };
     if (job.progress.error_code === 'planning_invalid_response'
       && job.progress.retry_action === 'retry_planning' && job.progress.retryable !== false) {
@@ -116,6 +127,9 @@ export function cardMessage(job: Job, recovery: JobRecovery): string {
   }
   if (code === 'provider_auth') {
     return '生成账户的连接需要检查，已有方案和图片仍保留。';
+  }
+  if (recovery.kind === 'retry_planning' && storyboardContentFailure(job)) {
+    return '这次分镜没有通过内容检查。继续处理会重新生成分镜，已保存的需求和方向仍保留。';
   }
   if (recovery.kind === 'retry_planning' || recovery.kind === 'unavailable') return SYSTEM_FAILURE_COPY;
   if (/独立旁白方案的声音策略|视频段镜头时轴或素材结构无效/.test(job.error || '')) return SYSTEM_FAILURE_COPY;
