@@ -8,7 +8,7 @@ from .cta import strip_guidance
 from .picture_rules import prepare_prompt_shot, unlock_wet_identity
 from .production import cast_appearance_clause
 from .story_logic import (
-    _STORY_HOLD_LINE, awake_listener, rest_product_for_story_ending, rewrite_inner_shot,
+    _STORY_HOLD_LINE, awake_listener, rest_product_for_story_ending, rewrite_inner_shot, shot_awake_listener,
     state_prompt_lines, story_gaze_line, story_needs_lens, with_background_line,
 )
 from .runtime_skills import compiler_template
@@ -446,8 +446,16 @@ def _compile_grouped_video(segment, template):
     inner = (segment.get("ad_form") == "scene_story" and production
              and production.get("speech_mode") == "character_dialogue" and spans
              and not awake_listener(production, shots))
+    partial_inner = False
+    if (not inner and segment.get("ad_form") == "scene_story" and production
+            and production.get("speech_mode") == "character_dialogue" and spans):
+        partial_inner = any(
+            any(_speech_overlaps(shot, span) for span in spans) and not shot_awake_listener(production, shot)
+            for shot in shots)
     lines.extend(_voice_lines(production, director, spans, characters,
                               ad_form=segment.get("ad_form"), inner=bool(inner)))
+    if partial_inner:
+        lines.append("某一镜里没有别的醒着的人时，这一句改成她自己的内心声音，不对口型，嘴不要动。")
     from .shot_craft import shot_prompt_lines
     labels = {shot["id"]: f"镜头{index + 1}" for index, shot in enumerate(shots)}
 
@@ -473,8 +481,13 @@ def _compile_grouped_video(segment, template):
         shot = _scrub_shot(shot, people_list)
         last = index == last_index
         speaking_here = bool(spans) and any(_speech_overlaps(shot, span) for span in spans)
+        alone_here = (segment.get("ad_form") == "scene_story" and production
+                      and production.get("speech_mode") == "character_dialogue" and speaking_here
+                      and not shot_awake_listener(production, shot))
         if inner:
             shot = {**shot, "description": rewrite_inner_shot(shot.get("description") or "", speaking_here)}
+        elif alone_here:
+            shot = {**shot, "description": rewrite_inner_shot(shot.get("description") or "", True)}
         if segment.get("ad_form") == "scene_story":
             shot = {**shot, "description": with_background_line(shot.get("description") or "", shots, index)}
             if last:
@@ -498,7 +511,7 @@ def _compile_grouped_video(segment, template):
             lines.append("  出镜角色：" + "、".join(shot_labels[cid] for cid in shot["character_ids"]))
         if segment.get("ad_form") == "scene_story" and _only_guidance(shot, original_spans):
             lines.append("  本镜停在结果上，不对口型，不念链接。")
-        elif inner and speaking_here:
+        elif (inner or alone_here) and speaking_here:
             gaze = "" if story_needs_lens(shot_view) else "，不转头看镜头"
             lines.append(f"  本镜不对口型。这句是她自己的内心声音，嘴不要动{gaze}。")
         elif lip_sync:
@@ -525,7 +538,7 @@ def _compile_grouped_video(segment, template):
             lines.append("  仅局部出镜、不增加露脸：" + "、".join(shot_labels.get(cid, characters[cid]) for cid in partial)
                          + "；依实际镜头拍摄其手、头发或其他已确认局部，不把身份参考的组合版式当成本镜构图。")
         continuity = shot_view.get("continuity")
-        speaking_face = (lip_sync
+        speaking_face = (lip_sync and not alone_here
                          and any(_speech_overlaps(shot, span) for span in spans)
                          and production.get("speaker_id") in shot.get("character_ids", [])
                          and _speaker_face_visible(shot_view, *_cast_names(production, production.get("speaker_id"))))

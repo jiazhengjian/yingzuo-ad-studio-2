@@ -2283,6 +2283,8 @@ class Gateway:
             from app.planner_recovery import normalize_model_payload
             prepared = derive_authored_production_metadata(intake_strategy_response(raw, project, ask_preference=choice_enabled))
             if isinstance(prepared, dict):
+                from app.strategy import prepare_strategy_ingress
+                prepared = prepare_strategy_ingress(prepared)
                 prepared = normalize_model_payload(StrategyDecision, prepared)
             decision = StrategyDecision.model_validate(prepared)
             if choice_enabled and decision.kind in ("plan", "directions") and any(

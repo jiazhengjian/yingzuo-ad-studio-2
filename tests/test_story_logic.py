@@ -1128,6 +1128,57 @@ def test_asleep_company_becomes_inner_monologue_and_awake_company_stays_dialogue
     assert "嘴型与台词同步" in _shot_block(prompt, "镜头1 |")
 
 
+def test_a_line_said_alone_drops_lip_sync_even_when_someone_else_is_awake():
+    production = {
+        "characters": [
+            {"id": "char_xia", "name": "小夏", "description": "二十多岁"},
+            {"id": "char_ning", "name": "阿宁", "description": "二十多岁，坐在旁边，醒着"},
+        ],
+        "speaker_id": "char_xia",
+        "speech_mode": "character_dialogue",
+        "voice_description": "自然的成年女性普通话",
+    }
+    shots = [
+        {"id": "s1", "start": 0.0, "end": 4.0, "character_ids": ["char_xia", "char_ning"],
+         "description": "小夏看着醒着的阿宁，开口说第一句。"},
+        {"id": "s2", "start": 4.0, "end": 8.0, "character_ids": ["char_xia"],
+         "description": "小夏一个人把蛋糕往柜子里推，开口说第二句。"},
+    ]
+    spans = [
+        {"id": "speech_1", "start": 0.4, "end": 2.0, "shot_ids": ["s1"], "text": "你先出去。",
+         "anchors": [{"text": "你先出去。", "start": 0.4, "end": 2.0, "shot_ids": ["s1"]}]},
+        {"id": "speech_2", "start": 4.4, "end": 6.0, "shot_ids": ["s2"], "text": "再进一点点。",
+         "anchors": [{"text": "再进一点点。", "start": 4.4, "end": 6.0, "shot_ids": ["s2"]}]},
+    ]
+    plan = {"production": production, "strategy": _dryer().model_dump(),
+            "segments": [{"id": "seg_1", "duration_seconds": 8, "shots": shots, "speech_spans": spans}]}
+    notes = settle_inner_monologue(plan)
+    assert notes == ["这一镜没有醒着的人听，台词改成她自己的内心独白，不对口型。"]
+    assert "开口说" in shots[0]["description"]
+    assert "没有开口" in shots[1]["description"]
+    assert "内心独白" in shots[1]["description"]
+    prompt = compile_grouped_video({
+        "duration_seconds": 8, "generation_strategy": "continuity_v1", "ad_form": "scene_story",
+        "production": production, "shots": shots, "speech_spans": spans,
+        "reference_roles": [
+            {"index": 1, "role": "product"},
+            {"index": 2, "role": "character", "character_id": "char_xia"},
+            {"index": 3, "role": "character", "character_id": "char_ning"},
+        ],
+    })
+    first = _shot_block(prompt, "镜头1 |")
+    second = _shot_block(prompt, "镜头2 |")
+    assert "嘴型与台词同步" in first
+    assert "不对口型" not in first
+    assert "嘴型与台词同步" not in second
+    assert "不对口型" in second
+    assert "再进一点点。" in prompt
+    playbook = Path("app/skills/shared/ad-form-playbooks/scene-story.md").read_text()
+    review = Path("app/skills/ads-video-plan-review/references/plan-review.md").read_text()
+    assert "再进一点点。" in playbook and "再进一点点。" in review
+    assert "这一镜里没有另一个醒着的人" in playbook
+
+
 def test_character_sheet_does_not_wear_the_product():
     person = {"id": "char_host", "name": "小夏",
               "description": "二十多岁，穿浅色针织衫，全程佩戴银色头戴式耳机，手里拿着银色头戴式耳机。"}

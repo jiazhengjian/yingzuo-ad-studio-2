@@ -16,7 +16,7 @@ from app.direction_review import direction_review_schema, reviewed_candidates, v
 from app.planner_runtime import planner_wire_context
 from app.planning import StrategyDecision, strategy_decision_schema
 from app.providers.gateway import Gateway, ProviderError
-from app.strategy import DirectionCandidates, DirectionReviewSummary, select_rules
+from app.strategy import DirectionCandidates, DirectionReviewSummary, build_direction_candidates, prepare_strategy_ingress, select_rules
 from test_conversation_api import env
 from test_direction_selection import (
     approved_direction_review, candidates_for, concept_pool_for, historical_candidates,
@@ -171,9 +171,72 @@ def test_direction_prompt_does_not_default_to_a_plain_real_scene():
     assert "真场景演示不是创意标准" in skill
     assert "九宫格" in skill
     assert "别吵醒她" in skill
+    assert "降噪" in skill and "纯影棚" in skill
+    comparison = Path("app/skills/ads-video-creative-strategy/references/direction-comparison.md").read_text()
+    review = Path("app/skills/ads-video-plan-review/references/direction-review.md").read_text()
+    assert "纯影棚" in comparison and "ready=false" in review and "降噪" in review
     brand = Path("app/skills/shared/ad-form-playbooks/brand-tvc.md").read_text()
     assert "吹完是顺的" in brand
     assert "是它的脸" in brand
+
+
+def _brand_offer(env, *, name="降噪耳机", intent=""):
+    raw = fresh(candidates_for(env))
+    raw["brief"]["ad_form"] = "brand_tvc"
+    raw["brief"]["product_name"] = name
+    raw["brief"]["creative_intent"]["structure_preference"] = "auto"
+    raw["brief"]["creative_intent"]["reference_intent"] = intent
+    for direction, skeleton in zip(raw["directions"], ("product_visual", "world_intercut", "lifestyle")):
+        direction["film_concept"]["structure"] = skeleton
+        direction["film_concept"]["visual_skeleton"] = skeleton
+    raw["concept_pool"] = concept_pool_for(raw["directions"])
+    raw["recommended_direction_id"] = raw["directions"][0]["id"]
+    return raw
+
+
+def test_invisible_benefit_recommends_the_life_world_and_keeps_the_studio_spin(env):
+    raw = _brand_offer(env)
+    decision = StrategyDecision.model_validate(raw)
+    offered = build_direction_candidates(
+        decision.brief, decision.directions, decision.recommended_direction_id, select_rules(None))
+    assert offered.recommended_direction_id == raw["directions"][1]["id"]
+    assert any(item.film_concept.visual_skeleton == "product_visual" for item in offered.directions)
+    locked = _brand_offer(env, intent="不出镜")
+    locked_decision = StrategyDecision.model_validate(locked)
+    locked_offer = build_direction_candidates(
+        locked_decision.brief, locked_decision.directions, locked_decision.recommended_direction_id, select_rules(None))
+    assert locked_offer.recommended_direction_id == locked["directions"][0]["id"]
+    visible = _brand_offer(env, name="蓝色玻璃瓶")
+    visible_decision = StrategyDecision.model_validate(visible)
+    visible_offer = build_direction_candidates(
+        visible_decision.brief, visible_decision.directions, visible_decision.recommended_direction_id, select_rules(None))
+    assert visible_offer.recommended_direction_id == visible["directions"][0]["id"]
+
+
+def test_strategy_ingress_accepts_a_long_motif_and_a_mismatched_skeleton(env):
+    raw = _brand_offer(env)
+    long_motif = "地铁车厢里的喧闹声被一层安静慢慢推开"
+    long_proof = "她戴上耳机以后，车厢里的说话声和到站广播都被推到很远的地方，人还坐在原来的座位上。"
+    assert len(long_motif) > 16 and len(long_proof) > 40
+    for direction in raw["directions"]:
+        direction["film_concept"]["structure"] = "product_visual"
+        direction["film_concept"]["visual_motif"] = long_motif
+        direction["film_concept"]["side_proof"] = long_proof
+    raw["directions"][0]["evidence_ids"] = ["appearance", "appearance"]
+    raw["directions"][0]["production"]["characters"] = [{"id": "小夏", "name": "小夏", "description": "二十多岁"}]
+    raw["recommended_direction_id"] = "not_expanded"
+    raw["concept_pool"] = concept_pool_for(raw["directions"])
+    with pytest.raises(ValidationError):
+        StrategyDecision.model_validate(raw)
+    prepared = prepare_strategy_ingress(raw)
+    decision = StrategyDecision.model_validate(prepared)
+    assert decision.recommended_direction_id is None
+    assert {item.film_concept.structure for item in decision.directions} == {
+        "product_visual", "world_intercut", "lifestyle"}
+    assert all(len(item.film_concept.visual_motif) <= 16 for item in decision.directions)
+    assert all(len(item.film_concept.side_proof) <= 40 for item in decision.directions)
+    assert decision.directions[0].evidence_ids == ["appearance"]
+    assert decision.directions[0].production.characters[0].id.startswith("char_")
 
 
 def test_scene_story_cores_must_differ(env):

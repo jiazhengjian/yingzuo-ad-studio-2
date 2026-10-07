@@ -1089,6 +1089,277 @@ def validate_direction_offer(brief: ProductBrief, directions: list[CreativeDirec
             _record_strategy_salvage()
 
 
+_INVISIBLE_BENEFIT = re.compile(r"降噪|静音|隔音|无声|安静|配方|成分|气味|香味|香气")
+_CHAR_ID = re.compile(r"^char_[a-z0-9_]{1,40}$")
+_BRAND_SKELETONS = ("product_visual", "world_intercut", "lifestyle")
+
+
+def _clip_ingress(value, limit):
+    if not isinstance(value, str) or len(value) <= limit:
+        return value
+    clipped = clip_pitch(value, limit)
+    return clipped or value[:limit]
+
+
+def _dedupe_ids(values):
+    if not isinstance(values, list):
+        return values
+    seen = []
+    for item in values:
+        if item not in seen:
+            seen.append(item)
+    return seen
+
+
+def _fresh_character_id(value, taken):
+    raw = value if isinstance(value, str) else ""
+    slug = re.sub(r"[^a-z0-9_]", "", raw.lower()).strip("_")
+    if slug.startswith("char_"):
+        slug = slug[5:]
+    elif slug.startswith("char"):
+        slug = slug[4:].strip("_")
+    base = "char_" + (slug or "person")
+    if len(base) > 45:
+        base = base[:45].rstrip("_") or "char_person"
+    if not _CHAR_ID.fullmatch(base):
+        base = "char_person"
+    candidate = base
+    number = 2
+    while candidate in taken or not _CHAR_ID.fullmatch(candidate):
+        suffix = str(number)
+        trimmed = base[:45 - len(suffix)].rstrip("_")
+        candidate = f"{trimmed}{suffix}"
+        number += 1
+        if number > 30:
+            break
+    return candidate
+
+
+def _fit_cast(production, adjusted):
+    if not isinstance(production, dict):
+        return
+    people = production.get("characters")
+    if not isinstance(people, list):
+        return
+    taken = {person["id"] for person in people
+             if isinstance(person, dict) and isinstance(person.get("id"), str) and _CHAR_ID.fullmatch(person["id"])}
+    mapping = {}
+    for person in people:
+        if not isinstance(person, dict):
+            continue
+        old = person.get("id")
+        if not (isinstance(old, str) and _CHAR_ID.fullmatch(old)):
+            new = _fresh_character_id(old, taken)
+            taken.add(new)
+            if isinstance(old, str):
+                mapping[old] = new
+            person["id"] = new
+            adjusted.append("character_id")
+        if isinstance(person.get("name"), str) and len(person["name"]) > 60:
+            person["name"] = person["name"][:60]
+            adjusted.append("name_length")
+        description = person.get("description")
+        if not isinstance(description, str) or not description.strip():
+            person["description"] = "成年角色"
+            adjusted.append("character_description")
+        elif len(description) > 800:
+            person["description"] = _clip_ingress(description, 800)
+            adjusted.append("character_description")
+    speaker = production.get("speaker_id")
+    if isinstance(speaker, str) and speaker in mapping:
+        production["speaker_id"] = mapping[speaker]
+    for constraint in production.get("product_constraints") or []:
+        if not isinstance(constraint, dict):
+            continue
+        if isinstance(constraint.get("evidence_ids"), list):
+            deduped = _dedupe_ids(constraint["evidence_ids"])
+            if deduped != constraint["evidence_ids"]:
+                constraint["evidence_ids"] = deduped
+                adjusted.append("evidence_ids")
+        text = constraint.get("text")
+        if isinstance(text, str) and len(text) > 500:
+            constraint["text"] = _clip_ingress(text, 500)
+            adjusted.append("constraint_length")
+    voice = production.get("voice_description")
+    if isinstance(voice, str) and len(voice) > 600:
+        production["voice_description"] = _clip_ingress(voice, 600)
+        adjusted.append("voice_length")
+
+
+def _align_brand_picture(payload, adjusted):
+    """Copy the telling method onto the structure so a first draft is not rejected.
+
+    The equality is a wire check. A product film often names product_visual as
+    the structure and puts the actual skeleton in visual_skeleton. Locked
+    preferences stay on the locked skeleton.
+    """
+    brief = payload.get("brief")
+    if not isinstance(brief, dict) or brief.get("ad_form") != "brand_tvc":
+        return
+    intent = brief.get("creative_intent") if isinstance(brief.get("creative_intent"), dict) else {}
+    preference = intent.get("structure_preference") or "auto"
+    for direction in payload.get("directions") or []:
+        if not isinstance(direction, dict):
+            continue
+        concept = direction.get("film_concept")
+        if not isinstance(concept, dict):
+            continue
+        if preference in _BRAND_SKELETONS:
+            if concept.get("structure") != preference or concept.get("visual_skeleton") != preference:
+                concept["structure"] = preference
+                concept["visual_skeleton"] = preference
+                adjusted.append("skeleton")
+            continue
+        skeleton = concept.get("visual_skeleton")
+        if skeleton in _BRAND_SKELETONS and concept.get("structure") != skeleton:
+            concept["structure"] = skeleton
+            adjusted.append("skeleton")
+
+
+def _coerce_unknown_hook(value, ad_form):
+    if value in HOOK_IDS:
+        return value
+    allowed = allowed_hooks(ad_form if isinstance(ad_form, str) else None)
+    coerced = nearest_allowed_hook(value if isinstance(value, str) else "", allowed)
+    if coerced:
+        return coerced
+    ids = playbook_hook_ids(ad_form if isinstance(ad_form, str) else None)
+    return ids[0] if ids else "macro_detail"
+
+
+def prepare_strategy_ingress(payload):
+    """Make a first directions reply fit the wire schema without another model call.
+
+    Card lines are already shortened inside salvage. Motif and side proof are
+    capped earlier, by pydantic, so a 17-character motif used to reject the
+    whole offer and pay for strategy_response_repair. The same happens when
+    the recommendation names a sketch that was not expanded, a character id
+    is not char_*, or a product film's structure and skeleton disagree.
+    Creative rules still run afterwards. Merchant quotes are not rewritten.
+    """
+    if not isinstance(payload, dict) or payload.get("kind") != "directions":
+        return payload
+    result = deepcopy(payload)
+    adjusted = []
+    message = result.get("message")
+    if isinstance(message, str) and len(message) > 1000:
+        result["message"] = _clip_ingress(message, 1000)
+        adjusted.append("message_length")
+    brief = result.get("brief") if isinstance(result.get("brief"), dict) else {}
+    ad_form = brief.get("ad_form")
+    _align_brand_picture(result, adjusted)
+    for direction in result.get("directions") or []:
+        if not isinstance(direction, dict):
+            continue
+        if isinstance(direction.get("evidence_ids"), list):
+            deduped = _dedupe_ids(direction["evidence_ids"])
+            if deduped != direction["evidence_ids"]:
+                direction["evidence_ids"] = deduped
+                adjusted.append("evidence_ids")
+        if not isinstance(direction.get("audience"), str) or not direction["audience"].strip():
+            direction["audience"] = brief.get("audience") if isinstance(brief.get("audience"), str) and brief["audience"].strip() else "顾客"
+            adjusted.append("audience")
+        if not isinstance(direction.get("scenario"), str) or not direction["scenario"].strip():
+            direction["scenario"] = brief.get("scenario") if isinstance(brief.get("scenario"), str) and brief["scenario"].strip() else "使用时"
+            adjusted.append("scenario")
+        notes = direction.get("production_notes")
+        if not isinstance(notes, list) or not any(isinstance(item, str) and item.strip() for item in notes):
+            direction["production_notes"] = ["不编未确认的功效"]
+            adjusted.append("production_notes")
+        else:
+            direction["production_notes"] = [_clip_ingress(item, 500) if isinstance(item, str) else item for item in notes]
+        hook = direction.get("hook_type")
+        if hook not in HOOK_IDS:
+            direction["hook_type"] = _coerce_unknown_hook(hook, ad_form)
+            adjusted.append("hook")
+        concept = direction.get("film_concept")
+        if isinstance(concept, dict):
+            motif = concept.get("visual_motif")
+            if isinstance(motif, str) and len(motif) > 16:
+                concept["visual_motif"] = _clip_ingress(motif, 16)
+                adjusted.append("motif_length")
+            proof = concept.get("side_proof")
+            if isinstance(proof, str) and len(proof) > 40:
+                concept["side_proof"] = _clip_ingress(proof, 40)
+                adjusted.append("side_proof_length")
+        _fit_cast(direction.get("production"), adjusted)
+    for sketch in result.get("concept_pool") or []:
+        if not isinstance(sketch, dict):
+            continue
+        if isinstance(sketch.get("evidence_ids"), list):
+            deduped = _dedupe_ids(sketch["evidence_ids"])
+            if deduped != sketch["evidence_ids"]:
+                sketch["evidence_ids"] = deduped
+                adjusted.append("evidence_ids")
+        hook = sketch.get("hook_type")
+        if hook not in HOOK_IDS:
+            sketch["hook_type"] = _coerce_unknown_hook(hook, ad_form)
+            adjusted.append("hook")
+    ids = {direction.get("id") for direction in result.get("directions") or [] if isinstance(direction, dict)}
+    recommended = result.get("recommended_direction_id")
+    if recommended is not None and recommended not in ids:
+        result["recommended_direction_id"] = None
+        adjusted.append("recommended_id")
+    if adjusted:
+        logger.info("Strategy ingress adjusted: %s", json.dumps(
+            {"adjusted": sorted(set(adjusted))}, ensure_ascii=True))
+    return result
+
+
+def _benefit_texts(brief: ProductBrief) -> str:
+    parts = [brief.product_name or ""]
+    if brief.creative_intent is not None:
+        parts.extend([brief.creative_intent.use_context, brief.creative_intent.setting_requirement,
+                      brief.creative_intent.reference_intent])
+    parts.extend(fact.text for fact in brief.facts)
+    parts.extend(brief.unknowns)
+    parts.extend(brief.assumptions)
+    return "\n".join(part for part in parts if isinstance(part, str))
+
+
+def _life_result_direction(directions: list[CreativeDirection]) -> CreativeDirection | None:
+    """A real person, then a short product world. Intercut first, then lifestyle."""
+    def people(direction):
+        production = direction.production
+        return bool(production is not None and production.characters)
+
+    def skeleton(direction):
+        concept = direction.film_concept
+        if concept is None:
+            return ""
+        return concept.visual_skeleton or concept.structure
+
+    intercut = [direction for direction in directions if skeleton(direction) == "world_intercut"]
+    with_person = [direction for direction in intercut if people(direction)]
+    if with_person:
+        return with_person[0]
+    if intercut:
+        return intercut[0]
+    living = [direction for direction in directions if skeleton(direction) == "lifestyle" and people(direction)]
+    return living[0] if living else None
+
+
+def recommend_invisible_benefit(brief: ProductBrief, directions: list[CreativeDirection], recommended_id):
+    """Point the recommendation at a life result when the benefit cannot be seen.
+
+    A studio spin stays in the three. It is not removed and it is not a block.
+    不出镜 and a visible product leave the model's recommendation alone.
+    """
+    if brief.ad_form != "brand_tvc" or not _INVISIBLE_BENEFIT.search(_benefit_texts(brief)):
+        return recommended_id
+    from .picture_rules import off_camera_locked
+    if off_camera_locked(_benefit_texts(brief)):
+        return recommended_id
+    better = _life_result_direction(directions)
+    if better is None:
+        return recommended_id
+    current = next((direction for direction in directions if direction.id == recommended_id), None)
+    if current is not None and current.film_concept is not None and (
+            current.film_concept.visual_skeleton or current.film_concept.structure) in ("world_intercut", "lifestyle"):
+        return recommended_id
+    return better.id
+
+
 def build_direction_candidates(brief, directions, recommended_id, rules, *, direction_review=None) -> DirectionCandidates:
     # Reuse the same fact, category, prerequisite and provenance checks. The
     # temporary selection is never returned/persisted as a merchant decision.
@@ -1098,6 +1369,7 @@ def build_direction_candidates(brief, directions, recommended_id, rules, *, dire
         raise ValueError("请提供恰好三个不同的创意方向")
     directions = [CreativeDirection.model_validate(value) for value in directions]
     checked = build_strategy(brief, directions, directions[0].id, rules, merchant_choice=True)
+    recommended_id = recommend_invisible_benefit(checked.brief, checked.directions, recommended_id)
     return DirectionCandidates(brief=checked.brief, directions=checked.directions,
         recommended_direction_id=recommended_id, rules_used=checked.rules_used, direction_review=direction_review)
 

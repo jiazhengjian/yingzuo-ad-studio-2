@@ -51,6 +51,7 @@ _ASLEEP = re.compile(r"睡着|在睡|睡熟|酣睡|没醒|未醒")
 _AWAKE = re.compile(r"(?<!没)醒了|醒来|已经醒|坐起来")
 _LISTENER_WORDS = ("室友", "同事", "朋友", "旁边的人", "另一个人")
 _INNER_NOTE = "这一场没有醒着的人听，台词改成她自己的内心独白，不对口型。"
+_SHOT_INNER_NOTE = "这一镜没有醒着的人听，台词改成她自己的内心独白，不对口型。"
 _INNER_ACTING = "她放轻脚步，回头看一眼，屏住一点呼吸，表情松一下。这句是她的内心独白，嘴没有动。"
 _OPENING_LINE = re.compile(r"开口说(?:第\s*[0-9一二两三四五六七八九十]+\s*句)?")
 _BED = re.compile(r"床|床铺|被窝|枕头")
@@ -1325,41 +1326,37 @@ def _asleep_text(text):
     return _ASLEEP.search(text) is not None
 
 
-def awake_listener(production, shots):
-    """True when someone besides the speaker is in the scene and not asleep."""
-    if not isinstance(production, dict):
+def shot_awake_listener(production, shot):
+    """True when this shot, not the rest of the film, has someone awake besides the speaker."""
+    if not isinstance(production, dict) or not isinstance(shot, dict):
         return False
     speaker = production.get("speaker_id")
-    people = [person for person in production.get("characters") or [] if isinstance(person, dict)]
-    shots = [shot for shot in shots or [] if isinstance(shot, dict)]
-    texts = [shot.get("description") if isinstance(shot.get("description"), str) else "" for shot in shots]
-    listeners = []
+    text = shot.get("description") if isinstance(shot.get("description"), str) else ""
+    ids = shot.get("character_ids") if isinstance(shot.get("character_ids"), list) else []
+    blobs = []
     named = set()
-    for person in people:
+    for person in production.get("characters") or []:
+        if not isinstance(person, dict) or person.get("id") == speaker:
+            continue
         name = person.get("name") if isinstance(person.get("name"), str) else ""
         if name:
             named.add(name)
-        if person.get("id") == speaker:
+        if person.get("id") not in ids and not (name and name in text):
             continue
-        blobs = [person.get("description") if isinstance(person.get("description"), str) else ""]
-        present = False
-        for shot, text in zip(shots, texts):
-            ids = shot.get("character_ids") if isinstance(shot.get("character_ids"), list) else []
-            if person.get("id") in ids or (name and name in text):
-                present = True
-                blobs.append(text)
-        if present:
-            listeners.append("".join(blobs))
-    joined = "\n".join(texts)
+        desc = person.get("description") if isinstance(person.get("description"), str) else ""
+        blobs.append(desc + text)
     for word in _LISTENER_WORDS:
-        if word in named or word not in joined:
+        if word in named or word not in text:
             continue
-        blobs = [text for text in texts if word in text]
-        if blobs:
-            listeners.append("".join(blobs))
-    if not listeners:
+        blobs.append(text)
+    if not blobs:
         return False
-    return any(not _asleep_text(blob) for blob in listeners)
+    return any(not _asleep_text(blob) for blob in blobs)
+
+
+def awake_listener(production, shots):
+    """True when any shot has someone besides the speaker who is awake."""
+    return any(shot_awake_listener(production, shot) for shot in shots or [])
 
 
 def rewrite_inner_shot(description, speaking):
@@ -1385,9 +1382,22 @@ def _spoken_plan_spans(plan):
     return found
 
 
-def settle_inner_monologue(plan):
-    """After review: alone or asleep company becomes inner voice. No new hard gate.
+def _shot_speaks(shot, spans):
+    for span in spans:
+        try:
+            start, end = float(span["start"]), float(span["end"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if _overlap(shot, start, end):
+            return True
+    return False
 
+
+def settle_inner_monologue(plan):
+    """After review: a shot with no awake listener becomes inner voice. No new hard gate.
+
+    The whole film still flips when nobody awake is listening. A line said in
+    one shot where she is alone does too, even if another shot has someone awake.
     speech_mode stays character_dialogue. A second call does not stack the acting cue.
     """
     if not isinstance(plan, dict) or _form(plan.get("strategy")) != "scene_story":
@@ -1399,19 +1409,21 @@ def settle_inner_monologue(plan):
     if not spans:
         return []
     shots = iter_plan_shots(plan)
-    if awake_listener(production, shots):
-        return []
-    for shot in shots:
-        speaking = False
-        for span in spans:
-            try:
-                start, end = float(span["start"]), float(span["end"])
-            except (TypeError, ValueError, KeyError):
-                continue
-            if _overlap(shot, start, end):
-                speaking = True
-                break
+    film_inner = not awake_listener(production, shots)
+
+    def rewrite(shot, speaking):
         updated = rewrite_inner_shot(shot.get("description") or "", speaking)
         if updated != shot.get("description"):
             shot["description"] = updated
-    return [_INNER_NOTE]
+
+    if film_inner:
+        for shot in shots:
+            rewrite(shot, _shot_speaks(shot, spans))
+        return [_INNER_NOTE]
+    alone_spoken = False
+    for shot in shots:
+        if shot_awake_listener(production, shot) or not _shot_speaks(shot, spans):
+            continue
+        alone_spoken = True
+        rewrite(shot, True)
+    return [_SHOT_INNER_NOTE] if alone_spoken else []

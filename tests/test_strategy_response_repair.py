@@ -218,6 +218,24 @@ def test_invalid_appliance_response_can_be_corrected_but_still_requires_directio
     assert_no_plan_or_media(case, result)
 
 
+def test_overlong_motif_and_stray_recommendation_do_not_retry(repair_case):
+    case = repair_case
+    case.first = deepcopy(case.valid)
+    case.first["directions"][0]["film_concept"]["visual_motif"] = "地铁车厢里的喧闹声被一层安静慢慢推开"
+    case.first["directions"][0]["film_concept"]["side_proof"] = "她戴上耳机以后，车厢里的说话声和到站广播都被推到很远的地方，人还坐在原来的座位上。"
+    case.first["directions"][0]["production"]["characters"] = [
+        {"id": "小夏", "name": "小夏", "description": "二十多岁，东亚面孔"}]
+    case.first["recommended_direction_id"] = "not_expanded"
+    result = case.execute()
+    assert result["status"] == "awaiting_input", result.get("error")
+    assert case.stages() == ["strategy", "direction_review"]
+    assert all(context.get("task_kind") != "strategy_response_repair" for context in case.contexts)
+    saved = result["payload"]["direction_candidates"]["directions"]
+    assert len(saved[0]["film_concept"]["visual_motif"]) <= 16
+    assert saved[0]["production"]["characters"][0]["id"].startswith("char_")
+    assert_no_plan_or_media(case, result)
+
+
 def test_all_bad_citations_and_quotes_reach_the_single_correction(repair_case):
     case = repair_case
     case.first = deepcopy(case.valid)
