@@ -2561,10 +2561,12 @@ class Gateway:
                     refinement_format=getattr(self.settings, "planner_refinement_format", "sparse_or_full"),
                     diagnostic_settings=self.settings, cta_target=project_cta_mode(project))
                 plan["skill_trace"] = copy.deepcopy(skill_trace)
-                from app.progressive_planning import is_placeholder_plan
+                from app.progressive_planning import is_degenerate_plan
+                if is_degenerate_plan(plan):
+                    raise ProgressivePlanningError(
+                        "分镜没有完成，占位稿不是完成的方案。已有方案和素材已保留，尚未开始新的图片或视频生成",
+                        issue_summary=["占位稿不是完成的方案"])
                 ready_message = "广告方案已准备好，创意摘要和分镜见下方。需要修改，直接告诉我；确认后再准备图片。"
-                if is_placeholder_plan(plan):
-                    ready_message = "这一轮没有生成可用分镜，下面只是占位，不是完成的方案。诊断已记下。"
                 return AgentDecision.model_validate({"kind": "plan",
                     "message": ready_message,
                     "plan": plan, "planning_brief": strategy.brief.model_dump(), "skill_trace": skill_trace},
@@ -2937,8 +2939,9 @@ class Gateway:
             raise error from None
         except ProgressivePlanningError as exc:
             salvaged = getattr(exc, "compiled_plan", None)
+            from app.progressive_planning import is_degenerate_plan
             if (exc.error_code == "planning_review_incomplete" and isinstance(salvaged, dict)
-                    and salvaged.get("segments")):
+                    and salvaged.get("segments") and not is_degenerate_plan(salvaged)):
                 try:
                     brief = salvaged.get("strategy", {}).get("brief") if isinstance(salvaged.get("strategy"), dict) else None
                     return AgentDecision.model_validate({
@@ -2955,9 +2958,8 @@ class Gateway:
                 last_stage_result["_diagnostic_saved"] = True
             error = ProviderError(str(exc))
             error.error_code, error.retryable = exc.error_code, False
-            from app.story_logic import storyboard_content_failure
-            storyboard_level = storyboard_content_failure(str(exc), getattr(exc, "issue_summary", ()))
-            if any(token in str(exc) for token in ("结构不完整", "未能满足已确认要求", "容量仍未改善")) or storyboard_level:
+            from app.story_logic import planning_rerun_storyboard
+            if planning_rerun_storyboard(str(exc), getattr(exc, "issue_summary", ())):
                 error.retryable = True
                 error.retry_action = "retry_planning"
             else:

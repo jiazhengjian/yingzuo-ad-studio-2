@@ -959,14 +959,86 @@ def test_story_voiceover_is_planned_as_the_leads_own_voice(progressive_gateway):
     raw["brief"]["ad_form"] = "scene_story"
     state.strategy = StrategyRecord.model_validate(raw)
     plan = state.run()
+    assert state.calls == ["ad_script", "storyboard", "plan_review"]
     assert plan["production"]["speech_mode"] == "character_dialogue"
     assert plan["production"]["speaker_id"] == "char_worker"
     selected = next(item for item in plan["strategy"]["directions"]
                     if item["id"] == plan["strategy"]["selected_direction_id"])
     assert selected["production"]["speech_mode"] == "character_dialogue"
     assert selected["production"]["speaker_id"] == "char_worker"
+    descriptions = [shot["description"] for shot in plan["segments"][0]["shots"]]
+    assert len(descriptions) >= 2 and len(set(descriptions)) > 1
+    assert all("放在画面中间，光线稳定" not in item for item in descriptions)
     assert plan["plan_review"]["ready"] is True
-    assert "plan_review" in state.calls
+    assert plan.get("script_review") is None
+    if any("内心独白" in item for item in descriptions):
+        assert plan["production"]["speech_mode"] == "character_dialogue"
+
+
+def test_a_voiceover_story_without_the_speaker_in_frame_is_storyboarded_again(source):
+    from app.progressive_planning import ProgressivePlanningError, progressive_plan
+    strategy = chosen_strategy(source)
+    raw_strategy = strategy.model_dump()
+    raw_strategy["brief"]["ad_form"] = "scene_story"
+    strategy = StrategyRecord.model_validate(raw_strategy)
+    calls = []
+
+    async def stage_call(system, data, assets, max_tokens=7000):
+        kind = data.get("task_kind") or data.get("stage")
+        calls.append(kind)
+        if data.get("stage") == "plan_review":
+            return accepted_review(data["final_plan"])
+        if data.get("task_kind") == "storyboard_regeneration":
+            return director_output(strategy)
+        if data.get("stage") == "storyboard":
+            board = director_output(strategy)
+            for shot in board["shots"]:
+                shot["character_ids"] = []
+            return board
+        return {}
+
+    plan = asyncio.run(progressive_plan(
+        stage_call=stage_call, on_progress=lambda _phase: None, record_failure=lambda _item: None,
+        strategy=strategy, draft=None, draft_issues=[], duration=20, generation_strategy="continuity_v1",
+        assets=[source], conversation=[], merchant_request="看清蛋糕", current_plan=None,
+        cta_target="none"))
+    assert "storyboard" in calls and "storyboard_regeneration" in calls and "plan_review" in calls
+    assert plan["plan_review"]["ready"] is True
+    assert plan["production"]["speech_mode"] == "character_dialogue"
+    assert plan["production"]["speaker_id"] == "char_worker"
+    descriptions = [shot["description"] for shot in plan["segments"][0]["shots"]]
+    assert len(set(descriptions)) > 1
+    assert all("放在画面中间，光线稳定" not in item for item in descriptions)
+
+
+def test_identical_shot_text_is_not_marked_ready(source):
+    from app.progressive_planning import ProgressivePlanningError, is_degenerate_plan, progressive_plan
+    strategy = chosen_strategy(source)
+    calls = []
+
+    async def stage_call(system, data, assets, max_tokens=7000):
+        calls.append(data.get("stage"))
+        if data.get("stage") == "plan_review":
+            return accepted_review(data["final_plan"])
+        if data.get("stage") == "storyboard":
+            board = director_output(strategy)
+            for shot in board["shots"]:
+                shot["description"] = "巧克力蛋糕放在画面中间，光线稳定。"
+            return board
+        return {}
+
+    with pytest.raises(ProgressivePlanningError, match="占位稿不是完成的方案"):
+        asyncio.run(progressive_plan(
+            stage_call=stage_call, on_progress=lambda _phase: None, record_failure=lambda _item: None,
+            strategy=strategy, draft=None, draft_issues=[], duration=20, generation_strategy="continuity_v1",
+            assets=[source], conversation=[], merchant_request="看清蛋糕", current_plan=None,
+            cta_target="none"))
+    assert "storyboard" in calls and "plan_review" in calls
+    board = director_output(strategy)
+    for shot in board["shots"]:
+        shot["description"] = "巧克力蛋糕放在画面中间，光线稳定。"
+    compiled, _, _ = compile_director(board, strategy, 20, "continuity_v1", [source["id"]], cta_target="none")
+    assert is_degenerate_plan(compiled)
 
 
 def test_story_explainer_is_rewritten_before_the_plan_is_ready(progressive_gateway, monkeypatch):

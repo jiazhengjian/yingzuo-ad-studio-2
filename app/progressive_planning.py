@@ -1164,6 +1164,14 @@ def _review_score(review):
     return ready + align_ready + passed * 5 - failed * 3 - suggestions
 
 
+def _shot_descriptions(plan):
+    shots = [shot for segment in (plan.get("segments") or []) for shot in (segment.get("shots") or [])
+             if isinstance(segment, dict)]
+    if not shots:
+        shots = plan.get("shots") or []
+    return [shot.get("description") or "" for shot in shots if isinstance(shot, dict)]
+
+
 def is_placeholder_plan(plan):
     """The built-in two-line board. It is not a finished ad."""
     if not isinstance(plan, dict):
@@ -1172,11 +1180,25 @@ def is_placeholder_plan(plan):
     lines = [beat.get("narration") for beat in beats if isinstance(beat, dict) and (beat.get("narration") or "").strip()]
     if lines != ["看这里。", "就是这个。"]:
         return False
-    shots = [shot for segment in (plan.get("segments") or []) for shot in (segment.get("shots") or [])]
-    if not shots:
-        shots = plan.get("shots") or []
-    descriptions = [shot.get("description") or "" for shot in shots if isinstance(shot, dict)]
+    descriptions = _shot_descriptions(plan)
     return bool(descriptions) and all("放在画面中间" in item for item in descriptions)
+
+
+def is_degenerate_plan(plan):
+    """A local template, or a board whose shots all say the same thing.
+
+    The two-line placeholder is one case. A template filled with the draft's
+    own lines is another: every shot still says the product sits in the middle.
+    Identical shot text is the same failure even after an inner-voice cue is pasted on.
+    """
+    if not isinstance(plan, dict):
+        return False
+    if is_placeholder_plan(plan):
+        return True
+    descriptions = [item.strip() for item in _shot_descriptions(plan)]
+    if len(descriptions) >= 2 and descriptions[0] and len(set(descriptions)) == 1:
+        return True
+    return bool(descriptions) and all("放在画面中间，光线稳定" in item for item in descriptions)
 
 
 def choose_accepted_plan(candidates, skeleton=None):
@@ -1186,7 +1208,7 @@ def choose_accepted_plan(candidates, skeleton=None):
         if not isinstance(item, dict):
             continue
         plan = item.get("plan")
-        if not isinstance(plan, dict) or is_placeholder_plan(plan):
+        if not isinstance(plan, dict) or is_degenerate_plan(plan):
             continue
         review = item.get("review") if item.get("review") is not None else plan.get("plan_review")
         checks = review.get("checks") if isinstance(review, dict) else None
@@ -1398,7 +1420,20 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
         return bool(spoken) and brand_stack_remaining(
             {"beats": spoken}, strategy, locked, plan, duration)
 
+    def unfinished_board():
+        raise ProgressivePlanningError(
+            "分镜没有完成，占位稿不是完成的方案。已有方案和素材已保留，尚未开始新的图片或视频生成",
+            issue_summary=["占位稿不是完成的方案"], repair_attempts=repairs)
+
+    def usable(plan):
+        return isinstance(plan, dict) and bool(plan.get("segments")) and not is_degenerate_plan(plan)
+
     def release(plan):
+        if is_degenerate_plan(plan):
+            record_failure({"nonblocking": True,
+                            "message": "分镜阶段没有留下可用内容，占位稿不是完成的方案",
+                            "issues": ["fallback_skeleton"], "error_code": "fallback_skeleton"})
+            unfinished_board()
         if stacked_plan(plan):
             record_failure(plan)
             raise ProgressivePlanningError(
@@ -1419,24 +1454,19 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
         return plan
 
     if raw is None:
-        limit = profile.max_beat_characters
-        kept_lines = [line for line in (_draft_lines(draft) or list(locked)) if len(line) <= limit]
-        if kept_lines:
-            record_failure({"nonblocking": True, "message": "分镜没有返回，已沿用已有台词",
-                            "issues": ["storyboard"], "error_code": "storyboard_kept_lines"})
-            raw = brand_hold(kept_lines)
-        else:
-            record_failure({"nonblocking": True,
-                            "message": "分镜阶段没有留下可用内容，占位稿不是完成的方案",
-                            "issues": ["fallback_skeleton"], "error_code": "fallback_skeleton"})
-            raw = _mark_skeleton(brand_hold(locked))
+        record_failure({"nonblocking": True,
+                        "message": "分镜阶段没有留下可用内容，占位稿不是完成的方案",
+                        "issues": ["fallback_skeleton"], "error_code": "fallback_skeleton"})
+        raise ProgressivePlanningError(
+            "分镜没有完成，占位稿不是完成的方案。已有方案和素材已保留，尚未开始新的图片或视频生成",
+            issue_summary=["占位稿不是完成的方案"])
     repairs = 0
     last_valid_plan = None
     real_candidates = []
     skeleton_logged = False
 
     def remember(plan, review=None):
-        if not isinstance(plan, dict) or is_placeholder_plan(plan):
+        if not isinstance(plan, dict) or is_degenerate_plan(plan):
             return
         script = (plan or {}).get("ad_script") or {}
         from .story_logic import story_plan_issues
@@ -1503,6 +1533,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     craft_accepted = False
     schema_recovery_used = False
     fallback_installed = False
+    voice_board_regenerated = False
     selected_evidence_restored = False
     narration_shrunk = False
     state_warnings_recorded = False
@@ -1525,9 +1556,9 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 error_code=error_code) from None
         if error_code == "planning_review_incomplete":
             chosen = best_real()
-            if chosen is None and isinstance(last_valid_plan, dict) and not is_placeholder_plan(last_valid_plan):
+            if not usable(chosen) and usable(last_valid_plan):
                 chosen = last_valid_plan
-            if isinstance(chosen, dict) and chosen.get("segments"):
+            if usable(chosen):
                 cleaned = deepcopy(chosen)
                 cleaned.pop("plan_review", None)
                 record_failure({"nonblocking": True, "message": message,
@@ -1540,32 +1571,13 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
         if not accept:
             raise RevisionKept from None
         chosen = best_real()
-        if chosen is None and last_valid_plan is not None and not is_placeholder_plan(last_valid_plan):
+        if not usable(chosen) and usable(last_valid_plan):
             chosen = last_valid_plan
-        if chosen is None:
-            limit = profile.max_beat_characters
-            kept_lines = [line for line in (_draft_lines(draft) or list(locked)) if len(line) <= limit]
-            log_skeleton() if not kept_lines else record_failure({
-                "nonblocking": True, "message": "分镜没有返回，已沿用已有台词",
-                "issues": ["storyboard"], "error_code": "storyboard_kept_lines"})
-            try:
-                chosen, _, _ = await asyncio.to_thread(
-                    compile_director, brand_hold(kept_lines or locked), strategy, duration,
-                    generation_strategy, [asset["id"] for asset in assets], locked, cta_target)
-            except (ValueError, KeyError, TypeError, ValidationError):
-                if not kept_lines:
-                    raise ProgressivePlanningError(message + "。已有方案和素材已保留，尚未开始新的图片或视频生成",
-                        issue_summary=list(issues.values()), repair_attempts=repairs,
-                        error_code=error_code) from None
-                log_skeleton()
-                try:
-                    chosen, _, _ = await asyncio.to_thread(
-                        compile_director, brand_hold(locked), strategy, duration, generation_strategy,
-                        [asset["id"] for asset in assets], locked, cta_target)
-                except (ValueError, KeyError, TypeError, ValidationError):
-                    raise ProgressivePlanningError(message + "。已有方案和素材已保留，尚未开始新的图片或视频生成",
-                        issue_summary=list(issues.values()), repair_attempts=repairs,
-                        error_code=error_code) from None
+        if not usable(chosen):
+            raise ProgressivePlanningError(
+                message + "。已有方案和素材已保留，尚未开始新的图片或视频生成",
+                issue_summary=list(issues.values()) or ["占位稿不是完成的方案"],
+                repair_attempts=repairs, error_code=error_code)
         raise _PlanAccepted(chosen)
 
     async def refine(before, scope, feedback, issues, *, plan=None, schedule=None, bound_review=None):
@@ -1752,20 +1764,33 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                             continue
                         if not fallback_installed:
                             chosen = best_real()
-                            if chosen is not None:
+                            if usable(chosen):
                                 raise _PlanAccepted(chosen)
                             log_skeleton()
-                            limit = profile.max_beat_characters
-                            kept_lines = [line for line in (_draft_lines(draft) or list(locked)) if len(line) <= limit]
-                            raw = _mark_skeleton(brand_hold(kept_lines or locked))
                             fallback_installed = True
-                            continue
+                            await stop("分镜没有完成，占位稿不是完成的方案",
+                                       {("contract",): "占位稿不是完成的方案"})
                     record_failure(None)
                     await stop("本次方案结构不完整，暂未采用", {("contract",): "方案结构、商品依据或已确认内容需要调整"})
                 except ValueError:
                     record_failure(None)
                     await stop("本次方案结构不完整，暂未采用", {("contract",): "方案结构、商品依据或已确认内容需要调整"})
                 text = str(error)
+                if "说话窗口须包含已确认的说话角色" in text and not voice_board_regenerated:
+                    # A replayed voiceover board has no speaker in the talking shots.
+                    # Ask for the storyboard again instead of filling in the template.
+                    voice_board_regenerated = True
+                    progress("storyboarding")
+                    regen_payload = {**data, "task_kind": "storyboard_regeneration",
+                        "repair_instruction": "声音是这个主角自己的对白。每个说话的镜头都要出现这个角色，不要写成没有人的产品摆拍。只返回完整分镜。"}
+                    try:
+                        raw = await stage_call(director_system, regen_payload, assets)
+                    except Exception as regen_error:
+                        _reraise_terminal(regen_error)
+                        record_failure(None)
+                        await stop("分镜没有完成，占位稿不是完成的方案",
+                                   {("contract",): "占位稿不是完成的方案"})
+                    continue
                 if "无人声" in text:
                     record_failure(None)
                     await stop("本次方案未能满足已确认要求，暂未采用",
@@ -1836,9 +1861,11 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 continue
             if current_is_skeleton:
                 chosen = best_real()
-                if chosen is not None:
+                if usable(chosen):
                     raise _PlanAccepted(chosen)
                 log_skeleton()
+                await stop("分镜没有完成，占位稿不是完成的方案",
+                           {("contract",): "占位稿不是完成的方案"})
             spoken = coordinated.get("ad_script") or {}
             # One local pass, including a fallback board. A second benefit is
             # blanked before any model rewrite and before this draft can be saved.
@@ -2068,10 +2095,12 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 review = with_line_focus_suggestions(review, plan, strategy, locked)
                 plan["plan_review"] = review.model_dump()
                 remember(plan, review)
-                if is_placeholder_plan(plan):
+                if is_degenerate_plan(plan):
                     chosen = best_real()
-                    if chosen is not None and not is_placeholder_plan(chosen):
+                    if usable(chosen):
                         return release(chosen)
+                    await stop("分镜没有完成，占位稿不是完成的方案",
+                               {("contract",): "占位稿不是完成的方案"})
                 return release(plan)
             record_failure(plan)
             feedback = review.model_dump(exclude={"reviewed_plan_sha256", "reviewed_reference_asset_ids"})

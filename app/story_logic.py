@@ -969,8 +969,16 @@ async def rewrite_background_if_needed(stage_call, director, plan):
     return True, revised
 
 
-def storyboard_content_failure(message="", issues=()):
-    """True when a saved storyboard failed a shot-level check and must be written again."""
+_RERUN_STORYBOARD_TOKENS = (
+    "结构不完整",
+    "未能满足已确认要求",
+    "容量仍未改善",
+    "声音方式和广告类型对不上",
+    "占位稿不是完成的方案",
+)
+
+
+def _failure_text(message="", issues=()):
     text = str(message or "")
     if isinstance(issues, dict):
         text += "".join(str(value) for value in issues.values())
@@ -978,7 +986,24 @@ def storyboard_content_failure(message="", issues=()):
         text += "".join(str(value) for value in issues)
     else:
         text += str(issues or "")
-    return any(token in text for token in _STORYBOARD_CONTENT_MARKERS)
+    return text
+
+
+def storyboard_content_failure(message="", issues=()):
+    """True when a saved storyboard failed a shot-level check and must be written again."""
+    return any(token in _failure_text(message, issues) for token in _STORYBOARD_CONTENT_MARKERS)
+
+
+def planning_rerun_storyboard(message="", issues=()):
+    """True when a retry must write the storyboard again instead of replaying it.
+
+    A voice mismatch and a local template are included. Replaying the board that
+    already failed, or the template that replaced it, skips storyboarding and review.
+    """
+    text = _failure_text(message, issues)
+    if any(token in text for token in _STORYBOARD_CONTENT_MARKERS):
+        return True
+    return any(token in text for token in _RERUN_STORYBOARD_TOKENS)
 
 
 def rest_product_for_story_ending(shot):
@@ -1500,7 +1525,8 @@ def settle_inner_monologue(plan):
 
     The whole film still flips when nobody awake is listening. A line said in
     one shot where she is alone does too, even if another shot has someone awake.
-    speech_mode stays character_dialogue. A second call does not stack the acting cue.
+    The stored speech mode stays character_dialogue: this is the lead's own voice,
+    not a product-film voiceover. A second call does not stack the acting cue.
     """
     if not isinstance(plan, dict) or _form(plan.get("strategy")) != "scene_story":
         return []

@@ -47,7 +47,8 @@ def test_nonempty_unknown_field_is_dropped_and_the_plan_compiles(source):
     assert "sound_extra" not in plan["segments"][0]["shots"][0]["continuity"]
 
 
-def test_schema_failure_repairs_then_regenerates_and_still_returns_a_plan(source):
+def test_schema_failure_repairs_then_regenerates_and_does_not_keep_the_template(source):
+    from app.progressive_planning import ProgressivePlanningError
     strategy = chosen_strategy(source)
     calls = []
 
@@ -61,13 +62,14 @@ def test_schema_failure_repairs_then_regenerates_and_still_returns_a_plan(source
                 "entry_transition": "cut", "sound_extra": None, "start_state_note": ""}}]}
         return {}
 
-    plan = asyncio.run(progressive_plan(
-        stage_call=stage_call, on_progress=lambda _phase: None, record_failure=lambda _item: None,
-        strategy=strategy, draft=None, draft_issues=[], duration=20, generation_strategy="continuity_v1",
-        assets=[source], conversation=[], merchant_request="看清瓶子", current_plan=None, skip_review=True))
+    with pytest.raises(ProgressivePlanningError, match="占位稿不是完成的方案"):
+        asyncio.run(progressive_plan(
+            stage_call=stage_call, on_progress=lambda _phase: None, record_failure=lambda _item: None,
+            strategy=strategy, draft=None, draft_issues=[], duration=20, generation_strategy="continuity_v1",
+            assets=[source], conversation=[], merchant_request="看清瓶子", current_plan=None, skip_review=True))
     assert "storyboard_repair" in calls
     assert "storyboard_regeneration" in calls
-    assert plan["segments"] and plan["segments"][0]["shots"]
+    assert "plan_review" not in calls
 
 
 def test_sparse_revision_falls_back_to_the_previous_plan(source):
@@ -180,6 +182,33 @@ def test_line_content_failure_keeps_the_saved_storyboard(tmp_path):
     stages = [entry["stage"] for entry in retried["payload"]["planning_checkpoint"]["entries"]]
     assert stages == ["strategy", "storyboard"]
     assert retried["payload"]["planning_checkpoint"]["entries"][1]["state"] == "ready"
+
+
+def test_voice_mismatch_retry_drops_the_saved_storyboard(tmp_path):
+    store = Store(tmp_path / "studio.sqlite3", tmp_path / "media")
+    project = store.create_project("巧克力蛋糕", "product")
+    job = store.create_turn(project["id"], {
+        "client_turn_id": "plan-voice", "expected_context_version": 0, "content": "蛋糕广告"})
+    checkpoint = {"version": 1, "scope": fingerprint({"project": project["id"]}),
+        "request_count": 4, "transient_retries": 0, "empty_retries": 0, "manual_retries": 0,
+        "entries": [
+            {"stage": "ad_script", "input_hash": fingerprint("script"), "state": "ready",
+             "attempts": 1, "result": {"completed": "script"}},
+            {"stage": "storyboard", "input_hash": fingerprint("storyboard"), "state": "ready",
+             "attempts": 1, "result": {"shots": [{"description": "旁白介绍蛋糕。"}]}},
+            {"stage": "ad_script", "input_hash": fingerprint("line"), "state": "ready",
+             "attempts": 1, "result": {"lines": [{"beat_id": "b0", "narration": "看这里。"}]}}]}
+    store.update_job(job["id"], status="failed",
+        error="声音方式和广告类型对不上，这次不采用。已有方案和素材已保留，尚未开始新的图片或视频生成",
+        payload={**job["payload"], "planning_checkpoint": checkpoint},
+        progress={"error_code": "planning_content_failed", "retryable": False, "retry_action": "edit_plan",
+                  "issue_summary": ["声音方式和广告类型对不上"]})
+    store.set_project_status(project["id"], job["revision"], "failed")
+    retried = store.retry_planning_job(project["id"], job["id"])
+    stages = [entry["stage"] for entry in retried["payload"]["planning_checkpoint"]["entries"]]
+    assert retried["status"] == "queued"
+    assert stages == ["ad_script"]
+    assert retried["payload"]["planning_checkpoint"]["manual_retries"] == 1
 
 
 def _form_strategy(source, form):

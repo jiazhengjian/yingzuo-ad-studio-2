@@ -89,7 +89,7 @@ RECOVERY_PATHS = (
      "handling": "留下原稿，继续到参考图确认，不因此停住"},
     {"path": "fallback_skeleton", "klass": "b",
      "where": "分镜阶段没有留下任何可用稿",
-     "handling": "先再请求一次完整分镜；仍没有就记下占位稿，不把它当成完成的方案，也不用它替换已有稿"},
+     "handling": "先再请求一次完整分镜；仍没有就停下，占位稿不能标成完成的方案，也不替换已有稿"},
     {"path": "skill_trace_cap", "klass": "b",
      "where": "服务端累积的 skill_trace 超过方案上限",
      "handling": "去重后只保留最近的记录，校验前截断，记账不能停任务"},

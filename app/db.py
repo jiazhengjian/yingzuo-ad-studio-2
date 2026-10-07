@@ -418,13 +418,11 @@ class Store:
             if merchant_stop(progress.get("error_code"), job.get("error"),
                              progress.get("issue_summary"), progress.get("retry_action")):
                 raise StaleRevision("本次方案需要调整，请通过输入框说明修改要求；已有成果仍保留")
-            from .story_logic import storyboard_content_failure
-            structure_resume = any(token in str(job.get("error") or "")
-                                    for token in ("结构不完整", "未能满足已确认要求", "容量仍未改善"))
-            # A shot-level content failure is stored on the finished storyboard.
-            # Reopening only the last dialogue rewrite would replay that board.
-            storyboard_resume = storyboard_content_failure(job.get("error"), progress.get("issue_summary"))
-            if structure_resume or storyboard_resume:
+            from .story_logic import planning_rerun_storyboard
+            # A shot-level content failure, a voice mismatch, or a local template
+            # is stored after the storyboard call already returned. Reopening only
+            # the last dialogue rewrite would replay that board and skip review.
+            if planning_rerun_storyboard(job.get("error"), progress.get("issue_summary")):
                 if isinstance(checkpoint, dict):
                     resumed = drop_storyboard_checkpoint(checkpoint)
                     payload = {**payload, "planning_checkpoint": resumed} if resumed is not None else {

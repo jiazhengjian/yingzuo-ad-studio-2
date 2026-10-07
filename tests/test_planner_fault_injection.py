@@ -2,6 +2,8 @@
 import asyncio
 import json
 
+import pytest
+
 from app.plan_review import validate_plan_review
 from app.planner_recovery import RECOVERY_PATHS
 from app.progressive_planning import compile_director, progressive_plan
@@ -245,7 +247,8 @@ def test_skeleton_is_not_chosen_when_a_real_candidate_exists(source):
     assert choose_accepted_plan([], skeleton) is skeleton
 
 
-def test_failed_storyboard_keeps_real_lines_and_a_total_miss_is_logged(source):
+def test_failed_storyboard_is_not_replaced_by_a_template(source):
+    from app.progressive_planning import ProgressivePlanningError
     from app.providers.gateway import PlannerInvalidResponse
     strategy = chosen_strategy(source)
     draft = director_output(strategy)["ad_script"]
@@ -255,21 +258,20 @@ def test_failed_storyboard_keeps_real_lines_and_a_total_miss_is_logged(source):
     async def fail(system, data, assets, max_tokens=7000):
         raise PlannerInvalidResponse("策划服务未接受本次请求；已有成果仍保留。")
 
-    plan = asyncio.run(progressive_plan(
-        stage_call=fail, on_progress=lambda _phase: None, record_failure=notes.append,
-        strategy=strategy, draft=draft, draft_issues=[], duration=20, generation_strategy="continuity_v1",
-        assets=[source], conversation=[], merchant_request="看清瓶子", current_plan=None,
-        cta_target="none"))
-    assert "瓶身轮廓在桌角" in plan["script"]
-    assert not any(item.get("error_code") == "fallback_skeleton" for item in notes if isinstance(item, dict))
+    with pytest.raises(ProgressivePlanningError, match="占位稿不是完成的方案"):
+        asyncio.run(progressive_plan(
+            stage_call=fail, on_progress=lambda _phase: None, record_failure=notes.append,
+            strategy=strategy, draft=draft, draft_issues=[], duration=20, generation_strategy="continuity_v1",
+            assets=[source], conversation=[], merchant_request="看清瓶子", current_plan=None,
+            cta_target="none"))
+    assert any(isinstance(item, dict) and item.get("error_code") == "fallback_skeleton" for item in notes)
+    assert not any("瓶身轮廓在桌角" in json.dumps(item, ensure_ascii=False) for item in notes if isinstance(item, dict) and item.get("error_code") == "fallback_skeleton")
     empty_notes = []
-
-    empty = asyncio.run(progressive_plan(
-        stage_call=fail, on_progress=lambda _phase: None, record_failure=empty_notes.append,
-        strategy=strategy, draft=None, draft_issues=[], duration=20, generation_strategy="continuity_v1",
-        assets=[source], conversation=[], merchant_request="看清瓶子", current_plan=None,
-        cta_target="none"))
-    from app.progressive_planning import is_placeholder_plan
-    assert is_placeholder_plan(empty)
+    with pytest.raises(ProgressivePlanningError, match="占位稿不是完成的方案"):
+        asyncio.run(progressive_plan(
+            stage_call=fail, on_progress=lambda _phase: None, record_failure=empty_notes.append,
+            strategy=strategy, draft=None, draft_issues=[], duration=20, generation_strategy="continuity_v1",
+            assets=[source], conversation=[], merchant_request="看清瓶子", current_plan=None,
+            cta_target="none"))
     assert any(isinstance(item, dict) and item.get("error_code") == "fallback_skeleton" for item in empty_notes)
     assert sum(1 for item in empty_notes if isinstance(item, dict) and item.get("issues") == ["storyboard"]) >= 3
