@@ -187,9 +187,10 @@ def should_ask_cta(project):
     if not isinstance(project, dict) or "cta_target" not in project:
         return False
     # A story ends on the result. The platform button does the converting,
-    # so the clarification card does not ask for a spoken destination.
-    # The destination waits until the form is chosen, and a story never asks.
-    if project.get("ad_form") in (None, "scene_story"):
+    # so a chosen story does not ask for a spoken destination. While the form
+    # is still open, the question stays on the card and the client hides it
+    # if the merchant picks a story.
+    if project.get("ad_form") == "scene_story":
         return False
     if project.get("cta_target") == "ai_decide" or is_explicit_cta(project.get("cta_target")):
         return False
@@ -216,7 +217,7 @@ def attach_cta_question(result, project):
             placed = True
     if not placed:
         merged.append(question)
-    result["questions"] = merged[:3]
+    result["questions"] = merged[:4]
     return result
 
 

@@ -41,9 +41,13 @@ const highlight = {
   id: 'highlight', prompt: '最想让观众记住这个商品的哪一点？例如外观、口味、夹心、制作工艺、适合的场合。',
   options: [], allow_custom: true, allow_skip: true,
 };
+const audience = {
+  id: 'audience', prompt: '这条广告主要拍给谁看、在什么情境下使用？',
+  options: [], allow_custom: true, allow_skip: true,
+};
 const gate = {
   id: 'gate-cake', project_id: 'p', job_id: 'j', kind: 'clarification', status: 'pending',
-  message: '先确认', questions: [adForm, cta, highlight], answers: [], options: [], created_at: 1,
+  message: '先确认', questions: [adForm, highlight, audience, cta], answers: [], options: [], created_at: 1,
 };
 
 function choose(optionId) {
@@ -51,13 +55,13 @@ function choose(optionId) {
   return draft.answerCurrentQuestion(gate, initial, { question_id: 'ad_form', option_id: optionId });
 }
 
-test('剧情 hides the destination and leaves the highlight as question 2 of 2', () => {
+test('剧情 hides the destination and leaves highlight as question 2 of 3', () => {
   const next = choose('scene_story');
   const visible = draft.visibleQuestions(gate, next.answers);
-  assert.deepEqual(visible.map(item => item.id), ['ad_form', 'highlight']);
+  assert.deepEqual(visible.map(item => item.id), ['ad_form', 'highlight', 'audience']);
   assert.equal(visible[next.step].id, 'highlight');
   assert.equal(next.step + 1, 2);
-  assert.equal(visible.length, 2);
+  assert.equal(visible.length, 3);
   const submitted = draft.submitAnswers(gate, { ...next, answers: {
     ...next.answers, highlight: { question_id: 'highlight', skipped: true },
   }});
@@ -69,12 +73,12 @@ test('产品展示、口播 and 根据商品推荐 still show the destination', 
   for (const optionId of ['brand_tvc', 'presenter_pitch', 'auto']) {
     const next = choose(optionId);
     const visible = draft.visibleQuestions(gate, next.answers);
-    assert.deepEqual(visible.map(item => item.id), ['ad_form', 'cta_target', 'highlight']);
-    assert.equal(visible[next.step].id, 'cta_target');
-    assert.equal(visible.length, 3);
+    assert.deepEqual(visible.map(item => item.id), ['ad_form', 'highlight', 'audience', 'cta_target']);
+    assert.equal(visible[next.step].id, 'highlight');
+    assert.equal(visible.length, 4);
   }
   const typed = draft.answerCurrentQuestion(gate, draft.initialDraft(gate), { question_id: 'ad_form', text: '剧情／场景广告' });
-  assert.deepEqual(draft.visibleQuestions(gate, typed.answers).map(item => item.id), ['ad_form', 'highlight']);
+  assert.deepEqual(draft.visibleQuestions(gate, typed.answers).map(item => item.id), ['ad_form', 'highlight', 'audience']);
 });
 
 test('the card recounts live once 剧情 is the saved answer', () => {
@@ -84,14 +88,14 @@ test('the card recounts live once 剧情 is the saved answer', () => {
     gate, busy: false, onSubmit: async () => {}, onCreativeSubmit: async () => {},
   }));
   assert.match(story, /最想让观众记住/);
-  assert.match(story, /2 \/ 2/);
+  assert.match(story, /2 \/ 3/);
   assert.doesNotMatch(story, /看完视频后/);
   memory.set(draft.draftKey(gate.id), JSON.stringify({ ...choose('brand_tvc'), signature: draft.signatureOf(gate) }));
   const product = renderToStaticMarkup(React.createElement(ConversationGate, {
     gate, busy: false, onSubmit: async () => {}, onCreativeSubmit: async () => {},
   }));
-  assert.match(product, /看完视频后，希望观众去哪里/);
-  assert.match(product, /2 \/ 3/);
+  assert.match(product, /最想让观众记住/);
+  assert.match(product, /2 \/ 4/);
 });
 
 test('a confirmed option shows its label when the stored text is null', () => {

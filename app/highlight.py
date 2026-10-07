@@ -134,7 +134,7 @@ def _place_highlight(questions, question):
     return merged
 
 
-def cap_questions(questions, limit=3):
+def cap_questions(questions, limit=4):
     """Keep the fixed questions. Extra model questions leave from the end."""
     fixed_count = sum(isinstance(item, dict) and item.get("id") in _FIXED for item in questions)
     room = max(0, limit - min(fixed_count, limit))

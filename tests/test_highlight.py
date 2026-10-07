@@ -16,7 +16,7 @@ def test_a_bare_cake_brief_asks_what_to_remember_instead_of_specs():
     project = {"ad_form": None, "cta_target": None, "brief": "我想做一个蛋糕广告"}
     raw = _clarify("product_info", "这次要拍的蛋糕具体是什么？比如种类、几个、尺寸或包装。")
     result = intake_strategy_response(raw, project)
-    assert [item["id"] for item in result["questions"]] == ["ad_form", "highlight", "audience"]
+    assert [item["id"] for item in result["questions"]] == ["ad_form", "highlight", "audience", "cta_target"]
     highlight = result["questions"][1]
     assert highlight["options"] == []
     assert highlight["allow_skip"] is True and highlight["allow_custom"] is True
@@ -26,7 +26,8 @@ def test_a_bare_cake_brief_asks_what_to_remember_instead_of_specs():
     audience = result["questions"][2]
     assert audience["options"] == [] and audience["allow_skip"] is True
     assert "拍给谁看" in audience["prompt"] and "生日聚会" in audience["prompt"]
-    assert should_ask_cta(project) is False
+    assert should_ask_cta(project) is True
+    assert result["questions"][3]["id"] == "cta_target"
 
 
 def test_other_forms_keep_the_destination_and_a_story_card_does_not():

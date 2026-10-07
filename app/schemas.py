@@ -494,7 +494,7 @@ class CreativeOption(ConversationModel):
 class AgentDecision(ConversationModel):
     kind: Literal["clarify", "plan", "reply", "directions"]
     message: str = Field(min_length=1, max_length=3000)
-    questions: list[Question] = Field(default_factory=list, max_length=3)
+    questions: list[Question] = Field(default_factory=list, max_length=4)
     plan: Plan | None = None
     creative_options: list[CreativeOption] = Field(default_factory=list, max_length=2)
     planning_brief: ProductBrief | None = None
@@ -559,7 +559,7 @@ class TurnInput(ConversationModel):
     content: str = Field(default="", max_length=6000)
     reference_asset_ids: list[str] = Field(default_factory=list, max_length=10)
     reply_to_gate_id: str | None = Field(default=None, max_length=100)
-    answers: list[Answer] = Field(default_factory=list, max_length=3)
+    answers: list[Answer] = Field(default_factory=list, max_length=4)
 
 
 class CreativeConfirmInput(ConversationModel):

@@ -33,7 +33,7 @@ def test_unknown_form_saves_the_destination_for_the_next_round():
     project = {"ad_form": None, "cta_target": None, "brief": "我想做一个蛋糕广告"}
     opened = intake_strategy_response({"kind": "directions", "message": "三个方向"}, project)
     assert opened["kind"] == "clarify"
-    assert [item["id"] for item in opened["questions"]] == ["ad_form", "highlight", "audience"]
+    assert [item["id"] for item in opened["questions"]] == ["ad_form", "highlight", "audience", "cta_target"]
     known = {"ad_form": "brand_tvc", "cta_target": None, "brief": "我想做一个蛋糕广告"}
     waiting = intake_strategy_response({"kind": "directions", "message": "三个方向"}, known)
     assert [item["id"] for item in waiting["questions"]] == ["highlight", "audience", "cta_target"]

@@ -210,9 +210,10 @@ def answer_ad_form(answer):
 def pack_clarification_questions(model_questions, project, messages=(), gates=()):
     """Fixed questions take the card first. The model fills only the slots left.
 
-    Order: ad form, selling point, audience, then destination. The destination
-    is absent until the form is known, and absent for a story. Spec questions
-    do not take a slot on a card that already has one of these.
+    Order: ad form, selling point, audience, then destination. A story omits
+    the destination. While the form is still open, the destination stays on
+    the card and the client hides it if the merchant picks a story. Spec
+    questions do not take a slot on a card that already has one of these.
     """
     from .audience import AUDIENCE_IDS, audience_question, displaced_audience, should_ask_audience
     from .cta import cta_question, should_ask_cta
@@ -230,7 +231,7 @@ def pack_clarification_questions(model_questions, project, messages=(), gates=()
         fixed.append(audience_question(corpus))
     if should_ask_cta(project):
         fixed.append(cta_question())
-    fixed = fixed[:3]
+    fixed = fixed[:4]
     blocked = {"ad_form", "highlight", "audience", "cta_target", *AUDIENCE_IDS}
     rest = []
     for item in model_questions or []:
@@ -243,7 +244,7 @@ def pack_clarification_questions(model_questions, project, messages=(), gates=()
         if ask_audience and displaced_audience(item):
             continue
         rest.append(item)
-    return [*fixed, *rest[: 3 - len(fixed)]]
+    return [*fixed, *rest[: 4 - len(fixed)]]
 
 
 def confirmation_message(questions):
