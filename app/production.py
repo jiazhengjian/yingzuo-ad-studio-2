@@ -131,6 +131,78 @@ def production_authoring_schema(schema):
     return schema
 
 
+def _character_record(person):
+    if isinstance(person, dict):
+        return person
+    if hasattr(person, "model_dump"):
+        return person.model_dump()
+    return {}
+
+
+def _story_lead_id(characters):
+    """A person who can speak. A face comes first. A partial-only body cannot."""
+    people = []
+    for person in characters or []:
+        item = _character_record(person)
+        if isinstance(item.get("id"), str) and item["id"]:
+            people.append(item)
+    faced = [person for person in people if person.get("appearance") == "face_visible"]
+    speakable = [person for person in people if person.get("appearance") != "partial_only"]
+    chosen = faced or speakable
+    return chosen[0]["id"] if chosen else ""
+
+
+def align_story_voice(ad_form, production, structure=None):
+    """剧情里的旁白是主角自己的声音，不是产品片旁白。
+
+    Direction offers and the planner both use this. The stored mode becomes
+    character_dialogue with that person as speaker. A later pass turns the
+    line into inner monologue when nobody awake can answer. Returns
+    (production, changed). A story with nobody who can speak is left alone.
+    """
+    from .ad_form_playbook import resolve_playbook_form
+    if production is None or resolve_playbook_form(ad_form, structure) != "scene_story":
+        return production, False
+    data = production if isinstance(production, dict) else production.model_dump()
+    if data.get("speech_mode") != "voiceover":
+        return production, False
+    lead = _story_lead_id(data.get("characters"))
+    if not lead:
+        return production, False
+    data = deepcopy(data)
+    data["speech_mode"] = "character_dialogue"
+    data["speaker_id"] = lead
+    data.pop("speech_delivery", None)
+    if isinstance(production, dict):
+        production.clear()
+        production.update(data)
+        return production, True
+    return ProductionPlan.model_validate(data), True
+
+
+def align_selected_story_voice(strategy):
+    """Map the chosen direction before planning reads its speech mode."""
+    if strategy is None or not getattr(strategy, "directions", None):
+        return strategy
+    form = strategy.brief.ad_form if getattr(strategy, "brief", None) is not None else None
+    selected_id = strategy.selected_direction_id
+    directions = []
+    changed = False
+    for direction in strategy.directions:
+        structure = None
+        if direction.film_concept is not None:
+            structure = direction.film_concept.structure
+        if direction.id == selected_id and direction.production is not None:
+            production, did = align_story_voice(form, direction.production, structure)
+            if did:
+                direction = direction.model_copy(update={"production": production})
+                changed = True
+        directions.append(direction)
+    if not changed:
+        return strategy
+    return strategy.model_copy(update={"directions": directions})
+
+
 def derive_authored_production_metadata(raw):
     """Set protocol metadata only on newly authored direction productions.
 

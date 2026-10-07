@@ -1283,6 +1283,12 @@ def prepare_strategy_ingress(payload):
                 concept["side_proof"] = _clip_ingress(proof, 40)
                 adjusted.append("side_proof_length")
         _fit_cast(direction.get("production"), adjusted)
+        from .production import align_story_voice
+        concept = direction.get("film_concept") if isinstance(direction.get("film_concept"), dict) else {}
+        _production, did_voice = align_story_voice(
+            ad_form, direction.get("production"), concept.get("structure") if isinstance(concept, dict) else None)
+        if did_voice:
+            adjusted.append("speech_mode")
     for sketch in result.get("concept_pool") or []:
         if not isinstance(sketch, dict):
             continue
@@ -1368,6 +1374,17 @@ def build_direction_candidates(brief, directions, recommended_id, rules, *, dire
     if len(directions) != 3:
         raise ValueError("请提供恰好三个不同的创意方向")
     directions = [CreativeDirection.model_validate(value) for value in directions]
+    from .production import align_story_voice
+    form = brief.ad_form if not isinstance(brief, dict) else brief.get("ad_form")
+    aligned = []
+    for direction in directions:
+        structure = direction.film_concept.structure if direction.film_concept is not None else None
+        if direction.production is not None:
+            production, did = align_story_voice(form, direction.production, structure)
+            if did:
+                direction = direction.model_copy(update={"production": production})
+        aligned.append(direction)
+    directions = aligned
     checked = build_strategy(brief, directions, directions[0].id, rules, merchant_choice=True)
     recommended_id = recommend_invisible_benefit(checked.brief, checked.directions, recommended_id)
     return DirectionCandidates(brief=checked.brief, directions=checked.directions,

@@ -1317,6 +1317,8 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
         if on_progress:
             on_progress(phase)
 
+    from .production import align_selected_story_voice
+    strategy = align_selected_story_voice(strategy)
     selected = next(d for d in strategy.directions if d.id == strategy.selected_direction_id)
     profile = speech_profile_for_strategy(strategy)
     tenth = profile.characters_per_tenth

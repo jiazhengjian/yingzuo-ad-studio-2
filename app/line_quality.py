@@ -1188,8 +1188,10 @@ def voice_identity_issues(strategy, production):
     """Speech track that belongs to another ad type.
 
     口播 is the person speaking to the camera. 产品展示 is off-screen voiceover.
-    剧情 is the character in the scene. Silent picture-proof beats are allowed
-    on a product film; a whole story told as voiceover is not.
+    剧情 is the character in the scene. A story voiceover that still names a
+    lead is mapped to that person's character_dialogue before this runs.
+    What remains here is a narrator with nobody to speak. Silent picture-proof
+    beats are allowed on a product film.
     """
     form = _brand_form(strategy)
     mode = _speech_mode_of(production)

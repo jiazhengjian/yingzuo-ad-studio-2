@@ -953,14 +953,20 @@ def test_presenter_voiceover_is_not_marked_ready(progressive_gateway):
     assert "plan_review" not in state.calls
 
 
-def test_story_voiceover_is_not_marked_ready(progressive_gateway):
+def test_story_voiceover_is_planned_as_the_leads_own_voice(progressive_gateway):
     state = progressive_gateway
     raw = state.strategy.model_dump()
     raw["brief"]["ad_form"] = "scene_story"
     state.strategy = StrategyRecord.model_validate(raw)
-    with pytest.raises(ProviderError, match="对不上"):
-        state.run()
-    assert "plan_review" not in state.calls
+    plan = state.run()
+    assert plan["production"]["speech_mode"] == "character_dialogue"
+    assert plan["production"]["speaker_id"] == "char_worker"
+    selected = next(item for item in plan["strategy"]["directions"]
+                    if item["id"] == plan["strategy"]["selected_direction_id"])
+    assert selected["production"]["speech_mode"] == "character_dialogue"
+    assert selected["production"]["speaker_id"] == "char_worker"
+    assert plan["plan_review"]["ready"] is True
+    assert "plan_review" in state.calls
 
 
 def test_story_explainer_is_rewritten_before_the_plan_is_ready(progressive_gateway, monkeypatch):

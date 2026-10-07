@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 import pytest
 
-from app.production import (ProductionPlan, required_designs, validate_production_plan,
+from app.production import (ProductionPlan, align_story_voice, required_designs, validate_production_plan,
                             validate_production_sources, validate_design_assets)
 from app.providers.gateway import Gateway, SubmissionError
 from test_providers import settings, source, plan
@@ -32,6 +32,48 @@ def prepared_plan(mode="voiceover"):
 def test_dialogue_requires_existing_speaker_and_actual_direction(field, value):
     prod = production("character_dialogue"); prod[field] = value
     with pytest.raises(ValueError): ProductionPlan.model_validate(prod)
+
+
+def test_story_voiceover_becomes_the_leads_own_voice():
+    voiced = production("voiceover")
+    mapped, changed = align_story_voice("scene_story", voiced)
+    assert changed is True
+    assert mapped["speech_mode"] == "character_dialogue"
+    assert mapped["speaker_id"] == "char_a"
+    assert mapped["voice_description"] == "普通话，轻松自然的青年女性声音"
+    again, twice = align_story_voice("scene_story", mapped)
+    assert twice is False
+    assert again["speech_mode"] == "character_dialogue"
+    brand = production("voiceover")
+    _kept, brand_changed = align_story_voice("brand_tvc", brand)
+    assert brand_changed is False and brand["speech_mode"] == "voiceover"
+    silent = production("none")
+    _same, silent_changed = align_story_voice("scene_story", silent)
+    assert silent_changed is False
+    hands = production("voiceover")
+    hands["characters"] = [{"id": "char_hand", "name": "手", "description": "只露出拿叉的手", "appearance": "partial_only"}]
+    _unmapped, hands_changed = align_story_voice("scene_story", hands)
+    assert hands_changed is False and hands["speech_mode"] == "voiceover"
+    faced = production("voiceover")
+    faced["characters"] = [
+        {"id": "char_hand", "name": "手", "description": "只露出拿叉的手", "appearance": "partial_only"},
+        {"id": "char_lead", "name": "她", "description": "成年女生，扎发", "appearance": "face_visible"},
+    ]
+    lead, did = align_story_voice("scene_story", faced, "scene_action")
+    assert did is True and lead["speaker_id"] == "char_lead"
+
+
+def test_a_story_offer_does_not_keep_an_unplannable_voiceover():
+    from app.strategy import prepare_strategy_ingress
+    payload = {"kind": "directions", "brief": {"ad_form": "scene_story"}, "directions": [{
+        "film_concept": {"structure": "scene_action"},
+        "production": production("voiceover"),
+    }]}
+    prepared = prepare_strategy_ingress(payload)
+    voice = prepared["directions"][0]["production"]
+    assert voice["speech_mode"] == "character_dialogue"
+    assert voice["speaker_id"] == "char_a"
+    assert payload["directions"][0]["production"]["speech_mode"] == "voiceover"
 
 
 def test_unknown_product_source_cannot_become_physical_constraint():
