@@ -187,12 +187,10 @@ def test_lean_draft_cannot_bypass_final_director_guards(content_gateway, source,
                 shot["evidence_ids"] = []
         state.first_director_mutation = remove_evidence
     if guard == "selected_evidence":
-        plan = state.run()
-        used = {fact_id for beat in plan["ad_script"]["beats"] for fact_id in beat["evidence_ids"]}
-        assert "appearance" in used
-        assert plan["segments"]
+        with pytest.raises(ProviderError, match="结构不完整"):
+            state.run()
         assert state.calls[0:2] == ["ad_script", "storyboard"]
-        assert len(state.calls) <= 6
+        assert "plan_review" not in state.calls
         return
     with pytest.raises(ProviderError):
         state.run()

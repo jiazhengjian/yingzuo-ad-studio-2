@@ -1687,7 +1687,12 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                         else:
                             detail = {("contract",): "方案结构、商品依据或已确认内容需要调整"}
                         record_failure(plan)
-                        await stop("本次方案未能满足已确认要求，暂未采用", detail, accept=False)
+                        # This is an authored lock or identity break, not a timing miss.
+                        # Raising here keeps that reason; a capacity retry would hide it
+                        # and must not fill in a placeholder board.
+                        raise ProgressivePlanningError(
+                            "本次方案未能满足已确认要求，暂未采用。已有方案和素材已保留，尚未开始新的图片或视频生成",
+                            issue_summary=list(detail.values()), repair_attempts=repairs)
                     capacity_issue = str(compile_error)
                 beat_positions = {beat["id"]: index + 1 for index, beat in enumerate(before["ad_script"]["beats"])}
                 guard_issues = {("estimate", beat_id): f"第{beat_positions[beat_id]}个内容段的实际动作未变，不能仅降低估时"

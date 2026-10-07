@@ -1,6 +1,8 @@
 """L1–L9 must-pass and must-fail checks from the product-rule brief. Offline."""
 import asyncio
 
+import pytest
+
 from app.ad_form import classify_narrative_axis, infer_ad_form, intake_strategy_response
 from app.ad_form_playbook import ending_policy
 from app.cta import apply_spoken_policy, should_ask_cta, spoken_cta_line
@@ -270,7 +272,7 @@ def test_l4_presenter_and_chain_is_not_collapsed():
 
 
 def test_l4_review_salvage_does_not_ship_a_stacked_fifteen_second_brand_line(source):
-    """A failed storyboard must not leave ions+smooth+noise in the saved voiceover."""
+    """A failed storyboard must not deliver ions+smooth+noise, and a compiled stack still stops."""
     from app.progressive_planning import ProgressivePlanningError, progressive_plan
     from app.strategy import StrategyRecord
     from test_progressive_planning import chosen_strategy, director_output
@@ -282,49 +284,42 @@ def test_l4_review_salvage_does_not_ship_a_stacked_fifteen_second_brand_line(sou
     line = "它带负离子，吹完是顺的。这风不吵。"
     draft = {"beats": [{"id": "b0", "narration": line, "evidence_ids": ["appearance"]}]}
 
+    def plan_with(stage_call):
+        return asyncio.run(progressive_plan(
+            stage_call=stage_call, on_progress=lambda _phase: None, record_failure=lambda _item: None,
+            strategy=strategy, draft=draft, draft_issues=[], duration=15,
+            generation_strategy="continuity_v1", assets=[source], conversation=[],
+            merchant_request="徕芬吹风机，做一条产品展示", current_plan=None, cta_target="none"))
+
     async def broken_board(system, data, assets, max_tokens=7000):
         value = director_output(strategy)
         for shot in value["shots"]:
             shot["character_ids"] = ["missing_person"]
         return value
 
-    def run():
-        return asyncio.run(progressive_plan(
-            stage_call=broken_board, on_progress=lambda _phase: None, record_failure=lambda _item: None,
-            strategy=strategy, draft=draft, draft_issues=[], duration=15,
-            generation_strategy="continuity_v1", assets=[source], conversation=[],
-            merchant_request="徕芬吹风机，做一条产品展示", current_plan=None, cta_target="none"))
+    with pytest.raises(ProgressivePlanningError, match="未能满足已确认要求"):
+        plan_with(broken_board)
 
-    plan = run()
-    spoken = "".join(beat.get("narration") or "" for beat in plan["ad_script"]["beats"])
-    spans = "".join(
-        span.get("text") or ""
-        for segment in plan["segments"] for span in segment.get("speech_spans") or [])
-    assert line not in spoken and line not in spans
-    assert brand_stack_remaining(plan["ad_script"], strategy, duration_seconds=15) is False
-    content = [
-        beat.get("narration") or "" for beat in plan["ad_script"]["beats"]
-        if beat.get("narration") and "链接" not in beat["narration"] and "点下面" not in beat["narration"]
-    ]
-    assert content
-    assert all(len(_claim_tags(text)) <= 1 for text in content)
-    assert len(set().union(*(_claim_tags(text) for text in content))) <= 1
+    async def stacked_board(system, data, assets, max_tokens=7000):
+        value = director_output(strategy)
+        value["ad_script"]["beats"][0]["narration"] = line
+        return value
 
-    def keep_stack(director, _strategy, locked_lines=(), duration_seconds=None):
-        return director, False
+    def keep_claims(script, locked_lines=(), duration_seconds=None):
+        return script, False
 
     import app.line_quality as line_quality
-    original = line_quality.apply_brand_claim_collapse
-    line_quality.apply_brand_claim_collapse = keep_stack
+    original = line_quality.collapse_brand_claims
+    line_quality.collapse_brand_claims = keep_claims
     try:
-        try:
-            run()
-        except ProgressivePlanningError as error:
-            assert "堆卖点" in str(error)
-        else:
-            raise AssertionError("stacked brand voiceover was accepted")
+        with pytest.raises(ProgressivePlanningError, match="堆卖点"):
+            asyncio.run(progressive_plan(
+                stage_call=stacked_board, on_progress=lambda _phase: None, record_failure=lambda _item: None,
+                strategy=strategy, draft=draft, draft_issues=[], duration=20,
+                generation_strategy="continuity_v1", assets=[source], conversation=[],
+                merchant_request="徕芬吹风机，做一条产品展示", current_plan=None, cta_target="none"))
     finally:
-        line_quality.apply_brand_claim_collapse = original
+        line_quality.collapse_brand_claims = original
 
 
 # --- L5 台词质量 ---

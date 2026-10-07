@@ -273,8 +273,8 @@ def test_mapping_error_never_masks_foreign_facts_or_characters(progressive_gatew
         field = "evidence_ids" if foreign == "fact" else "character_ids"
         value["shots"][1][field].append("foreign_identity")
     state.first_director_mutation = broken
-    plan = state.run()
-    assert "foreign_identity" not in json.dumps(plan)
+    with pytest.raises(ProviderError, match="未能满足已确认要求"):
+        state.run()
     assert state.calls == ["ad_script", "storyboard"]
 
 
@@ -384,8 +384,8 @@ def test_second_estimate_guard_still_compares_original_before_and_stops(progress
         if change_other_content:
             value["shots"][2]["description"] += "省去最后一次重复展示。"
     state.refinement_mutations = [lower_first_estimate_only, second]
-    plan = state.run()
-    assert plan["segments"]
+    with pytest.raises(ProviderError, match="容量仍未改善"):
+        state.run()
     assert state.calls == ["ad_script", "storyboard", "plan_refinement", "plan_refinement"]
 
 
@@ -428,13 +428,8 @@ def test_estimate_guard_cannot_hide_authored_contract_error_behind_capacity(prog
         else:
             value["shots"][2]["coverage"] = [{"beat_id": "b1", "weight": 1}]
     state.refinement_mutation = invalid
-    if fatal == "fixed_speech":
-        with pytest.raises(ProviderError, match="已确认要求"):
-            state.run()
-    else:
-        plan = state.run()
-        blob = json.dumps(plan)
-        assert "foreign_fact" not in blob and "foreign_character" not in blob
+    with pytest.raises(ProviderError, match="已确认要求"):
+        state.run()
     assert state.calls == ["ad_script", "storyboard", "plan_refinement"]
 
 
