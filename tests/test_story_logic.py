@@ -746,7 +746,9 @@ def test_story_ending_does_not_aim_the_logo_at_the_camera():
     ending = _shot_block(compile_grouped_video(segment), "镜头2 |")
     assert "字样朝向镜头" not in ending and "字样朝镜头" not in ending
     assert "正面朝镜头" not in ending
-    assert "按放下时的样子留在原位" in ending
+    assert "按放下时的样子留在原位" not in ending
+    assert "第一帧" in ending and "机位停住" in ending
+    assert "镜头推近" not in ending and "推近后" not in ending
     assert "正面朝镜头" in compile_grouped_video(_segment())
 
 

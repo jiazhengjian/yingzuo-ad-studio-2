@@ -85,7 +85,7 @@ _SIMILAR_COLORS = ("粉色", "粉白", "奶油", "米色", "浅粉", "杏色")
 _LOGO_TO_CAMERA = re.compile(
     r"(?:，\s*)?(?:机身\s*)?(?:[A-Za-z][A-Za-z0-9]*\s*)?(?:字样|商标|标志|logo|Logo)\s*朝向?镜头"
 )
-_STORY_HOLD_LINE = "机位停住，人物和手都不再动，商品按放下时的样子留在原位，不摆向镜头，不放下、不移出画面，不出现字幕、Logo或字卡。"
+_STORY_HOLD_LINE = "机位停住，不再推近或变焦。产品从第一帧就以近景留在故事里它该在的位置，不摆向镜头。可以留一个很小的生活动静，手或人只出一角。不出现字幕、Logo或字卡。"
 _NEUTRAL_PURPOSE = "停在这一下刚发生的动作上。"
 
 
@@ -160,7 +160,8 @@ def _last_shot(container):
 def story_ending_issues(container, strategy=None, *, form=None, product_text=""):
     """Fail a 剧情 whose last shot breaks use-logic, presents the product, or says 英雄定格.
 
-    A push-in onto a product left on its stand is allowed. Other ad types are not checked.
+    A leftover push-in is not a new failure. The video prompt rewrites the last shot
+    into a locked insert close-up. Other ad types are not checked.
     """
     form = form or _form(strategy)
     if form != "scene_story":

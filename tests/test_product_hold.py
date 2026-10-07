@@ -2,7 +2,7 @@
 from pathlib import Path
 
 from app.progressive_planning import DIRECTOR_SYSTEM
-from app.shot_craft import lock_product_frame
+from app.shot_craft import lock_product_frame, lock_story_insert
 from app.video_prompt import compile_grouped_video
 
 
@@ -40,8 +40,10 @@ def test_playbooks_separate_action_from_a_push_and_leave_the_story_ending():
     assert "推近、拉开、变焦到特写" in presenter
     assert "不要在最后一镜放下、递出或移出画面" in presenter
     assert "关机、放下、松手" in presenter
-    assert "镜头可以推近作余韵" in story
-    assert "可以由镜头推近作余韵" in DIRECTOR_SYSTEM
+    assert "镜头可以推近作余韵" not in story
+    assert "插入的近景或特写" in story
+    assert "可以由镜头推近作余韵" not in DIRECTOR_SYSTEM
+    assert "插入的近景或特写" in DIRECTOR_SYSTEM
     assert "不要把人物动作和推近" in DIRECTOR_SYSTEM
 
 
@@ -158,5 +160,38 @@ def test_compiled_prompt_locks_brand_and_presenter_but_not_a_story_push():
     }
     story = compile_grouped_video(segment("scene_story", story_shot))
     ending = story.split("镜头2 |", 1)[1]
-    assert "推近" in ending
+    assert "镜头推近" not in ending
+    assert "机位停住" in ending and "第一帧" in ending
     assert "四成到六成" not in ending
+    assert "英雄定格" not in ending and "正面朝镜头" not in ending
+    assert "硬切" in ending
+
+
+def test_story_insert_locks_the_last_shot_and_cuts_after_a_person():
+    mixed = _shot("她伸手去拿瓶子，镜头缓慢推进。", "中景，镜头缓慢推进")
+    locked = lock_story_insert(mixed, final=False, previous=None)
+    assert "推进" not in locked["continuity"]["camera_move"]
+    assert "机位停住" in locked["continuity"]["camera_move"]
+    assert "四成到六成" not in locked["continuity"]["start_state"]
+    quiet = _shot("瓶身沿桌面缓慢转动。", "微距特写，镜头缓慢推进")
+    assert lock_story_insert(quiet, final=False) is quiet
+    earlier = _shot("她放下瓶子，转身离开。", "中景，机位停住")
+    closing = _shot(
+        "镜头推近台面，瓶子留在原处。",
+        "中景，镜头推近",
+        end=5,
+        start_state="瓶子还在画面边缘",
+        entry_transition="continuous",
+    )
+    insert = lock_story_insert(closing, final=True, previous=earlier)
+    assert "推近" not in insert["description"]
+    assert "推近" not in insert["continuity"]["camera_move"]
+    assert "特写" in insert["continuity"]["camera_move"] or "近景" in insert["continuity"]["camera_move"]
+    assert insert["continuity"]["start_state"].startswith("产品从这一镜第一帧")
+    assert "画面边缘" not in insert["continuity"]["start_state"]
+    assert insert["continuity"]["entry_transition"] == "cut"
+    assert "硬切" in insert["continuity"]["entry_reason"]
+    assert "英雄定格" not in insert["description"]
+    again = lock_story_insert(insert, final=True, previous=earlier)
+    assert again["continuity"]["camera_move"] == insert["continuity"]["camera_move"]
+    assert again["continuity"]["start_state"] == insert["continuity"]["start_state"]

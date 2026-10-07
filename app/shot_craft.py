@@ -6,8 +6,8 @@ hero hold. Older drafts omit those fields and are left alone. A rewrite, when
 it runs, only replaces description and camera_move on the named shots.
 Product films and presenter films also get a prompt-only framing lock: a
 character action does not share a shot with a push, pull, or zoom, and the
-last shot already shows the product at its end size. Story endings are left
-alone. This does not reject a plan.
+last shot already shows the product at its end size. A story ending is rewritten
+into a locked insert close-up. None of this rejects a plan.
 """
 from __future__ import annotations
 
@@ -298,7 +298,7 @@ def shot_suggestions(plan, strategy=None) -> list[dict]:
               else f"/segments/{last_segment}/shots/{last_index}/continuity/camera_move")
     if last_duration is not None and quote:
         if last_duration < _tenths(HOLD_ADVICE_FLOOR):
-            hold_note = ("结尾镜头不到2秒，余韵站不住。这是建议，不会为此重排时间。"
+            hold_note = ("结尾镜头不到2秒，插入近景站不住。这是建议，不会为此重排时间。"
                          if _form(strategy) == "scene_story"
                          else "结尾镜头不到2秒，英雄定格站不住。这是建议，不会为此重排时间。")
             item = _suggestion(3, target, quote, hold_note)
@@ -1022,6 +1022,111 @@ def lock_product_frame(shot, *, form, final=False):
             if isinstance(camera, str) and "机位停住" not in camera:
                 revised["continuity"]["camera_move"] = _locked_camera(camera, form, True)
         revised["product_visible"] = True
+    if revised == shot:
+        return shot
+    return revised
+
+
+_STORY_PEOPLE = re.compile(r"离开|出门|走出|带上门|转身|走了|伸手")
+_STORY_EXIT = re.compile(r"带上门|离开|出门|走出|转身走|人已经走|人走了")
+_STORY_LIFE = re.compile(r"火苗|烛|火焰|摇曳|热气|蒸汽|雾气|笑声|笑了一声|一只手|人手|手伸|伸进|切下|第一刀|一角|画外")
+_STORY_CLOSE = frozenset({"大特写", "特写", "近景", "中近景", "微距"})
+_STORY_FRAME = "产品从这一镜第一帧就以近景或特写留在故事里它该在的位置，大而清楚"
+_STORY_LIFE_LINE = "留一个故事里的小动静：一只手或人的一角入画，产品仍是主体"
+_STORY_INSERT = "产品近景，机位停住。产品从第一帧就大而清楚，留在故事里它该在的位置。一只手或人的一角入画，产品仍是主体。"
+
+
+def _people_busy(shot):
+    if not isinstance(shot, dict):
+        return False
+    return _has_character_action(shot) or any(
+        _affirmed_in(_STORY_PEOPLE, part) for part in _picture_fields(shot))
+
+
+def _story_close_camera(camera):
+    found = _FRAMING_WORD.search(camera or "")
+    size = found.group(0) if found and found.group(0) in _STORY_CLOSE else "特写"
+    return f"{size}，机位停住，产品从第一帧就占满这一景"
+
+
+def _story_framed(text):
+    return isinstance(text, str) and "第一帧" in text and "近景或特写" in text
+
+
+def lock_story_insert(shot, *, final=False, previous=None):
+    """Prompt-only story framing. A push does not share a shot with a person acting.
+
+    The last shot becomes an insert close-up: the product is already large, the
+    camera stays locked, and one small in-story sign remains. If the previous
+    shot is still a person's action, this insert is a hard cut. A plan is not
+    rejected for keeping the old push-in.
+    """
+    if not isinstance(shot, dict):
+        return shot
+    revised = {**shot}
+    continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else None
+    if continuity is not None:
+        revised["continuity"] = {**continuity}
+    description = revised.get("description") if isinstance(revised.get("description"), str) else ""
+    stripped_exit = False
+    if final and description:
+        cleaned = _drop_clauses(description, _STORY_EXIT)
+        stripped_exit = cleaned != description
+        description = cleaned
+        if not _WORLD_PREFIX.sub("", description).strip("，。；、 "):
+            description = _STORY_INSERT
+        revised["description"] = description[:1500]
+    drop_push = _has_push(shot) and (final or _people_busy(shot))
+    if drop_push:
+        current = revised.get("description") if isinstance(revised.get("description"), str) else ""
+        revised["description"] = _strip_push(current)[:1500]
+        camera = _camera_text(revised)
+        if isinstance(revised.get("continuity"), dict) and isinstance(revised["continuity"].get("camera_move"), str):
+            revised["continuity"]["camera_move"] = (
+                _story_close_camera(camera) if final else _locked_camera(camera, "scene_story", False))
+    if not final:
+        if revised == shot:
+            return shot
+        return revised
+    camera_now = _camera_text(revised)
+    if isinstance(revised.get("continuity"), dict) and isinstance(revised["continuity"].get("camera_move"), str):
+        if "机位停住" not in revised["continuity"]["camera_move"] or _has_push(revised):
+            revised["continuity"]["camera_move"] = _story_close_camera(camera_now)
+        elif _FRAMING_WORD.search(camera_now) and _FRAMING_WORD.search(camera_now).group(0) not in _STORY_CLOSE:
+            revised["continuity"]["camera_move"] = _story_close_camera(camera_now)
+        elif "第一帧" not in revised["continuity"]["camera_move"]:
+            revised["continuity"]["camera_move"] = _story_close_camera(camera_now)
+    elif not isinstance(revised.get("continuity"), dict):
+        current = revised.get("description") if isinstance(revised.get("description"), str) else ""
+        if "机位停住" not in current:
+            revised["description"] = _lead_clause(current, "特写，机位停住", 1500)
+    wrote = False
+    if isinstance(revised.get("continuity"), dict) and isinstance(revised["continuity"].get("start_state"), str):
+        current = _drop_clauses(revised["continuity"]["start_state"], _NOT_YET_FRAMED)
+        current = _drop_clauses(current, _STORY_EXIT)
+        if not _story_framed(current):
+            current = _lead_clause(current, _STORY_FRAME)
+        revised["continuity"]["start_state"] = (current or _STORY_FRAME)[:800]
+        wrote = True
+    elif _write_continuity(revised, start_state=_STORY_FRAME):
+        wrote = True
+    current_description = revised.get("description") if isinstance(revised.get("description"), str) else ""
+    if not wrote and not _story_framed(current_description):
+        revised["description"] = _lead_clause(current_description, _STORY_FRAME, 1500)
+        current_description = revised["description"]
+    if not _affirmed_in(_STORY_LIFE, current_description):
+        revised["description"] = _append_clause(current_description, _STORY_LIFE_LINE, 1500)
+    force_cut = previous is not None and (_people_busy(previous) or stripped_exit)
+    if force_cut and isinstance(revised.get("continuity"), dict):
+        if revised["continuity"].get("entry_transition") in ("continuous", "opening"):
+            revised["continuity"]["entry_transition"] = "cut"
+            if isinstance(revised["continuity"].get("entry_reason"), str):
+                revised["continuity"]["entry_reason"] = "前一镜的人物动作已经结束，这一镜硬切到产品近景。"
+    if force_cut:
+        current_description = revised.get("description") if isinstance(revised.get("description"), str) else ""
+        if "硬切" not in current_description:
+            revised["description"] = _append_clause(current_description, "这一镜硬切到产品近景", 1500)
+    revised["product_visible"] = True
     if revised == shot:
         return shot
     return revised
