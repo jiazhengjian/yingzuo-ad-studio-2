@@ -254,7 +254,13 @@ def create_app(settings=None, gateway=None, run_worker=True):
 
     @app.post("/api/projects/{project_id}/turns")
     def turn(project_id: str, body: TurnInput):
-        require_planner()
+        from app.generate_retry import is_generate_retry_intent
+        retry_sentence = (is_generate_retry_intent(body.content) and not body.reply_to_gate_id
+                          and not body.answers and not body.reference_asset_ids and body.ad_form is None)
+        if retry_sentence and store.has_open_generate_failure(project_id):
+            require_video()
+        else:
+            require_planner()
         return {"job": public(store.create_turn(project_id, body.model_dump()))}
 
     @app.post("/api/projects/{project_id}/creative-confirm")
@@ -331,7 +337,13 @@ def create_app(settings=None, gateway=None, run_worker=True):
         if not any(a["kind"] == "product" and not a["metadata"].get("generated") for a in detail["assets"]):
             raise HTTPException(422, "请先上传真实商品图")
         # Repeated click returns the same durable run, including completed and ambiguous submissions.
-        return {"job": public(store.create_job(project_id, "generate", body.accepted_revision, payload={"pause_for_creative": body.pause_for_creative}))}
+        # A definite unpaid account refusal is the exception: the same job is queued again.
+        from app.generate_retry import ACCOUNT_RETRY_CODES
+        job = store.create_job(project_id, "generate", body.accepted_revision, payload={"pause_for_creative": body.pause_for_creative})
+        code = (job.get("progress") or {}).get("error_code")
+        if job["status"] in ("failed", "partial") and code in ACCOUNT_RETRY_CODES:
+            job = store.retry_generate_job(project_id, job["id"])
+        return {"job": public(job)}
 
     @app.post("/api/projects/{project_id}/continuity")
     def continuity(project_id: str, body: ContinuityInput):
@@ -360,14 +372,8 @@ def create_app(settings=None, gateway=None, run_worker=True):
             require_planner()
             return {"job": public(store.retry_planning_job(project_id, job["id"]))}
         if job["kind"] == "generate":
-            recovery = store.video_retry_state(job["id"])
-            if recovery["uncertain_segment_ids"]:
-                raise HTTPException(409, "存在受理状态未知的片段，请先核对原任务")
-            if recovery["failed_segment_ids"]:
-                if not recovery["pending_segment_ids"]:
-                    raise HTTPException(409, "原任务已有明确失败片段，请选择重试失败片段；恢复任务不会重新提交")
-                payload = {**job["payload"], "resume_known_tasks_only": True}
-                job = store.update_job(job["id"], payload=payload)
+            require_video()
+            return {"job": public(store.retry_generate_job(project_id, job["id"]))}
         idle(project_id)
         return {"job": public(store.update_job(job["id"], status="queued", error=None))}
 

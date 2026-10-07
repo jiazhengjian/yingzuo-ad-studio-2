@@ -572,6 +572,228 @@ class Store:
             self._event(c, project_id, jid, "status", "仅重试已失败片段，其他图片与任务继续复用", "waiting")
         return self.get_job(jid)
 
+    def retry_generate_job(self, project_id, job_id):
+        """Queue the same generate job again after the merchant asks.
+
+        Account and balance refusals drop only the unpaid step that never
+        received a task id. Confirmed plan, revision and saved pictures stay.
+        A step that may already have been accepted is not posted again.
+        """
+        from .generate_retry import ACCOUNT_RETRY_CODES
+
+        with self._connection(True) as c:
+            job = self._dict(c.execute("SELECT * FROM jobs WHERE id=? AND project_id=?", (job_id, project_id)).fetchone())
+            if not job:
+                raise KeyError("任务不存在")
+            if job["kind"] != "generate":
+                raise ValueError("只有视频制作任务可以这样恢复")
+            if job["status"] == "submitted_unknown":
+                raise StaleRevision("平台接单状态未知，不能自动重新提交；请核对平台任务以避免重复扣费")
+            if job["status"] not in ("failed", "partial"):
+                raise StaleRevision("当前任务无需恢复")
+            code = (job.get("progress") or {}).get("error_code")
+            if code == "voice_too_long":
+                raise StaleRevision("配音文案过长，请先精简文案后重新确认；直接恢复同样文案不能解决时长问题，已保存的图片会保留")
+            project = self._project(c, project_id)
+            if project["revision"] != job["revision"]:
+                raise StaleRevision("这是旧版本任务，请使用当前方案")
+            self._guard_job(c, job_id)
+            self._require_idle(c, project_id)
+            if code in ACCOUNT_RETRY_CODES:
+                return self._requeue_account_generate(c, job)
+            return self._requeue_known_generate(c, job)
+
+    def _requeue_known_generate(self, c, job):
+        steps = self._job_steps(c, job["id"])
+        failed, pending, uncertain = [], [], []
+        for step in steps:
+            state = step.get("state")
+            if state in ("submitting", "submitted_unknown"):
+                uncertain.append(step["step_key"])
+            elif state in ("failed", "rejected"):
+                failed.append(step["step_key"])
+            elif state == "submitted" and step.get("task_id"):
+                pending.append(step["step_key"])
+            elif state != "downloaded":
+                uncertain.append(step["step_key"])
+        if uncertain:
+            raise StaleRevision("存在受理状态未知的片段，请先核对原任务")
+        if failed and not pending:
+            raise StaleRevision("原任务已有明确失败片段，请选择重试失败片段；恢复任务不会重新提交")
+        if failed and pending:
+            payload = {**(job.get("payload") or {}), "resume_known_tasks_only": True}
+            c.execute("UPDATE jobs SET payload=?,updated_at=? WHERE id=?", (encoded(payload), time.time(), job["id"]))
+        return self._mark_generate_queued(c, job["id"], job["project_id"], job.get("progress") or {}, clear_error_fields=False)
+
+    def has_open_generate_failure(self, project_id):
+        """True when a short retry sentence should be handled here, not by the planner."""
+        with self._connection() as c:
+            project = self._project(c, project_id)
+            if self._pending_gate(c, project_id):
+                return False
+            job = self._latest_generate(c, project_id, project["revision"])
+            return bool(job and job["status"] in ("failed", "partial", "submitted_unknown"))
+
+    def _latest_generate(self, c, project_id, revision):
+        return self._dict(c.execute(
+            "SELECT * FROM jobs WHERE project_id=? AND revision=? AND kind='generate' ORDER BY created_at DESC LIMIT 1",
+            (project_id, revision)).fetchone())
+
+    def _job_steps(self, c, job_id):
+        return [self._dict(row) for row in c.execute(
+            "SELECT * FROM steps WHERE job_id=? ORDER BY created_at", (job_id,))]
+
+    def _requeue_account_generate(self, c, job):
+        from .generate_retry import account_step_blocker, cleared_progress, unpaid_account_step
+
+        code = (job.get("progress") or {}).get("error_code")
+        steps = self._job_steps(c, job["id"])
+        blocker = account_step_blocker(steps, code)
+        if blocker == "unknown":
+            raise StaleRevision("存在受理状态未知的片段，请先核对原任务")
+        if blocker == "paid_failure":
+            raise StaleRevision("原任务已有明确失败片段，请选择重试失败片段；恢复任务不会重新提交")
+        image_blocker = self._account_image_blocker(job)
+        if image_blocker == "unknown":
+            raise StaleRevision("存在受理状态未知的图片任务，请先核对原任务")
+        if image_blocker == "image":
+            raise StaleRevision("图片没有生成成功，请修改方案后再试；已有图片仍保留")
+        released = 0
+        for step in steps:
+            if unpaid_account_step(step, code):
+                c.execute("DELETE FROM steps WHERE job_id=? AND step_key=?", (job["id"], step["step_key"]))
+                released += 1
+        self._drop_unpaid_account_receipts(job)
+        now = time.time()
+        c.execute("UPDATE jobs SET submission_count=MAX(0, submission_count-?) WHERE id=?", (released, job["id"]))
+        self._event(c, job["project_id"], job["id"], "status", "已重新排队，沿用已确认的方案和图片", "waiting")
+        return self._mark_generate_queued(c, job["id"], job["project_id"], cleared_progress(job.get("progress")), clear_error_fields=True, now=now)
+
+    def _mark_generate_queued(self, c, job_id, project_id, progress, clear_error_fields, now=None):
+        now = now or time.time()
+        if clear_error_fields:
+            c.execute("UPDATE jobs SET status='queued',phase='queued',error=NULL,progress=?,lease_until=0,updated_at=? WHERE id=?",
+                      (encoded(progress), now, job_id))
+        else:
+            c.execute("UPDATE jobs SET status='queued',error=NULL,lease_until=0,updated_at=? WHERE id=?", (now, job_id))
+        c.execute("UPDATE projects SET status='queued',updated_at=? WHERE id=?", (now, project_id))
+        return self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
+
+    def _design_receipt_dir(self, job):
+        payload = job.get("payload") or {}
+        raw = payload.get("designs_directory")
+        root = (self.media_root / job["project_id"] / job["id"]).resolve()
+        folder = Path(raw).resolve() if isinstance(raw, str) and raw else (root / "designs")
+        try:
+            if not folder.is_relative_to(root):
+                return None
+        except ValueError:
+            return None
+        return folder if folder.is_dir() else None
+
+    def _account_image_blocker(self, job):
+        from .generate_retry import ACCOUNT_RETRY_CODES
+
+        if (job.get("payload") or {}).get("creative_confirmed"):
+            return None
+        folder = self._design_receipt_dir(job)
+        if folder is None:
+            return None
+        for path in folder.glob("*_task.json"):
+            receipt = self._read_receipt(path)
+            if receipt is None:
+                return "unknown"
+            state = receipt.get("state")
+            if state in ("submitting", "submitted_unknown") and not receipt.get("task_id"):
+                return "unknown"
+            if state != "failed":
+                continue
+            if not receipt.get("task_id") and receipt.get("error_code") in ACCOUNT_RETRY_CODES:
+                continue
+            return "image"
+        return None
+
+    @staticmethod
+    def _read_receipt(path):
+        try:
+            receipt = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            return None
+        return receipt if isinstance(receipt, dict) else None
+
+    def _drop_unpaid_account_receipts(self, job):
+        from .generate_retry import ACCOUNT_RETRY_CODES
+
+        folder = self._design_receipt_dir(job)
+        if folder is None:
+            return
+        for path in folder.glob("*_task.json"):
+            receipt = self._read_receipt(path)
+            if not isinstance(receipt, dict):
+                continue
+            if (receipt.get("state") == "failed" and not receipt.get("task_id")
+                    and receipt.get("error_code") in ACCOUNT_RETRY_CODES):
+                path.unlink(missing_ok=True)
+
+    def answer_generate_retry_turn(self, project_id, body):
+        """Queue a failed video run from a short chat sentence, or say that nothing was queued."""
+        from .generate_retry import (QUEUED_REPLY, RESUME_REPLY, SEGMENTS_REPLY, classify_generate_retry,
+                                    is_generate_retry_intent, no_queue, refusal_reply)
+
+        if not is_generate_retry_intent(body.get("content") or ""):
+            return None
+        if body.get("reply_to_gate_id") or body.get("answers") or body.get("reference_asset_ids") or body.get("ad_form"):
+            return None
+        action = None
+        source_id = None
+        content = str(body.get("content") or "").strip()
+        turn_id = body.get("client_turn_id")
+        with self._connection(True) as c:
+            prior = self._request_job(c, project_id, turn_id, "turn")
+            if prior:
+                return prior
+            project = self._project(c, project_id)
+            if body.get("expected_context_version") != project["context_version"]:
+                raise StaleRevision("需求已变化，请刷新后提交")
+            self._require_idle(c, project_id)
+            if self._pending_gate(c, project_id):
+                return None
+            job = self._latest_generate(c, project_id, project["revision"])
+            if not job or job["status"] not in ("failed", "partial", "submitted_unknown"):
+                return None
+            action, reason = classify_generate_retry(job, self._job_steps(c, job["id"]))
+            source_id = job["id"]
+            if action == "refuse":
+                self._record_retry_chat(c, project_id, source_id, content, refusal_reply(reason), turn_id)
+                return self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (source_id,)).fetchone())
+            if action != "segments":
+                try:
+                    target = (self._requeue_account_generate(c, job) if action == "account"
+                              else self._requeue_known_generate(c, job))
+                    reply = RESUME_REPLY if action == "resume" else QUEUED_REPLY
+                except StaleRevision as exc:
+                    target, reply = job, no_queue(str(exc))
+                self._record_retry_chat(c, project_id, target["id"], content, reply, turn_id)
+                return self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (target["id"],)).fetchone())
+        reply = SEGMENTS_REPLY
+        try:
+            target = self.create_failed_video_retry(project_id, source_id)
+        except (StaleRevision, ValueError, KeyError) as exc:
+            target = None
+            reply = no_queue(str(exc))
+        with self._connection(True) as c:
+            prior = self._request_job(c, project_id, turn_id, "turn")
+            if prior:
+                return prior
+            job_id = target["id"] if target is not None else source_id
+            self._record_retry_chat(c, project_id, job_id, content, reply, turn_id)
+            return self._dict(c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone())
+
+    def _record_retry_chat(self, c, project_id, job_id, content, reply, turn_id):
+        self._message(c, project_id, "user", content, job_id)
+        self._message(c, project_id, "assistant", reply, job_id)
+        c.execute("INSERT INTO turn_requests VALUES(?,?,?,?)", (project_id, turn_id, "turn", job_id))
+
     def update_job(self, job_id, **changes):
         allowed = {"status", "phase", "error", "progress", "payload", "revision", "lease_until"}
         if not changes or not set(changes).issubset(allowed):
@@ -986,6 +1208,9 @@ class Store:
         from .cta import answer_cta, is_explicit_cta, stated_cta
         from .planning import keeps_selected_direction, product_images_are_new
         body = TurnInput.model_validate(body_dict).model_dump()
+        answered = self.answer_generate_retry_turn(project_id, body)
+        if answered is not None:
+            return answered
         stop_speculation = False
         retain_offer = False
         with self._connection(True) as c:

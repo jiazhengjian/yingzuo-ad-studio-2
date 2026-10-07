@@ -123,14 +123,49 @@ def test_balance_refusal_is_a_merchant_sentence_and_is_not_reposted(prepared, fa
     assert result["status"] == "failed"
     assert result["error"] == BALANCE_CARD
     assert result["progress"]["error_code"] == "provider_balance"
-    assert result["progress"]["retryable"] is False
-    assert result["progress"].get("retry_action") is None
+    assert result["progress"]["retryable"] is True
+    assert result["progress"].get("retry_action") == "retry_existing"
     assert len(posts) == 1 and result["submission_count"] == 1
     step = store.get_step(job["id"], "video:s0")
     assert step["state"] == "rejected" and step["task_id"] is None
     assert step["result"]["provider_status"] == 402
     assert SECRET not in step["result"]["provider_excerpt"] and "https://" not in step["result"]["provider_excerpt"]
     assert "重试失败片段" not in result["error"]
+
+
+@pytest.mark.parametrize("status,code", [(401, "provider_auth"), (402, "provider_balance")])
+def test_account_refusal_retries_the_same_confirmed_plan_and_pictures(prepared, fake_media, monkeypatch, tmp_path, status, code):
+    store, project, plan, _, job = prepared
+    posts = []
+
+    def handle(request):
+        posts.append(request.url.path)
+        if len(posts) == 1:
+            return httpx.Response(status, text="account " + SECRET)
+        return httpx.Response(200, json={"data": {"id": "task-" + str(len(posts))}})
+
+    _install(monkeypatch, handle)
+    failed = run(prepared, ScriptedVideoGateway(_video_settings(tmp_path, (0,)), store, plan))
+    assert failed["status"] == "failed" and failed["progress"]["error_code"] == code
+    assert failed["progress"]["retryable"] is True and failed["progress"]["retry_action"] == "retry_existing"
+    assert len(posts) == 1 and store.get_step(job["id"], "video:s0")["task_id"] is None
+    kept_plan = json.loads(json.dumps(failed["payload"]["plan"]))
+    kept_images = list(failed["payload"]["design_asset_ids"])
+    revision = store.get_project(project["id"])["revision"]
+    context = store.get_project(project["id"])["context_version"]
+
+    retried = store.retry_generate_job(project["id"], job["id"])
+    assert retried["id"] == job["id"] and retried["status"] == "queued" and retried["submission_count"] == 0
+    assert retried["payload"]["plan"] == kept_plan and retried["payload"]["design_asset_ids"] == kept_images
+    assert store.get_step(job["id"], "video:s0") is None
+    assert store.get_project(project["id"])["revision"] == revision
+    assert store.get_project(project["id"])["context_version"] == context
+
+    done = run(prepared, ScriptedVideoGateway(_video_settings(tmp_path, (0,)), store, plan), retried)
+    assert done["status"] == "ready" and done["submission_count"] == 2
+    assert done["payload"]["design_asset_ids"] == kept_images
+    assert store.get_project(project["id"])["revision"] == revision
+    assert len(posts) == 3
 
 
 def test_timeout_stays_unknown_and_is_not_reposted(prepared, fake_media, monkeypatch, tmp_path):

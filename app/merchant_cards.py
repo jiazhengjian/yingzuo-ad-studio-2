@@ -17,7 +17,7 @@ import re
 
 SYSTEM_CARD = "这是系统问题，已记录；你的方案和图片都还在。"
 BALANCE_CARD = "账户余额或额度不足，已有方案和图片仍保留。请补充额度后再制作。"
-AUTH_CARD = "生成账户的连接需要检查，已有方案和图片仍保留。"
+AUTH_CARD = "生成账户的连接需要检查，已有方案和图片仍保留。账户修好后可以重新生成。"
 
 _TECHNICAL = re.compile(
     r"pydantic|validation|Value error|CreativeOption|请重新策划|请先重新策划|"

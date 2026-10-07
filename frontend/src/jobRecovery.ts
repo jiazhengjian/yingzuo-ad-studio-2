@@ -10,7 +10,7 @@ export type JobRecovery =
   | { kind: 'check_connection' }
   | { kind: 'unavailable' }
   | { kind: 'retry_planning'; label: '继续处理' }
-  | { kind: 'retry_existing'; label: '继续制作' | '重新合成' }
+  | { kind: 'retry_existing'; label: '继续制作' | '重新合成' | '重新生成' }
   | { kind: 'retry_failed_segments'; label: '重试失败片段' };
 
 const STORYBOARD_CONTENT = /背景人物没有跟着床入画|背景人物朝向和前面不一致|剧情卖点没有高光证明镜|状态结果还停在半程|结果状态没有单独的结果镜|结果状态和过程写在同一镜|剧情末镜写成了英雄定格|剧情末镜人物对着镜头举着产品|剧情末镜把家用物品带出了门/;
@@ -55,9 +55,13 @@ export function recoveryForJob(job?: Job): JobRecovery | null {
     }
     return { kind: 'edit_plan' };
   }
-  if (job.progress.error_code === 'provider_balance'
-    || job.progress.error_code === 'provider_auth'
-    || job.progress.error_code === 'provider_request_rejected') {
+  // A 401 or 402 never accepted a task. After the account is fixed, the same
+  // plan and pictures can be submitted again. A rejected request stays blocked.
+  if (job.kind === 'generate' && (job.progress.error_code === 'provider_balance'
+    || job.progress.error_code === 'provider_auth')) {
+    return { kind: 'retry_existing', label: '重新生成' };
+  }
+  if (job.progress.error_code === 'provider_request_rejected') {
     return { kind: 'unavailable' };
   }
   if (job.progress.error_code === 'voice_too_long' || /配音.*(?:长于|超过)|文案.*(?:过长|太长)|请缩短台词/.test(job.error || '')) return { kind: 'edit_voice' };
@@ -126,7 +130,7 @@ export function cardMessage(job: Job, recovery: JobRecovery): string {
     return '账户余额或额度不足，已有方案和图片仍保留。请补充额度后再制作。';
   }
   if (code === 'provider_auth') {
-    return '生成账户的连接需要检查，已有方案和图片仍保留。';
+    return '生成账户的连接需要检查，已有方案和图片仍保留。账户修好后可以重新生成。';
   }
   if (recovery.kind === 'retry_planning' && storyboardContentFailure(job)) {
     return '这次分镜没有通过内容检查。继续处理会重新生成分镜，已保存的需求和方向仍保留。';

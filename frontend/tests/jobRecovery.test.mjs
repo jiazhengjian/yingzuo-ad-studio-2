@@ -366,17 +366,25 @@ test('failure cards never show field names, pydantic, or validation wording', ()
   assert.doesNotMatch(kept, /speech_characters_per_tenth|validation/i);
 });
 
-test('a balance refusal is one merchant sentence and not a segment retry', () => {
-  const job = fixture({
-    error: '账户余额或额度不足，已有方案和图片仍保留。请补充额度后再制作。',
-    progress: { error_code: 'provider_balance', retryable: false, retry_action: 'retry_failed_segments', failed_segment_ids: ['seg_1'] },
-  });
-  assert.equal(recoveryForJob(job).kind, 'unavailable');
-  assert.equal(retryRequest(job), null);
-  const html = renderCard(job);
-  assert.match(html, /请补充额度后再制作/);
-  assert.match(html, /本次制作未完成/);
-  assert.doesNotMatch(html, /重试失败片段|视频片段未生成|继续制作|<button/);
+test('an account or balance refusal offers 重新生成 and keeps the saved work', () => {
+  const cases = [
+    ['provider_balance', /请补充额度后再制作/],
+    ['provider_auth', /账户修好后可以重新生成/],
+  ];
+  for (const [code, sentence] of cases) {
+    const job = fixture({
+      error: '账户问题',
+      progress: { error_code: code, retryable: false, retry_action: null, failed_segment_ids: ['seg_1'] },
+    });
+    assert.deepEqual(recoveryForJob(job), { kind: 'retry_existing', label: '重新生成' });
+    assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
+    const html = renderCard(job);
+    assert.match(html, sentence);
+    assert.match(html, /重新生成/);
+    assert.match(html, /本次制作未完成/);
+    assert.doesNotMatch(html, /重试失败片段|视频片段未生成|继续制作/);
+    assert.equal((html.match(/<button/g) || []).length, 1);
+  }
 });
 
 test('an exhausted or permanent video refusal uses the system sentence', () => {

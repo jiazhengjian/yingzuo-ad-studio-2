@@ -626,8 +626,13 @@ class Pipeline:
                         repair_attempts=getattr(exc, "repair_attempts", 0))
                 changes["progress"] = progress
             if job["kind"] == "generate" and held_submission:
+                from .generate_retry import ACCOUNT_RETRY_CODES
                 progress = dict(self.store.get_job(job_id).get("progress") or {})
-                progress.update(error_code=exc.error_code, retryable=False, retry_action=None)
+                # 401/402 did not accept a task. The merchant can fix the account
+                # and submit this same plan again. A rejected request stays blocked.
+                user_fixable = exc.error_code in ACCOUNT_RETRY_CODES
+                progress.update(error_code=exc.error_code, retryable=user_fixable,
+                                retry_action="retry_existing" if user_fixable else None)
                 changes["progress"] = progress
             elif job["kind"] == "generate":
                 recovery = self.store.video_retry_state(job_id)
