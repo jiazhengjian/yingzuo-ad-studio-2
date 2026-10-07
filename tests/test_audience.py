@@ -14,7 +14,8 @@ def test_a_stated_or_skipped_audience_is_not_asked_again():
     stated = {"ad_form": "brand_tvc", "cta_target": "ai_decide", "brief": "这款蛋糕卖给上班族"}
     assert should_ask_audience(stated) is False
     for brief in ("这款蛋糕放在下午茶场景", "女生主角", "这款蛋糕送给妈妈", "自己用"):
-        assert should_ask_audience({"ad_form": "brand_tvc", "cta_target": "ai_decide", "brief": brief}) is True
+        assert should_ask_audience({"ad_form": "brand_tvc", "cta_target": "ai_decide", "brief": brief}) is False
+    assert should_ask_audience({"ad_form": "brand_tvc", "cta_target": "ai_decide", "brief": "我想做一个蛋糕广告"}) is True
     asked = intake_strategy_response(_clarify("product_info", "几个、多大？"), stated)
     assert all(item["id"] != "audience" for item in asked["questions"])
     project = {"ad_form": "brand_tvc", "cta_target": "ai_decide", "brief": "我想做一个蛋糕广告"}
