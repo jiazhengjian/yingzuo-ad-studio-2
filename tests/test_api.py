@@ -162,7 +162,7 @@ def test_stale_tab_cannot_replace_newer_plan(tmp_path):
     plan = {"title": "商品广告", "script": "看看商品细节。", "cta": "了解详情", "language": "zh-CN", "aspect_ratio": "9:16",
             "audio_strategy": "voiceover", "facts": {"name": "香水", "claims": []}, "segments": [
                 {"id": f"s{i}", "duration_seconds": 10, "purpose": "展示", "prompt": "展示商品真实外观",
-                 "shots": [{"start": 0, "end": 10, "description": "展示"}], "reference_asset_ids": [asset["id"]]} for i in range(2)]}
+                 "shots": [{"start": 0, "end": 10, "description": f"展示第{i + 1}处"}], "reference_asset_ids": [asset["id"]]} for i in range(2)]}
     app.state.store.update_plan(pid, plan)
     saved = c.patch(f"/api/projects/{pid}/plan", json={"plan": plan, "accepted_revision": 1})
     assert saved.status_code == 200 and saved.json()["revision"] == 2

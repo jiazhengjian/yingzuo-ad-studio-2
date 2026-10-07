@@ -328,7 +328,13 @@ def create_app(settings=None, gateway=None, run_worker=True):
         ids = {a["id"] for a in detail["assets"]}
         if any(not set(s.reference_asset_ids).issubset(ids) for s in body.plan.segments):
             raise HTTPException(422, "方案引用了不存在的素材")
-        return public(store.update_plan(project_id, body.plan.model_dump(), expected_revision=body.accepted_revision))
+        from app.release_gate import settle_manual_edit
+        submitted = body.plan.model_dump()
+        plan, error = settle_manual_edit(
+            detail["project"].get("plan"), submitted, detail["project"].get("duration_seconds", 20))
+        if error:
+            raise HTTPException(422, error)
+        return public(store.update_plan(project_id, plan, expected_revision=body.accepted_revision))
 
     @app.post("/api/projects/{project_id}/generate")
     def generate(project_id: str, body: GenerateInput):

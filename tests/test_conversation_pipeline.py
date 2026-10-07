@@ -77,6 +77,8 @@ def assert_staged_plan(result, stage, compiled):
     actual = copy.deepcopy(result["plan"])
     actual.pop("ad_script", None)
     actual.pop("script_review", None)
+    actual.pop("review_status", None)
+    actual.pop("review_status_note", None)
     strategy = actual.pop("strategy")
     assert actual == expected
     assert strategy["brief"] == stage["brief"]
@@ -210,7 +212,10 @@ def test_answered_question_context_reaches_plan_decision(setup):
     assert any("抖音商品页" in m["content"] for m in gateway.contexts[-1]["messages"])
     expected = AgentDecision.model_validate(decision).model_dump()
     assert result["payload"]["creative_options"] == expected["creative_options"]
-    assert store.get_project(project["id"])["plan"] == expected["plan"]
+    saved = store.get_project(project["id"])["plan"]
+    saved.pop("review_status", None)
+    saved.pop("review_status_note", None)
+    assert saved == expected["plan"]
     assert not gateway.submissions
 
 
@@ -358,7 +363,7 @@ def test_image_confirmation_precedes_voice_for_selected_duration(setup, fake_med
     durations = [10] * (duration // 10) + ([duration % 10] if duration % 10 else [])
     first = decision["plan"]["segments"][0]
     decision["plan"]["segments"] = [{**copy.deepcopy(first), "id": f"s{i}", "duration_seconds": seconds,
-        "shots": [{"start": 0, "end": seconds, "description": "TEST shot"}],
+        "shots": [{"start": 0, "end": seconds, "description": f"TEST shot {i + 1}"}],
         "reference_asset_ids": [original["id"]]} for i, seconds in enumerate(durations)]
     for option in decision["creative_options"]:
         option["segment"] = {**copy.deepcopy(decision["plan"]["segments"][0]), "prompt": option["segment"]["prompt"]}

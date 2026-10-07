@@ -59,7 +59,7 @@ def clarify(env):
 
 def plan_for(asset_id):
     return {"title": "商品广告", "script": "透明瓶身，光影之间看见细节。了解这款商品。", "cta": "了解详情", "language": "zh-CN", "aspect_ratio": "9:16", "facts": {"name": "玻璃瓶", "claims": []}, "audio_strategy": "voiceover", "segments": [
-        {"id": f"seg_0{i + 1}", "duration_seconds": 10, "purpose": "展示商品", "prompt": "保持商品真实外观，自然柔光，稳定慢推。", "shots": [{"start": 0, "end": 10, "description": "缓慢展示"}], "reference_asset_ids": [asset_id]} for i in range(2)]}
+        {"id": f"seg_0{i + 1}", "duration_seconds": 10, "purpose": "展示商品", "prompt": "保持商品真实外观，自然柔光，稳定慢推。", "shots": [{"start": 0, "end": 10, "description": f"缓慢展示第{i + 1}处"}], "reference_asset_ids": [asset_id]} for i in range(2)]}
 
 
 def ready_plan(env):
@@ -499,7 +499,7 @@ def duration_plan(asset_id, total):
         seconds = min(10, remaining)
         segment = copy.deepcopy(template)
         segment.update(id=f"seg_{len(plan['segments']) + 1:02d}", duration_seconds=seconds,
-                       shots=[{"start": 0, "end": seconds, "description": "展示真实商品"}])
+                       shots=[{"start": 0, "end": seconds, "description": f"展示真实商品第{len(plan['segments']) + 1}处"}])
         plan["segments"].append(segment)
         remaining -= seconds
     return plan

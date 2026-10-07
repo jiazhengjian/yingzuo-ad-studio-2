@@ -167,7 +167,12 @@ def test_ending_shots_keep_one_main_action_for_brand_and_presenter():
     assert images_blocked_reason({"review_status": "not_ready", "plan_review": {"ready": False}})
     assert images_blocked_reason({"review_status": "passed"}) is None
     assert images_blocked_reason({"review_status": "conservative_fallback"}) is None
-    assert images_blocked_reason({"plan_review": {"ready": True}}) is None
+    # A board with no review record used to be released. It is blocked now.
+    assert images_blocked_reason({"plan_review": {"ready": True}})
+    placeholder = {"review_status": "conservative_fallback",
+                   "ad_script": {"beats": [{"narration": "看这里。"}, {"narration": "就是这个。"}]},
+                   "shots": [{"description": "商品放在画面中间。"}, {"description": "包装放在画面中间。"}]}
+    assert images_blocked_reason(placeholder)
 
 
 def test_compiled_prompt_locks_brand_and_presenter_but_not_a_story_push():

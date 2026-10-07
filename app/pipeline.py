@@ -708,6 +708,14 @@ class Pipeline:
                 raise ValueError("缺少本轮对话快照，请重新发送需求")
             if not resuming:
                 self._phase(job["id"], "deciding")
+            from .release_gate import lengthen_target
+            frozen_project = frozen["project"] if isinstance(frozen.get("project"), dict) else {}
+            longer = lengthen_target(
+                frozen.get("messages"), frozen_project.get("duration_seconds", 20),
+                frozen_project.get("brief", ""), frozen_project.get("plan"))
+            if longer:
+                job = self.store.extend_plan_duration(job["id"], longer)
+                frozen = job["payload"]["frozen"]
             if getattr(self.gateway, "supports_direction_selection", False):
                 callbacks.update(selected_strategy=job["payload"].get("selected_strategy"),
                     inherited_skill_trace=job["payload"].get("inherited_skill_trace", []),
@@ -745,6 +753,13 @@ class Pipeline:
         legacy_callbacks = {**callbacks, "gates": detail["gates"]} if callbacks else {}
         plan = validate_plan(await self.gateway.plan(detail["project"], detail["assets"], detail["messages"], **legacy_callbacks),
                              detail["project"].get("duration_seconds", 20), settings=self.settings)
+        from .release_gate import present_checked_plan
+        plan = present_checked_plan(
+            plan, plan.get("strategy"), duration=detail["project"].get("duration_seconds", 20),
+            generation_strategy=plan.get("generation_strategy"),
+            asset_ids=[item["id"] for item in detail["assets"] if item.get("kind") == "product"])
+        if plan is None:
+            raise ValueError("这次没能留下能通过检查的方案。已有方案和素材已保留，尚未开始新的图片或视频生成")
         self._guard(job["id"], require_current=True)
         self._references(job["project_id"], plan)
         self.store.assert_job_current(job["id"])
@@ -849,10 +864,14 @@ class Pipeline:
     async def _generate(self, job):
         project = self.store.get_project(job["project_id"])
         plan = await self._generation_plan(job, project)
-        from .progressive_planning import images_blocked_reason
-        blocked = images_blocked_reason(plan)
+        from .release_gate import assert_spend_confirmed, images_blocked_reason, stamp_honest_label
+        checked = copy.deepcopy(plan)
+        if not checked.get("review_status"):
+            stamp_honest_label(checked, checked.get("strategy"))
+        blocked = images_blocked_reason(checked, strategy=checked.get("strategy"))
         if blocked:
             raise ValueError(blocked)
+        assert_spend_confirmed(self.store.get_job(job["id"]), project)
         if project["route"] == "presenter" and not getattr(self.settings, "presenter_verified", False):
             raise ValueError("中文出镜口播能力尚未验证，目前不能生成口播路线")
         budget = self._submission_budget(job)
@@ -1166,6 +1185,8 @@ class Pipeline:
         if step and step["state"] in ("rejected", "failed"):
             raise ValueError("该视频任务已明确失败，原run不自动重新生成；需要新的明确授权与方案版本")
         if not step:
+            from .release_gate import assert_spend_confirmed
+            assert_spend_confirmed(self.store.get_job(jid), self.store.get_project(job["project_id"]))
             allowed = job.get("payload", {}).get("retry_segment_ids")
             if allowed is not None and spec["id"] not in allowed:
                 raise ValueError("本次只允许重新提交明确失败的片段")

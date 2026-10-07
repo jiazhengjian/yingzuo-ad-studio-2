@@ -302,6 +302,7 @@ class Store:
             payload["duration_seconds"] = p["duration_seconds"]
             if kind == "generate":
                 payload["video_submission_budget"] = len(payload["plan"]["segments"])
+                payload["merchant_confirmed_revision"] = revision
             jid, now = identifier("job"), time.time()
             c.execute("INSERT INTO jobs(id,project_id,revision,kind,status,phase,progress,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                       (jid, project_id, revision, kind, "queued", "queued", "{}", encoded(payload), now, now))
@@ -373,7 +374,8 @@ class Store:
             payload = {"plan": run_plan, "source_job_id": source_job_id, "accepted_revision": accepted_revision,
                        "base_render_id": base["id"], "context_version": p["context_version"],
                        "duration_seconds": p["duration_seconds"], "video_submission_budget": len(plan["segments"]),
-                       "pause_for_creative": True, "creative_confirmed": True, "design_asset_ids": scene_ids}
+                       "pause_for_creative": True, "creative_confirmed": True, "design_asset_ids": scene_ids,
+                       "merchant_confirmed_revision": revision}
             c.execute("INSERT INTO revisions VALUES(?,?,?,?)", (project_id, revision, encoded(plan), now))
             c.execute("UPDATE projects SET revision=?,plan=?,plan_context_version=context_version,status='queued',updated_at=? WHERE id=?", (revision, encoded(plan), now, project_id))
             c.execute("INSERT INTO jobs(id,project_id,revision,kind,status,phase,progress,payload,created_at,updated_at) VALUES(?,?,?,'generate','queued','queued',?,?,?,?)",
@@ -382,6 +384,24 @@ class Store:
             self._event(c, project_id, jid, "status", "已按连续性重新安排生成，复用确认过的图片", "waiting")
             self._message(c, project_id, "assistant", "已保留原版，将完整分镜和旁白合并为一次生成，改善跨段声音与画面衔接。", jid)
         return self.get_job(jid)
+
+    def extend_plan_duration(self, job_id, seconds):
+        """Grow the frozen duration for this planning turn. Does not bump context version."""
+        if type(seconds) is not int or not 10 <= seconds <= 60:
+            raise ValueError("时长须在10到60秒之间")
+        with self._connection(True) as c:
+            job, project = self._guard_job(c, job_id)
+            if seconds <= project["duration_seconds"]:
+                return job
+            now = time.time()
+            c.execute("UPDATE projects SET duration_seconds=?,updated_at=? WHERE id=?", (seconds, now, project["id"]))
+            payload = job["payload"]
+            payload["duration_seconds"] = seconds
+            frozen = payload.get("frozen")
+            if isinstance(frozen, dict) and isinstance(frozen.get("project"), dict):
+                frozen["project"]["duration_seconds"] = seconds
+            c.execute("UPDATE jobs SET payload=?,updated_at=? WHERE id=?", (encoded(payload), now, job_id))
+        return self.get_job(job_id)
 
     def get_job(self, job_id):
         with self._connection() as c:
@@ -555,7 +575,8 @@ class Store:
                 raise StaleRevision("没有明确失败的片段，请恢复原任务查询或下载")
             for key in ("manifest", "resume_known_tasks_only", "failed_voice_script_hash"):
                 payload.pop(key, None)
-            payload.update(source_job_id=source_job_id, retry_segment_ids=failed,
+            payload.update(source_job_id=source_job_id, merchant_confirmed_revision=source["revision"],
+                           retry_segment_ids=failed,
                            frozen_video_requests=frozen_video_requests,
                            frozen_video_specs=frozen_video_specs, frozen_video_assets=frozen_video_assets,
                            video_submission_budget=len(failed))
@@ -1405,6 +1426,12 @@ class Store:
                 revision = p["revision"]
                 if kind == "plan":
                     plan = decision["plan"]
+                    from .release_gate import images_blocked_reason, stamp_honest_label
+                    if not plan.get("review_status"):
+                        stamp_honest_label(plan, plan.get("strategy"))
+                    blocked = images_blocked_reason(plan, strategy=plan.get("strategy"))
+                    if blocked:
+                        raise ValueError(blocked)
                     self._validate_plan_duration(p, plan)
                     for option in decision["creative_options"]:
                         self._validate_plan_duration(p, {"generation_strategy": plan.get("generation_strategy", "legacy_10s"), "segments": [option["segment"], *plan["segments"][1:]]})
@@ -1577,7 +1604,8 @@ class Store:
                 c.execute("INSERT INTO revisions VALUES(?,?,?,?)", (project_id, revision, encoded(plan), now))
                 c.execute("UPDATE projects SET plan=?,revision=?,plan_context_version=context_version,status='generating',updated_at=? WHERE id=?", (encoded(plan), revision, now, project_id))
                 payload = job["payload"]
-                payload.update(plan=copy.deepcopy(plan), creative_confirmed=True, selected_option_id=selected["id"], context_version=p["context_version"])
+                payload.update(plan=copy.deepcopy(plan), creative_confirmed=True, selected_option_id=selected["id"],
+                               context_version=p["context_version"], merchant_confirmed_revision=revision)
                 design_ids = scene_ids
                 payload["design_asset_ids"] = scene_ids
                 if design_ids:

@@ -2329,6 +2329,8 @@ class Gateway:
             return decision, candidates, strategy
 
         repair_attempted = False
+        strategy = None
+        from app.release_gate import MerchantLineChoice, present_checked_plan
         try:
             if selected_strategy is not None:
                 strategy = StrategyRecord.model_validate(selected_strategy)
@@ -2914,33 +2916,48 @@ class Gateway:
                 # Report the actual completed state; the card carries the recommendation.
                 if choice_enabled:
                     plan["skill_trace"] = copy.deepcopy(skill_trace)
+                from app.release_gate import stamp_honest_label
+                stamp_honest_label(plan, strategy)
                 return AgentDecision.model_validate({"kind": "plan", "message": "广告方案已准备好，创意摘要和分镜见下方。需要修改，直接告诉我；确认后再准备图片。",
-                    "plan": plan, "planning_brief": strategy.brief.model_dump(), "skill_trace": skill_trace if choice_enabled else None},
+                    "plan": plan, "planning_brief": strategy.brief.model_dump() if strategy is not None else None, "skill_trace": skill_trace if choice_enabled else None},
                     context={"require_shot_narration": True}).model_dump()
         except StaleRevision:
             raise
+        except MerchantLineChoice as choice:
+            return AgentDecision.model_validate({
+                "kind": "clarify",
+                "message": (str(choice) or "这句台词需要你选一下。")[:3000],
+                "questions": list(choice.questions),
+            }).model_dump()
         except PlannerSyntaxResponse:
             salvaged = current_plan if isinstance(current_plan, dict) and current_plan.get("segments") else None
             if salvaged is None:
                 raise
-            salvaged = copy.deepcopy(salvaged)
-            salvaged["review_status"] = salvaged.get("review_status") or "conservative_fallback"
-            salvaged["review_status_note"] = salvaged.get("review_status_note") or "策划回复没有收完，已按保守放行留下上一稿。这条已记下。"
-            brief = salvaged.get("strategy", {}).get("brief") if isinstance(salvaged.get("strategy"), dict) else None
+            shown = present_checked_plan(
+                salvaged, strategy, duration=duration, generation_strategy=generation_strategy,
+                asset_ids=[item["id"] for item in sources], cta_target=project_cta_mode(project),
+                note="策划回复没有收完，硬门已经核对过上一稿。这条已记下。")
+            if shown is None:
+                raise
+            brief = shown.get("strategy", {}).get("brief") if isinstance(shown.get("strategy"), dict) else None
             decision = {
                 "kind": "plan",
                 "message": "广告方案已准备好，创意摘要和分镜见下方。需要修改，直接告诉我；确认后再准备图片。",
-                "plan": salvaged, "planning_brief": brief,
+                "plan": shown, "planning_brief": brief,
                 "skill_trace": skill_trace if choice_enabled else None,
             }
             try:
                 return AgentDecision.model_validate(decision, context={"require_shot_narration": True}).model_dump()
             except (ValidationError, ValueError, KeyError, TypeError):
-                # A review that does not bind to this board is not the final check.
-                # The fallback stays recorded so images are not a silent pass.
-                salvaged.pop("plan_review", None)
-                salvaged["review_status"] = "conservative_fallback"
-                salvaged["review_status_note"] = "上一稿的检查对不上这一稿，已按保守放行留下分镜。这条已记下。"
+                shown.pop("plan_review", None)
+                shown.pop("review_status", None)
+                rebound = present_checked_plan(
+                    shown, strategy, duration=duration, generation_strategy=generation_strategy,
+                    asset_ids=[item["id"] for item in sources], cta_target=project_cta_mode(project),
+                    note="上一稿的检查对不上这一稿，已按硬门重新核对。这条已记下。")
+                if rebound is None:
+                    raise
+                decision["plan"] = rebound
                 return AgentDecision.model_validate(decision, context={"require_shot_narration": True}).model_dump()
         except PlanningSessionError as exc:
             error = ProviderError(str(exc))
@@ -2953,19 +2970,17 @@ class Gateway:
             if (exc.error_code == "planning_review_incomplete" and isinstance(salvaged, dict)
                     and salvaged.get("segments") and not is_degenerate_plan(salvaged)):
                 try:
-                    brief = salvaged.get("strategy", {}).get("brief") if isinstance(salvaged.get("strategy"), dict) else None
-                    if salvaged.get("review_status") not in ("passed", "repaired", "not_ready", "conservative_fallback"):
-                        review = salvaged.get("plan_review") if isinstance(salvaged.get("plan_review"), dict) else None
-                        if isinstance(review, dict) and review.get("checks") and review.get("ready") is not True:
-                            salvaged["review_status"] = "not_ready"
-                            salvaged["review_status_note"] = "综合检查没有通过，记录已留在方案上。"
-                        else:
-                            salvaged["review_status"] = "conservative_fallback"
-                            salvaged["review_status_note"] = "综合检查没有完成，已按保守放行留下可用分镜。这条已记下。"
+                    shown = present_checked_plan(
+                        salvaged, strategy, duration=duration, generation_strategy=generation_strategy,
+                        asset_ids=[item["id"] for item in sources], cta_target=project_cta_mode(project),
+                        note="综合检查没有完成，已按硬门核对留下可用分镜。这条已记下。")
+                    if shown is None:
+                        raise ValueError("no usable plan")
+                    brief = shown.get("strategy", {}).get("brief") if isinstance(shown.get("strategy"), dict) else None
                     return AgentDecision.model_validate({
                         "kind": "plan",
                         "message": "广告方案已准备好，创意摘要和分镜见下方。需要修改，直接告诉我；确认后再准备图片。",
-                        "plan": salvaged, "planning_brief": brief,
+                        "plan": shown, "planning_brief": brief,
                         "skill_trace": skill_trace if choice_enabled else None,
                     }, context={"require_shot_narration": True}).model_dump()
                 except (ValidationError, ValueError, KeyError, TypeError):

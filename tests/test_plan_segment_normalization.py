@@ -200,6 +200,7 @@ def _saved_presenter_job(tmp_path, sheet_metadata):
         "characters": [{"id": "char_host", "name": "讲解人",
                         "description": "创作设定：成年女性，齐肩深色直发，浅灰色家居长袖上衣"}],
         "speech_mode": "voiceover", "speaker_id": "", "voice_description": "自然普通话"}
+    plan["review_status"] = "passed"
     project = store.update_plan(project["id"], plan)
     job = store.create_job(project["id"], "generate", project["revision"], {"pause_for_creative": True})
     scene_path = store.media_root / "scene.png"

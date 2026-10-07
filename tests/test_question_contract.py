@@ -26,7 +26,7 @@ def test_legitimate_choices_about_diy_products_are_not_removed():
 def test_long_script_must_be_repaired_before_plan_can_be_accepted():
     value = {"title": "商品展示", "script": "长" * 59, "facts": {"name": "杯子", "claims": []}, "segments": [
         {"id": f"s{i}", "duration_seconds": 10, "purpose": "展示", "prompt": "慢慢展示商品", "shots": [
-            {"start": 0, "end": 10, "description": "商品特写"}], "reference_asset_ids": ["test-original"]} for i in range(2)]}
+            {"start": 0, "end": 10, "description": f"商品特写第{i + 1}处"}], "reference_asset_ids": ["test-original"]} for i in range(2)]}
     with pytest.raises(ValueError, match="朗读长度"):
         Plan.model_validate(value)
     repair_candidate = Plan.model_validate(value, context={"allow_script_repair": True})

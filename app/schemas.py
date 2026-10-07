@@ -110,6 +110,8 @@ class SpeechSpan(BaseModel):
     end: float = Field(gt=0, le=30, allow_inf_nan=False)
     shot_ids: list[str] = Field(min_length=1, max_length=18)
     anchors: list[SpeechAnchor] = Field(min_length=1, max_length=12)
+    merchant_insisted: bool | None = Field(default=None, exclude_if=lambda value: not value,
+        description="商家坚持保留这句原文。只豁免这一句，其余内容仍过硬门。")
 
     @model_validator(mode="after")
     def complete_speech(self):
@@ -245,7 +247,11 @@ class Plan(BaseModel):
         description="最终方案的综合审核及服务端内容绑定，历史方案可缺省")
     review_status: Literal["passed", "repaired", "not_ready", "conservative_fallback"] | None = Field(
         default=None, exclude_if=lambda value: value is None,
-        description="终审落点。passed 是一次通过；repaired 是调整后再审通过；not_ready 是终审未通过并已留下；conservative_fallback 是检查无法完成时的保守放行，原因写在 review_status_note。没有这个字段的是更早的方案。")
+        description="终审落点。passed 是一次通过；repaired 是调整后再审通过；not_ready 是硬门没过，不能确认、不能出图；conservative_fallback 是硬门已经通过、综合检查没有完成的保守放行。没有这个字段的方案不能出图。")
+    merchant_locked_lines: list[str] = Field(default_factory=list, max_length=12, exclude_if=lambda value: not value,
+        description="商家指定后必须原样保留的台词。系统可以重排时间和其余句子，不能改写这些句子。")
+    merchant_insisted_lines: list[str] = Field(default_factory=list, max_length=12, exclude_if=lambda value: not value,
+        description="商家明知碰到硬门仍坚持保留的台词。豁免只覆盖这些句子。")
     review_status_note: str | None = Field(default=None, max_length=200, exclude_if=lambda value: value is None,
         description="终审落点的一句说明，给商家看。")
     visual_direction: VisualDirection | None = Field(default=None, exclude_if=lambda value: value is None, description="统一视觉约定，供场景图和全部镜头复用，不新增商家表单")

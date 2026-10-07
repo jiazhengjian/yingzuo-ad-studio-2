@@ -28,7 +28,8 @@ def compiled_from_reservations(context):
                 shot_id = f"s{index}_b{number}_shot{part}"
                 ids.append(shot_id)
                 shots.append({"id": shot_id, "beat_id": beat["id"], "start": cuts[part], "end": cuts[part + 1],
-                              "description": group["visual_role"], "purpose": beat["purpose"],
+                              "description": group["visual_role"] if len(cuts) == 2 else f"{group['visual_role']}，镜头{part + 1}",
+                              "purpose": beat["purpose"],
                               "evidence_ids": beat["evidence_ids"], "narration": ""})
             if group["text"]:
                 timing = {"start": group["speech_start"], "end": group["speech_end"]}

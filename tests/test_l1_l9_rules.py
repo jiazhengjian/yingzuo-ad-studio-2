@@ -309,17 +309,21 @@ def test_l4_review_salvage_does_not_ship_a_stacked_fifteen_second_brand_line(sou
         return script, False
 
     import app.line_quality as line_quality
+    from app.release_gate import images_blocked_reason
     original = line_quality.collapse_brand_claims
     line_quality.collapse_brand_claims = keep_claims
     try:
-        with pytest.raises(ProgressivePlanningError, match="堆卖点"):
-            asyncio.run(progressive_plan(
-                stage_call=stacked_board, on_progress=lambda _phase: None, record_failure=lambda _item: None,
-                strategy=strategy, draft=draft, draft_issues=[], duration=20,
-                generation_strategy="continuity_v1", assets=[source], conversation=[],
-                merchant_request="徕芬吹风机，做一条产品展示", current_plan=None, cta_target="none"))
+        plan = asyncio.run(progressive_plan(
+            stage_call=stacked_board, on_progress=lambda _phase: None, record_failure=lambda _item: None,
+            strategy=strategy, draft=draft, draft_issues=[], duration=20,
+            generation_strategy="continuity_v1", assets=[source], conversation=[],
+            merchant_request="徕芬吹风机，做一条产品展示", current_plan=None, cta_target="none"))
     finally:
         line_quality.collapse_brand_claims = original
+    assert plan["review_status"] == "conservative_fallback"
+    assert images_blocked_reason(plan, strategy=plan.get("strategy")) is None
+    spoken = "".join(beat.get("narration") or "" for beat in plan["ad_script"]["beats"])
+    assert "负离子" not in spoken and "不吵" not in spoken
 
 
 # --- L5 台词质量 ---
