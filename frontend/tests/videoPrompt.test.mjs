@@ -17,7 +17,7 @@ function loadSource(name) {
   new Function('require', 'module', 'exports', outputFiles[0].text)(requireFrontend, module, module.exports);
   return module.exports;
 }
-const { videoGenerationRecord, videoInputBasis, copyVideoPrompt, videoViewerNote, isCanvasVideo } = loadSource('videoPrompt.ts');
+const { videoGenerationRecord, copyVideoPrompt, videoViewerNote, isCanvasVideo } = loadSource('videoPrompt.ts');
 const VideoPromptPanel = loadSource('VideoPromptPanel.tsx').default;
 const viewer = loadSource('VideoViewer.tsx');
 const VideoViewer = viewer.default;
@@ -25,7 +25,7 @@ const { CanvasVideoButton } = viewer;
 const asset = (metadata, extra = {}) => ({ id: 'asset-1', name: '视频段 s0', url: '/media/asset-1', metadata, ...extra });
 const markup = (node) => renderToStaticMarkup(node);
 
-test('a generated clip shows the exact prompt, model and references that were saved', () => {
+test('a generated clip shows the exact prompt and model, not the reference images', () => {
   const prompt = '机位停住，产品从第一帧就以近景留在故事里。';
   const record = videoGenerationRecord(asset({
     video_prompt: prompt, model: 'wan3.0',
@@ -38,18 +38,18 @@ test('a generated clip shows the exact prompt, model and references that were sa
   }));
   assert.equal(record.prompt, prompt);
   assert.equal(record.model, 'wan3.0');
-  assert.equal(videoInputBasis(record.inputs), '依据：商品原图、场景参考、头发湿·起始');
+  assert.equal(record.inputs, undefined);
   const html = markup(React.createElement(VideoPromptPanel, { asset: asset({
     video_prompt: prompt, model: 'wan3.0',
     video_inputs: [{ role: 'product', label: '商品原图' }, { role: 'scene', label: '场景参考' }],
   }) }));
   assert.match(html, /<h4>提示词<\/h4>/);
   assert.match(html, /模型：wan3.0/);
-  assert.match(html, /依据：商品原图、场景参考/);
   assert.match(html, /机位停住，产品从第一帧就以近景留在故事里。/);
   assert.match(html, /复制提示词/);
+  assert.doesNotMatch(html, /依据|商品原图|场景参考|头发湿/);
   assert.doesNotMatch(html, /disabled/);
-  assert.doesNotMatch(html, /<textarea/);
+  assert.doesNotMatch(html, /<textarea|<img/);
   assert.doesNotMatch(html, /重新生成|修改提示/);
 });
 
@@ -57,16 +57,13 @@ test('an old clip with no stored request says 暂无记录 and does not reuse th
   const missing = videoGenerationRecord(asset({ prompt: '方案里的短提示', image_prompt: '图片提示' }));
   assert.equal(missing.prompt, null);
   assert.equal(missing.model, null);
-  assert.equal(missing.inputs, null);
-  assert.equal(videoInputBasis(missing.inputs), '依据：暂无记录');
-  const html = markup(React.createElement(VideoPromptPanel, { asset: asset({}) }));
+  const html = markup(React.createElement(VideoPromptPanel, { asset: asset({
+    video_inputs: [{ role: 'product', label: '商品原图' }],
+  }) }));
   assert.match(html, /模型：暂无记录/);
-  assert.match(html, /依据：暂无记录/);
   assert.match(html, /<pre class="image-prompt-text">暂无记录<\/pre>/);
   assert.match(html, /disabled/);
-  assert.doesNotMatch(html, /方案里的短提示|图片提示/);
-  const empty = videoGenerationRecord(asset({ video_prompt: '只有提示', model: 'wan3.0', video_inputs: [] }));
-  assert.equal(videoInputBasis(empty.inputs), '依据：没有参考图');
+  assert.doesNotMatch(html, /方案里的短提示|图片提示|依据|商品原图/);
 });
 
 test('the viewer plays the clip beside the read-only prompt, and a canvas click only opens it', async () => {
@@ -78,6 +75,7 @@ test('the viewer plays the clip beside the read-only prompt, and a canvas click 
   assert.match(html, /素材与修改意见/);
   assert.match(html, /这一段是发给视频模型的片段/);
   assert.match(html, /SENT_s0：产品从第一帧就在。/);
+  assert.doesNotMatch(html, /依据|商品原图/);
   assert.match(html, /下载视频/);
   assert.match(html, /提示词只读，这里不能修改或重新生成。/);
   assert.equal((html.match(/<button/g) || []).length, 1);
