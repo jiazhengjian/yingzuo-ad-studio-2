@@ -985,7 +985,7 @@ class Store:
         from .schemas import TurnInput
         from .ad_form import (AD_FORM_LABELS, answer_ad_form, explicit_ad_form, infer_ad_form,
                              rejects_current_ad_form, unresolved_ad_form_change)
-        from .cta import answer_cta, stated_cta
+        from .cta import answer_cta, is_explicit_cta, stated_cta
         from .planning import keeps_selected_direction, product_images_are_new
         body = TurnInput.model_validate(body_dict).model_dump()
         stop_speculation = False
@@ -1076,6 +1076,9 @@ class Store:
             if chosen_form is not None and rejects_current_ad_form(body["content"], chosen_form):
                 raise ValueError("广告倾向选择与撤回要求不一致，请保留一个选择")
             form_changed = (chosen_form is not None and chosen_form != p.get("ad_form")) or (withdraw_form and chosen_form is None)
+            # 剧情不念去向。同一张卡上选的去向作废，并记成已决定，避免换类型后再问一遍。
+            if chosen_form == "scene_story" and is_explicit_cta(chosen_cta):
+                chosen_cta = "ai_decide"
             if chosen_cta:
                 c.execute("UPDATE projects SET cta_target=? WHERE id=?", (chosen_cta, project_id))
             if form_changed:

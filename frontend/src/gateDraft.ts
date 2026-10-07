@@ -15,6 +15,29 @@ export const signatureOf = (gate: Gate) => JSON.stringify({ kind: gate.kind, que
 });
 export const isFreeInputOption = (label: string) => /我(?:来|自己)?(?:补充|填写)|自行(?:补充|填写)|自填|自定义|填写自己的|在.{0,12}输入框.{0,8}(?:填|补充)/.test(label);
 export const questionOptions = (question: Question) => question.options.filter(option => !isFreeInputOption(option.label));
+const storyChoice = (text: string) => {
+  const compact = text.replace(/\s+/g, '');
+  if (/不要|不想|不是|不用|不做|不拍/.test(compact)) return false;
+  return /剧情|场景广告/.test(compact);
+};
+export function hidesCta(answer?: Answer): boolean {
+  if (!answer || answer.skipped) return false;
+  if (answer.option_id === 'scene_story') return true;
+  return answer.text !== undefined && storyChoice(answer.text);
+}
+export function visibleQuestions(gate: Gate, answers: Record<string, Answer>): Question[] {
+  if (gate.kind !== 'clarification' || !hidesCta(answers.ad_form)) return gate.questions;
+  return gate.questions.filter(question => question.id !== 'cta_target');
+}
+export function submitAnswers(gate: Gate, draft: GateDraft): Answer[] {
+  const visible = new Set(visibleQuestions(gate, draft.answers).map(question => question.id));
+  return gate.questions.map(question => {
+    if (question.id === 'cta_target' && !visible.has(question.id)) return { question_id: question.id, skipped: true };
+    const saved = draft.answers[question.id];
+    if (!saved) return { question_id: question.id, skipped: true };
+    return saved.text !== undefined ? { question_id: question.id, text: saved.text.trim() } : saved;
+  });
+}
 export function validAnswer(question: Question, answer?: Answer): boolean {
   if (!answer || answer.question_id !== question.id) return false;
   const modes = Number(answer.option_id !== undefined) + Number(answer.text !== undefined) + Number(answer.skipped === true);
@@ -42,9 +65,10 @@ export function restoreDraft(gate: Gate, raw: string | null): GateDraft {
       const value = saved.composerDrafts?.[question.id];
       if (typeof value === 'string') composerDrafts[question.id] = value.slice(0, 500);
     }
-    const firstMissing = gate.questions.findIndex(question => !validAnswer(question, answers[question.id]));
-    let step = Number.isInteger(saved.step) ? Math.max(0, Math.min(Number(saved.step), gate.questions.length)) : 0;
-    if (step === gate.questions.length && firstMissing !== -1) step = firstMissing;
+    const visible = visibleQuestions(gate, answers);
+    const firstMissing = visible.findIndex(question => !validAnswer(question, answers[question.id]));
+    let step = Number.isInteger(saved.step) ? Math.max(0, Math.min(Number(saved.step), visible.length)) : 0;
+    if (step === visible.length && firstMissing !== -1) step = firstMissing;
     return { ...empty, answers, composerDrafts, step,
       selectedOptionId: gate.kind !== 'direction' && gate.options.some(option => option.id === saved.selectedOptionId) ? saved.selectedOptionId! : empty.selectedOptionId,
       note: typeof saved.note === 'string' ? saved.note.slice(0, 1000) : '',
@@ -52,14 +76,17 @@ export function restoreDraft(gate: Gate, raw: string | null): GateDraft {
   } catch { return empty; }
 }
 export function answerCurrentQuestion(gate: Gate, draft: GateDraft, answer: Answer): GateDraft {
-  const question = gate.questions[draft.step];
+  const question = visibleQuestions(gate, draft.answers)[draft.step];
   if (!question || !validAnswer(question, answer)) throw new Error('请回答当前问题。');
   const composerDrafts = { ...draft.composerDrafts };
   delete composerDrafts[question.id];
-  return { ...draft, composerDrafts, answers: { ...draft.answers, [question.id]: answer }, step: Math.min(draft.step + 1, gate.questions.length) };
+  const answers = { ...draft.answers, [question.id]: answer };
+  const next = visibleQuestions(gate, answers);
+  const index = next.findIndex(item => item.id === question.id);
+  return { ...draft, composerDrafts, answers, step: Math.min((index === -1 ? draft.step : index) + 1, next.length) };
 }
 export function answerCurrentWithText(gate: Gate, draft: GateDraft, input: string): GateDraft {
-  const question = gate.questions[draft.step];
+  const question = visibleQuestions(gate, draft.answers)[draft.step];
   if (!question) throw new Error('答案已填好，请先选择要修改的问题，再在下方输入。');
   if (!question.allow_custom) throw new Error('请为当前问题选择一个答案。');
   const text = input.trim();

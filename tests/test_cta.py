@@ -12,7 +12,7 @@ def test_clarification_asks_where_to_send_the_viewer_unless_the_brief_already_sa
         {"id": "audience", "prompt": "给谁看？", "options": [{"id": "self", "label": "自己用"}],
          "allow_custom": True, "allow_skip": True}]}
     result = intake_strategy_response(raw, project)
-    assert [item["id"] for item in result["questions"]] == ["audience", "cta_target"]
+    assert [item["id"] for item in result["questions"]] == ["audience", "cta_target", "highlight"]
     destination = result["questions"][1]
     assert destination["prompt"] == "看完视频后，希望观众去哪里？"
     assert [item["label"] for item in destination["options"]] == [
@@ -26,7 +26,7 @@ def test_clarification_asks_where_to_send_the_viewer_unless_the_brief_already_sa
     directions = intake_strategy_response(
         {"kind": "directions", "message": "三个方向"}, project)
     assert directions["kind"] == "clarify"
-    assert [item["id"] for item in directions["questions"]] == ["cta_target"]
+    assert [item["id"] for item in directions["questions"]] == ["cta_target", "highlight"]
 
 
 def test_open_endings_drop_guidance_and_an_explicit_target_is_required(source):

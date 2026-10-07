@@ -28,6 +28,9 @@ def enrich_planner_stage(data, *, legacy_storyboard=False):
     playbook_form = (resolve_playbook_form(data.get("ad_form"), structure_from_stage_data(data))
                      if "ad_form" in data else None)
     data["tagline_policy"] = tagline_policy()
+    if playbook_form == "scene_story":
+        # 「根据商品推荐」后来落成剧情时，先前记下的去向不再交给文案。
+        data["cta_target"] = "none"
     data["ending_policy"] = ending_policy(playbook_form, data.get("cta_target"))
     bundle = (stage_skill_context(skill_stage, playbook_form=playbook_form) if playbook_form
               else stage_skill_context(skill_stage))

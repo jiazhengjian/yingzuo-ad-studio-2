@@ -342,7 +342,7 @@ def test_intake_merges_canonical_question_but_never_inserts_it_into_greeting():
     assert len(raw["questions"]) == 3  # no mutation of model/raw checkpoint
     assert intake_strategy_response({"kind": "directions"}, project)["kind"] == "clarify"
     already = {"kind": "clarify", "questions": [ad_form_question(), raw["questions"][0]]}
-    assert [q["id"] for q in intake_strategy_response(already, {"ad_form": "auto"})["questions"]] == ["q0"]
+    assert [q["id"] for q in intake_strategy_response(already, {"ad_form": "auto"})["questions"]] == ["q0", "highlight"]
 
 
 def test_brief_preference_is_inherited_and_model_cannot_change_or_invent_it():
@@ -392,7 +392,7 @@ def test_gateway_intake_requests_only_reply_or_clarify_until_form_is_chosen(env,
             {"id": "facts", "prompt": "有哪些已知特点？", "options": [], "allow_skip": True}]}
     monkeypatch.setattr(Gateway, "_planner_json", fake)
     result = asyncio.run(Gateway(app.state.settings).decide(p, [app.state.store.get_asset(original["id"])], [], [], None))
-    assert result["kind"] == "clarify" and [q["id"] for q in result["questions"]] == ["ad_form", "cta_target", "facts"]
+    assert result["kind"] == "clarify" and [q["id"] for q in result["questions"]] == ["ad_form", "cta_target", "highlight"]
     assert len(contexts) == 1
     assert contexts[0]["allowed_decisions"] == ["reply", "clarify"]
     assert contexts[0]["ad_form_question"] == ad_form_question()

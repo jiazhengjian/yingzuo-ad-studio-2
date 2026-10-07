@@ -207,7 +207,7 @@ def answer_ad_form(answer):
     return explicit_ad_form(answer.get("text", ""))
 
 
-def intake_strategy_response(raw, project, *, ask_preference=True):
+def intake_strategy_response(raw, project, *, ask_preference=True, messages=(), gates=()):
     """Canonicalize one preference card before validating model output.
 
     Existing frozen jobs without the new project field retain their contract.
@@ -238,17 +238,30 @@ def intake_strategy_response(raw, project, *, ask_preference=True):
             # answer again. The existing one-shot correction can reroute it.
             raise ValueError("广告倾向已确认，不应重复提问；根据已有信息回复或继续策划")
         from .cta import attach_cta_question
+        from .highlight import attach_highlight_question
         result = attach_cta_question(result, project)
+        result = attach_highlight_question(result, project, messages, gates)
     elif ask_preference and kind in ("directions", "plan") and (
             needs_ad_form_choice(project) or should_ask_cta(project)):
         from .cta import cta_question
+        from .highlight import cap_questions, highlight_question, merchant_corpus, should_ask_highlight
         questions = []
         if needs_ad_form_choice(project):
             questions.append(ad_form_question())
         if should_ask_cta(project):
             questions.append(cta_question())
-        result = {"kind": "clarify", "message": "先确认看完视频后希望观众去哪里，再继续准备方案。",
-                  "questions": questions}
+        ask_highlight = should_ask_highlight(project, messages, gates)
+        if ask_highlight:
+            questions.append(highlight_question(merchant_corpus(project, messages)))
+        if ask_highlight and should_ask_cta(project) and needs_ad_form_choice(project):
+            message = "先确认广告怎么拍、看完去哪里，以及最想让观众记住的一点，再继续准备方案。"
+        elif ask_highlight and should_ask_cta(project):
+            message = "先确认看完去哪里，以及最想让观众记住的一点，再继续准备方案。"
+        elif ask_highlight:
+            message = "先确认广告的表达方式，以及最想让观众记住的一点，再继续准备方案。"
+        else:
+            message = "先确认看完视频后希望观众去哪里，再继续准备方案。"
+        result = {"kind": "clarify", "message": message, "questions": cap_questions(questions)}
     brief = result.get("brief")
     if isinstance(brief, dict):
         bind_brief_ad_form(brief, project)

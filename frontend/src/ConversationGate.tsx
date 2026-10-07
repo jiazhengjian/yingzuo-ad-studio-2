@@ -2,7 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 're
 import { Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Circle, Images, MessageSquare, Send, TriangleAlert } from 'lucide-react';
 import type { Answer, ExistingGate, Gate } from './api';
 import DirectionGate from './DirectionGate';
-import { answerCurrentQuestion, answerCurrentWithText, answerLabel, draftKey, initialDraft, questionOptions, restoreDraft, signatureOf, validAnswer } from './gateDraft';
+import { answerCurrentQuestion, answerCurrentWithText, answerLabel, draftKey, initialDraft, questionOptions, restoreDraft, signatureOf, submitAnswers, validAnswer, visibleQuestions } from './gateDraft';
 import type { GateDraft } from './gateDraft';
 import { adFormOptionDescription } from './adForm';
 import './conversation.css';
@@ -68,11 +68,12 @@ const PendingGate = forwardRef<ConversationGateHandle, Omit<ConversationGateProp
   const previousStep = useRef(draft.step);
   const locked = busy || submitting || submitted;
   const creative = gate.kind === 'creative';
-  const review = draft.step >= gate.questions.length;
-  const question = gate.questions[draft.step];
+  const questions = visibleQuestions(gate, draft.answers);
+  const review = draft.step >= questions.length;
+  const question = questions[draft.step];
   const answer = question ? draft.answers[question.id] : undefined;
   const cachedText = question ? draft.composerDrafts[question.id] : undefined;
-  const allAnswered = gate.questions.length > 0 && gate.questions.every(item => validAnswer(item, draft.answers[item.id]));
+  const allAnswered = questions.length > 0 && questions.every(item => validAnswer(item, draft.answers[item.id]));
   const selection = gate.options.find(option => option.id === draft.selectedOptionId);
   const visibleError = localError || error;
 
@@ -108,10 +109,7 @@ const PendingGate = forwardRef<ConversationGateHandle, Omit<ConversationGateProp
       if (!selection || composerText.trim()) return;
       await performSubmission(() => onCreativeSubmit(selection.id, ''));
     } else if (allAnswered) {
-      await performSubmission(() => onSubmit(gate.questions.map(item => {
-        const saved = draftRef.current.answers[item.id];
-        return saved.text !== undefined ? { question_id: item.id, text: saved.text.trim() } : saved;
-      })));
+      await performSubmission(() => onSubmit(submitAnswers(gate, draftRef.current)));
     }
   }
   useImperativeHandle(ref, () => ({
@@ -149,14 +147,14 @@ const PendingGate = forwardRef<ConversationGateHandle, Omit<ConversationGateProp
       </> : review ? <>
         <div className="gate-card-heading"><h3 ref={heading} tabIndex={-1}>确认你的选择</h3><CheckCircle2 size={16}/></div>
         <p className="gate-description">检查全部答案，然后统一提交。</p>
-        <div className="gate-review-list">{gate.questions.map((item, index) => <div className="gate-review-answer" key={item.id}><div><span>{index + 1}. {item.prompt}</span><button className="gate-link-button" type="button" disabled={locked} onClick={() => moveTo(index)} aria-label={`修改第${index + 1}题答案`}>修改</button></div><strong>{answerLabel(item, draft.answers[item.id])}</strong></div>)}</div>
+        <div className="gate-review-list">{questions.map((item, index) => <div className="gate-review-answer" key={item.id}><div><span>{index + 1}. {item.prompt}</span><button className="gate-link-button" type="button" disabled={locked} onClick={() => moveTo(index)} aria-label={`修改第${index + 1}题答案`}>修改</button></div><strong>{answerLabel(item, draft.answers[item.id])}</strong></div>)}</div>
         <div className="gate-footer"><button className="gate-back-button" type="button" disabled={locked} onClick={() => moveTo(0)}><ChevronLeft size={14}/>返回修改</button><button type="button" className="gate-submit-button" disabled={locked || !allAnswered} onClick={() => void submit().catch(() => {})}>{submitted ? <><Check size={14}/>已提交</> : submitting ? '正在提交…' : <>提交全部<Send size={14}/></>}</button></div>
       </> : question ? <>
-        <div className="gate-question-navigation"><span className="gate-question-label">补充一点信息</span><div>{question.allow_skip !== false && <button type="button" className="gate-skip-button" disabled={locked} onClick={() => choose({ question_id: question.id, skipped: true })}>跳过</button>}<span className="gate-counter"><button type="button" aria-label="返回上一题" disabled={locked || draft.step === 0} onClick={() => moveTo(draft.step - 1)}><ChevronLeft size={15}/></button>{draft.step + 1} / {gate.questions.length}</span></div></div>
+        <div className="gate-question-navigation"><span className="gate-question-label">补充一点信息</span><div>{question.allow_skip !== false && <button type="button" className="gate-skip-button" disabled={locked} onClick={() => choose({ question_id: question.id, skipped: true })}>跳过</button>}<span className="gate-counter"><button type="button" aria-label="返回上一题" disabled={locked || draft.step === 0} onClick={() => moveTo(draft.step - 1)}><ChevronLeft size={15}/></button>{draft.step + 1} / {questions.length}</span></div></div>
         <h3 className="gate-question-title" ref={heading} tabIndex={-1}>{question.prompt}</h3>
         <div className="gate-answer-options" role="group" aria-label={question.prompt}>{questionOptions(question).map(option => <button type="button" key={option.id} aria-pressed={answer?.option_id === option.id} className={`gate-answer-option ${answer?.option_id === option.id ? 'selected' : ''}`} disabled={locked} onClick={() => choose({ question_id: question.id, option_id: option.id })}><span>{option.label}{adFormOptionDescription(question.id, option.id) && <small className="ad-form-option-description">{adFormOptionDescription(question.id, option.id)}</small>}</span>{answer?.option_id === option.id ? <Check size={16}/> : <ChevronRight size={15}/>}</button>)}</div>
         {answer?.text && <p className="gate-current-answer">已填写：{answer.text}</p>}
-        <div className="gate-footer"><span className="gate-draft-label">{question.allow_custom !== false ? '也可以在下方输入答案，发送后进入下一题' : '选择后进入下一题，最终统一提交'}</span><button type="button" className="gate-next-button" disabled={locked || !validAnswer(question, answer)} onClick={() => moveTo(Math.min(draft.step + 1, gate.questions.length))}>{draft.step + 1 === gate.questions.length ? '检查选择' : '下一题'}<ChevronRight size={14}/></button></div>
+        <div className="gate-footer"><span className="gate-draft-label">{question.allow_custom !== false ? '也可以在下方输入答案，发送后进入下一题' : '选择后进入下一题，最终统一提交'}</span><button type="button" className="gate-next-button" disabled={locked || !validAnswer(question, answer)} onClick={() => moveTo(Math.min(draft.step + 1, questions.length))}>{draft.step + 1 === questions.length ? '检查选择' : '下一题'}<ChevronRight size={14}/></button></div>
       </> : null}
       {visibleError && <div className="gate-inline-error" role="alert"><TriangleAlert size={15}/><span>{visibleError}</span></div>}
       {storageUnavailable && <p className="gate-storage-warning">当前浏览器无法保存草稿，刷新前请先提交。</p>}

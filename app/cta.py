@@ -102,6 +102,9 @@ def project_cta_mode(project):
     """
     if not isinstance(project, dict):
         return None
+    # A story never speaks a destination, even if an earlier card stored one.
+    if project.get("ad_form") == "scene_story" and "cta_target" in project:
+        return "none"
     stated = stated_cta(project.get("brief"))
     if "cta_target" not in project:
         return stated
