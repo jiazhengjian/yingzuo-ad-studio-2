@@ -59,3 +59,6 @@
 .image-prompt-meta{font-size:11px;line-height:1.6;color:#9a8eaa}
 .image-prompt-text{margin:0;max-height:28vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#e4dced;background:#16141c;border:1px solid #332c3c;border-radius:10px;padding:12px}
 .image-prompt-panel>.button{width:100%;min-height:36px}
+.asset-stage>video{display:block;width:100%;height:100%;object-fit:contain;border-radius:13px;background:#050307}
+.video-open{display:block;width:100%;padding:0;cursor:zoom-in}
+.video-open video{pointer-events:none}

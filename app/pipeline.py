@@ -85,6 +85,104 @@ def video_submission_spec(plan, segment, assets=None):
     return spec
 
 
+def video_input_label(asset):
+    """Short name of one reference image that was sent with a video. No URLs."""
+    if not isinstance(asset, dict):
+        return "reference", "参考图"
+    kind = asset.get("kind")
+    meta = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
+    if kind == "product":
+        return "product", "商品原图"
+    if kind == "scene":
+        return "scene", "场景参考"
+    if kind == "character":
+        name = meta.get("character_name") or asset.get("name")
+        if isinstance(name, str) and name.strip():
+            return "character", name.strip() + "·角色参考"
+        return "character", "角色参考"
+    if kind == "start_frame" or meta.get("state_reference"):
+        label = meta.get("state_label")
+        if isinstance(label, str) and label.strip():
+            return "state", label.strip()
+        return "state", "状态参考"
+    return "reference", "参考图"
+
+
+def submitted_video_images(segment, assets):
+    """Images attached to the provider request, in that order. None when the set cannot be reconstructed."""
+    if not isinstance(segment, dict) or not isinstance(assets, list):
+        return None
+    ids = segment.get("reference_asset_ids")
+    if not isinstance(ids, list):
+        return None
+    by_id = {asset["id"]: asset for asset in assets if isinstance(asset, dict) and isinstance(asset.get("id"), str)}
+    ordered = [by_id[aid] for aid in ids if isinstance(aid, str) and aid in by_id]
+    products = [asset for asset in ordered if asset.get("kind") == "product" and not (asset.get("metadata") or {}).get("generated")]
+    scene = next((asset for asset in ordered if asset.get("kind") == "scene" and (asset.get("metadata") or {}).get("provider_url")), None)
+    if not products or scene is None:
+        return None
+    if segment.get("reference_roles") is None:
+        products = products[:1]
+    design = [scene]
+    if segment.get("production") is not None:
+        try:
+            design = validate_design_assets(segment, ordered)
+        except ValueError:
+            return None
+    return products + design
+
+
+def video_input_records(segment, assets):
+    images = submitted_video_images(segment, assets)
+    if images is None:
+        return None
+    records = []
+    for asset in images:
+        role, label = video_input_label(asset)
+        record = {"role": role, "label": label}
+        asset_id = asset.get("id") if isinstance(asset, dict) else None
+        if isinstance(asset_id, str) and asset_id.strip():
+            record["asset_id"] = asset_id.strip()
+        records.append(record)
+    return records
+
+
+def video_generation_metadata(segment, assets, request):
+    """The prompt actually sent, saved on the clip. Absent when that request was not stored."""
+    if not isinstance(request, dict):
+        return {}
+    prompt = request.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return {}
+    meta = {"video_prompt": prompt}
+    model = request.get("model")
+    if isinstance(model, str) and model.strip():
+        meta["model"] = model.strip()
+    records = video_input_records(segment, assets)
+    if records is not None:
+        meta["video_inputs"] = records
+    return meta
+
+
+def render_prompt_metadata(assets):
+    """Copy the clip prompt onto a composed file only when that file is one model clip."""
+    clips = [asset for asset in assets if isinstance(asset, dict) and asset.get("kind") == "segment"]
+    if len(clips) != 1:
+        return {}
+    meta = clips[0].get("metadata") if isinstance(clips[0].get("metadata"), dict) else {}
+    prompt = meta.get("video_prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return {}
+    record = {"video_prompt": prompt}
+    model = meta.get("model")
+    if isinstance(model, str) and model.strip():
+        record["model"] = model.strip()
+    inputs = meta.get("video_inputs")
+    if isinstance(inputs, list):
+        record["video_inputs"] = copy.deepcopy(inputs)
+    return record
+
+
 _PLANNER_STREAM_LABELS = {
     "strategy": "正在接收需求判断",
     "direction_review": "正在接收方向检查",
@@ -1173,11 +1271,14 @@ class Pipeline:
         if (spec.get("audio_strategy") == "native" and not info.get("has_audio")
                 and not media.permits_missing_native_audio(spec)):
             raise ValueError("供应商返回的视频片段没有原生音轨，不能导出有声广告；没有改用系统配音")
+        saved_step = self.store.get_step(jid, key) or step
+        request = (saved_step.get("snapshot") or {}).get("video_request") if isinstance(saved_step, dict) else None
         asset = self.store.add_asset(job["project_id"], "segment", f"视频段 {spec['id']}", path, "video/mp4", job["revision"],
                                      {**info, "task_id": step["task_id"], "segment_id": spec["id"], "source": "provider",
                                       "requested_duration_seconds": spec["duration_seconds"],
                                       "generation_strategy": spec.get("generation_strategy", "legacy_10s"),
-                                      "provider_duration_seconds": spec["duration_seconds"] if spec.get("generation_strategy") == "continuity_v1" else 10})
+                                      "provider_duration_seconds": spec["duration_seconds"] if spec.get("generation_strategy") == "continuity_v1" else 10,
+                                      **video_generation_metadata(spec, assets, request)})
         self.store.update_step(jid, key, state="downloaded", result={**(step.get("result") or {}), "asset_id": asset["id"]})
         self.store.add_event(job["project_id"], jid, "artifact", "真实视频片段已取回并检查时长")
         return asset
@@ -1218,7 +1319,8 @@ class Pipeline:
             manifest["local_silence_asset_ids"] = info["local_silence_asset_ids"]
             self._payload(job["id"], manifest=manifest)
         asset = self.store.add_asset(job["project_id"], "render", "广告成片", destination, "video/mp4", job["revision"],
-                                     {**info, "technical_checks": "pass", "manual_review_required": True})
+                                     {**info, "technical_checks": "pass", "manual_review_required": True,
+                                      **render_prompt_metadata(assets)})
         render = self.store.publish_render(job["id"], asset["id"], manifest)
         ready_message = ("视频已导出并保留原生声音。请复核商品外观、台词和声音；尚未转写音轨，本版未添加字幕。" if manifest["audio_strategy"] == "native"
                          else "视频已导出。已检查文件与规格，请复核商品外观、台词、字幕和声音。")
