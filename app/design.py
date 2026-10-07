@@ -60,26 +60,52 @@ def _product_terms(plan):
     return terms
 
 
+_WEARABLE_NOUNS = ("头戴式耳机", "耳机", "耳塞", "耳麦", "手表", "眼镜", "墨镜")
+_BARE_WEAR = re.compile(r"佩戴|戴着|戴上|头戴|(?<![摘取])戴")
+_FEMALE_LOOK = re.compile(r"(?<![其])她(?!们)|女生|女性|女孩|女士|女人")
+_MALE_LOOK = re.compile(r"(?<![其把让给向为被])他(?!们)|男生|男性|男孩|男士|男人")
+
+
+def _expanded_product_terms(terms):
+    """The product name plus the wearable noun inside it, so 降噪耳机 still matches 耳机."""
+    expanded = []
+    for term in terms or []:
+        if not isinstance(term, str) or not term.strip():
+            continue
+        text = term.strip()
+        if text not in expanded:
+            expanded.append(text)
+        for noun in _WEARABLE_NOUNS:
+            if noun in text and noun not in expanded:
+                expanded.append(noun)
+    return expanded
+
+
 def _clause_draws_product(clause, terms):
-    """Identity sheets leave the product off the body. Clothes stay."""
-    if not clause or not _HOLD_OR_WEAR.search(clause):
+    """Identity sheets leave the product off the body. Clothes stay.
+
+    Bare 「戴银色头戴式耳机」counts. A hat or coat that is not the product stays.
+    """
+    if not clause:
         return False
+    expanded = _expanded_product_terms(terms)
     if _HANDHELD_CLAUSE.search(clause):
-        return True
-    wears = re.search(r"佩戴|戴着|戴上|头戴", clause)
-    if not wears:
+        if not expanded or any(term in clause for term in expanded):
+            return True
+        return False
+    if not _BARE_WEAR.search(clause) and not _HOLD_OR_WEAR.search(clause):
+        return False
+    if not _BARE_WEAR.search(clause):
         return False
     if "全程" in clause:
         return True
-    return any(term and term in clause for term in terms)
+    return any(term in clause for term in expanded)
 
 
-def character_sheet_description(description, plan):
-    """Prompt copy. The stored appearance still lists every garment."""
+def _strip_product_clauses(description, terms):
     description = (description or "").strip()
     if not description:
         return description
-    terms = _product_terms(plan)
     kept = []
     for clause in re.split(r"[，。；]", description):
         clause = clause.strip()
@@ -87,6 +113,123 @@ def character_sheet_description(description, plan):
             continue
         kept.append(clause)
     return "，".join(kept)
+
+
+def character_sheet_description(description, plan):
+    """Prompt copy with the product taken off the body. Clothes stay."""
+    return _strip_product_clauses(description, _product_terms(plan))
+
+
+def _shot_blob_for(plan, person):
+    from .story_logic import iter_plan_shots
+    own = person.get("id") if isinstance(person, dict) else None
+    name = person.get("name") if isinstance(person, dict) and isinstance(person.get("name"), str) else ""
+    parts = []
+    for shot in iter_plan_shots(plan):
+        ids = shot.get("character_ids") if isinstance(shot.get("character_ids"), list) else []
+        blob = shot.get("description") if isinstance(shot.get("description"), str) else ""
+        if own and ids and own not in ids and (not name or name not in blob):
+            continue
+        parts.append(blob)
+        continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else {}
+        for key in ("start_state", "end_state", "allowed_changes"):
+            value = continuity.get(key)
+            if isinstance(value, str):
+                parts.append(value)
+    return "\n".join(parts)
+
+
+def character_gender(plan, person):
+    """female or male, from the shots that show this person. The cast line is only a fallback."""
+    shots = _shot_blob_for(plan, person if isinstance(person, dict) else {})
+    description = person.get("description") if isinstance(person, dict) and isinstance(person.get("description"), str) else ""
+    female_shots = len(_FEMALE_LOOK.findall(shots))
+    male_shots = len(_MALE_LOOK.findall(shots))
+    if female_shots or male_shots:
+        if female_shots >= male_shots and female_shots:
+            return "female"
+        if male_shots:
+            return "male"
+    if _FEMALE_LOOK.search(description):
+        return "female"
+    if _MALE_LOOK.search(description):
+        return "male"
+    return ""
+
+
+def apply_character_gender(description, gender):
+    """Lock the stored line to the gender the shots already use."""
+    description = (description or "").strip()
+    if gender == "female":
+        description = re.sub(r"男性|男生|男人|男孩|男士", "女性", description)
+        if description and not _FEMALE_LOOK.search(description):
+            description = "女性，" + description
+        elif not description:
+            description = "女性"
+    elif gender == "male":
+        description = re.sub(r"女性|女生|女人|女孩|女士", "男性", description)
+        if description and not _MALE_LOOK.search(description):
+            description = "男性，" + description
+        elif not description:
+            description = "男性"
+    return description
+
+
+def cast_look_lock(plan, person):
+    """One sentence for the image prompt. Shot text wins over an unstated gender."""
+    gender = character_gender(plan, person)
+    if gender == "female":
+        return "这个人是女性，东亚女性面孔，按镜头里的「她」来画，不要画成男性。"
+    if gender == "male":
+        return "这个人是男性，东亚男性面孔，按镜头里的「他」来画，不要画成女性。"
+    return ""
+
+
+def rewrite_character_description(person, plan):
+    """Drop the product from a stored cast line and lock gender to the shots.
+
+    Returns True when the stored description changes. Clothes that are not the
+    product stay. Callers that only need a prompt can read the same text via
+    character_sheet_description.
+    """
+    if not isinstance(person, dict):
+        return False
+    description = person.get("description") if isinstance(person.get("description"), str) else ""
+    cleaned = apply_character_gender(
+        _strip_product_clauses(description, _product_terms(plan)),
+        character_gender(plan, person),
+    )
+    if not cleaned:
+        cleaned = description.strip()
+    if cleaned == description:
+        return False
+    person["description"] = cleaned[:800]
+    return True
+
+
+def settle_cast_appearance(plan):
+    """Rewrite every stored character on this plan. Idempotent."""
+    if not isinstance(plan, dict):
+        return False
+    changed = False
+    production = plan.get("production") if isinstance(plan.get("production"), dict) else {}
+    for person in production.get("characters") or []:
+        if rewrite_character_description(person, plan):
+            changed = True
+    strategy = plan.get("strategy") if isinstance(plan.get("strategy"), dict) else {}
+    for direction in strategy.get("directions") or []:
+        if not isinstance(direction, dict):
+            continue
+        nested = direction.get("production") if isinstance(direction.get("production"), dict) else {}
+        for person in nested.get("characters") or []:
+            if rewrite_character_description(person, plan):
+                changed = True
+    return changed
+
+
+def strip_product_from_cast(description, *terms):
+    """Ingress helper. Product name compounds are enough; shots are not required."""
+    return _strip_product_clauses(description, [term for term in terms if isinstance(term, str)])
 
 
 def character_sheet_product_notes(plan):
@@ -126,11 +269,15 @@ def character_design_request(project, plan, character):
     if not isinstance(character, dict) or character not in approved:
         raise ValueError("角色四视图必须引用本次已确认方案中的角色")
     instructions, trace = compiler_template("ads-video-asset-prompts", "references/character-template.txt")
+    rewrite_character_description(character, plan)
     instructions = apply_cast_instructions(instructions, character.get("description", ""))
     from .story_logic import cast_distinction_line
     distinction = cast_distinction_line(plan, character)
     if distinction:
         instructions += "\n" + distinction
+    look = cast_look_lock(plan, character)
+    if look:
+        instructions += "\n" + look
     instructions += "\n" + _SHEET_NO_PRODUCT
     context = {"name": character["name"], "description": character_sheet_description(character.get("description", ""), plan)}
     return {"version": "character-context-v2", "character_id": character["id"],
@@ -382,12 +529,17 @@ def state_design_request(project, plan, instruction):
         if hidden:
             prompt += "本片不出镜：不要人脸，不要把独立发束或局部画成真人头。"
         return {**common, "reference_kinds": ["product"], "prompt": prompt}
+    rewrite_character_description(person, plan)
     description = _sheet_appearance(_neutral_description(
         _BUN.sub("", person.get("description") or "").strip("，,、 \n"),
         instruction.get("appearance_phrases") or []), plan, instruction.get("shot_id"))
+    description = _strip_product_clauses(description, _product_terms(plan))
     hair = _hairstyle_line(_hair_source_text(plan, person))
     instructions, trace = compiler_template("ads-video-asset-prompts", "references/character-template.txt")
     instructions = apply_cast_instructions(instructions, description)
+    look = cast_look_lock(plan, person)
+    if look:
+        instructions += "\n" + look
     appearance = _appearance_line(description)
     if phase == "start":
         instructions += (

@@ -1135,7 +1135,7 @@ def _fresh_character_id(value, taken):
     return candidate
 
 
-def _fit_cast(production, adjusted):
+def _fit_cast(production, adjusted, product_name=""):
     if not isinstance(production, dict):
         return
     people = production.get("characters")
@@ -1162,9 +1162,17 @@ def _fit_cast(production, adjusted):
         if not isinstance(description, str) or not description.strip():
             person["description"] = "成年角色"
             adjusted.append("character_description")
-        elif len(description) > 800:
-            person["description"] = _clip_ingress(description, 800)
-            adjusted.append("character_description")
+        else:
+            from .design import strip_product_from_cast
+            cleaned = strip_product_from_cast(description, product_name)
+            if len(cleaned) > 800:
+                cleaned = _clip_ingress(cleaned, 800)
+            if cleaned != description:
+                person["description"] = cleaned or "成年角色"
+                adjusted.append("character_description")
+            elif len(description) > 800:
+                person["description"] = _clip_ingress(description, 800)
+                adjusted.append("character_description")
     speaker = production.get("speaker_id")
     if isinstance(speaker, str) and speaker in mapping:
         production["speaker_id"] = mapping[speaker]
@@ -1282,7 +1290,8 @@ def prepare_strategy_ingress(payload):
             if isinstance(proof, str) and len(proof) > 40:
                 concept["side_proof"] = _clip_ingress(proof, 40)
                 adjusted.append("side_proof_length")
-        _fit_cast(direction.get("production"), adjusted)
+        product_name = brief.get("product_name") if isinstance(brief.get("product_name"), str) else ""
+        _fit_cast(direction.get("production"), adjusted, product_name)
         from .production import align_story_voice
         concept = direction.get("film_concept") if isinstance(direction.get("film_concept"), dict) else {}
         _production, did_voice = align_story_voice(

@@ -243,6 +243,11 @@ class Plan(BaseModel):
     alignment_review: dict | None = Field(default=None, exclude_if=lambda value: value is None)
     plan_review: dict | None = Field(default=None, exclude_if=lambda value: value is None,
         description="最终方案的综合审核及服务端内容绑定，历史方案可缺省")
+    review_status: Literal["passed", "repaired", "not_ready", "conservative_fallback"] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+        description="终审落点。passed 是一次通过；repaired 是调整后再审通过；not_ready 是终审未通过并已留下；conservative_fallback 是检查无法完成时的保守放行，原因写在 review_status_note。没有这个字段的是更早的方案。")
+    review_status_note: str | None = Field(default=None, max_length=200, exclude_if=lambda value: value is None,
+        description="终审落点的一句说明，给商家看。")
     visual_direction: VisualDirection | None = Field(default=None, exclude_if=lambda value: value is None, description="统一视觉约定，供场景图和全部镜头复用，不新增商家表单")
     generation_strategy: Literal["legacy_10s", "continuity_v1"] = Field(default="legacy_10s", exclude_if=lambda value: value == "legacy_10s", description="服务端决定的生成策略，旧任务保持原10秒回执，新任务按连续性分组")
     title: str = Field(min_length=1, max_length=100)

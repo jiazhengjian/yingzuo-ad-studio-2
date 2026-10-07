@@ -625,7 +625,9 @@ def test_content_failure_exposes_only_owned_summary_and_is_not_retryable(source)
     assert plan["segments"]
     assert recorded and recorded[-1]["nonblocking"] is True
     assert recorded[-1]["error_code"] == "planning_content_failed"
-    assert "PRIVATE_MODEL_RECEIPT" not in json.dumps(plan, ensure_ascii=False)
+    assert "PRIVATE_MODEL_RECEIPT" not in json.dumps(recorded, ensure_ascii=False)
+    assert plan["plan_review"]["ready"] is False
+    assert plan["review_status"] == "not_ready"
 
 
 @pytest.mark.parametrize("outside", ["beat", "shot", "global_message"])

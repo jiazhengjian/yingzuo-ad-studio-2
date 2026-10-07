@@ -199,25 +199,16 @@ def should_ask_cta(project):
     return True
 
 
-def attach_cta_question(result, project):
-    """Bundle the destination question into a clarification that is already happening."""
-    if not isinstance(result, dict) or result.get("kind") != "clarify" or not should_ask_cta(project):
+def attach_cta_question(result, project, messages=(), gates=(), *, planning_requested=False):
+    """Bundle the destination question with the same packer as the other fixed questions."""
+    if not isinstance(result, dict) or result.get("kind") != "clarify":
         return result
     questions = result.get("questions")
     if not isinstance(questions, list):
         return result
-    kept = [item for item in questions if not isinstance(item, dict) or item.get("id") != "cta_target"]
-    question = cta_question()
-    merged = []
-    placed = False
-    for item in kept:
-        merged.append(item)
-        if isinstance(item, dict) and item.get("id") == "ad_form" and not placed:
-            merged.append(question)
-            placed = True
-    if not placed:
-        merged.append(question)
-    result["questions"] = merged[:4]
+    from .ad_form import pack_clarification_questions
+    result["questions"] = pack_clarification_questions(
+        questions, project, messages, gates, planning_requested=planning_requested)
     return result
 
 

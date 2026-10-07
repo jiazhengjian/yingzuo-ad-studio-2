@@ -15,6 +15,13 @@ _STATED = re.compile(
     r"口感|好吃|好喝|好看|松软|不腻|新鲜|手工|工艺|夹心|"
     r"香味|香甜|奶香|好用|安静|降噪|快干|护发|颜值|透气|防水"
 )
+# A category glued to the product name is the product, not a chosen selling point.
+# 「降噪耳机」does not answer the highlight question. 「主打降噪」still does.
+_CATEGORY_COMPOUND = re.compile(
+    r"(?:降噪|静音|防水|快干|护发|透气|蓝牙|无线)"
+    r"(?:的|式)?"
+    r"(?:耳机|耳塞|耳麦|头戴式耳机|手表|手机|鞋|包|风扇|吹风机|风筒|面霜|面膜|精华|音箱)"
+)
 _SPEC_PROMPT = re.compile(r"种类|几个|数量|尺寸|包装|规格|多大|几寸|多少个|几块|具体是什么")
 _DUPLICATE_PROMPT = re.compile(r"记住|卖点|亮点|最想让|特点")
 _SKIPPED = "暂不确定，请使用谨慎表达"
@@ -68,8 +75,14 @@ def merchant_corpus(project, messages=()):
 
 
 def stated_highlight(text):
-    """True when the merchant already named what the ad should remember."""
-    return bool(_STATED.search(str(text or "")))
+    """True when the merchant already named what the ad should remember.
+
+    A product-category compound such as 降噪耳机 is the product name. It does
+    not count. An explicit marker (主打, 卖点, 最想记住) still does, and so does
+    a benefit that is not glued to the product noun.
+    """
+    cleaned = _CATEGORY_COMPOUND.sub("", str(text or ""))
+    return bool(_STATED.search(cleaned))
 
 
 def highlight_closed(gates):
@@ -164,16 +177,14 @@ def cap_questions(questions, limit=4):
     return result[:limit]
 
 
-def attach_highlight_question(result, project, messages=(), gates=()):
-    """Put the fixed highlight on a clarification that does not already have one."""
+def attach_highlight_question(result, project, messages=(), gates=(), *, planning_requested=False):
+    """Put the fixed highlight on a clarification, using the one shared packer."""
     if not isinstance(result, dict) or result.get("kind") != "clarify":
-        return result
-    if not should_ask_highlight(project, messages, gates):
         return result
     questions = result.get("questions")
     if not isinstance(questions, list):
         return result
-    corpus = merchant_corpus(project, messages)
-    kept = [item for item in questions if not displaced_highlight(item)]
-    result["questions"] = cap_questions(_place_highlight(kept, highlight_question(corpus)))
+    from .ad_form import pack_clarification_questions
+    result["questions"] = pack_clarification_questions(
+        questions, project, messages, gates, planning_requested=planning_requested)
     return result

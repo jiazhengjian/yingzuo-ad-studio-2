@@ -58,6 +58,9 @@ def video_submission_spec(plan, segment, assets=None):
         spec["director_context"] = director
     if plan.get("production") is not None:
         spec["production"] = copy.deepcopy(plan["production"])
+    facts = plan.get("facts") if isinstance(plan.get("facts"), dict) else None
+    if isinstance(facts, dict) and isinstance(facts.get("name"), str) and facts["name"].strip():
+        spec["facts"] = {"name": facts["name"].strip()}
     if assets is not None:
         spec["reference_asset_ids"] = [asset["id"] for asset in assets]
         visible = [asset for asset in assets if asset["kind"] in ("product", "scene", "character") or (
@@ -841,6 +844,10 @@ class Pipeline:
     async def _generate(self, job):
         project = self.store.get_project(job["project_id"])
         plan = await self._generation_plan(job, project)
+        from .progressive_planning import images_blocked_reason
+        blocked = images_blocked_reason(plan)
+        if blocked:
+            raise ValueError(blocked)
         if project["route"] == "presenter" and not getattr(self.settings, "presenter_verified", False):
             raise ValueError("中文出镜口播能力尚未验证，目前不能生成口播路线")
         budget = self._submission_budget(job)

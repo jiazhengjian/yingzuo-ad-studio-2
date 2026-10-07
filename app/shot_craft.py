@@ -953,6 +953,240 @@ def _write_continuity(revised, **updates):
     return True
 
 
+_ENDING_ACTION_GROUPS = (
+    re.compile(r"摘下|取下|脱下"),
+    re.compile(r"放下|放到|放在|放回|搁下"),
+    re.compile(r"收手|收回手|把手收回|手收回|松手|松开"),
+    re.compile(r"关机|关掉|关闭电源|关闭"),
+    re.compile(r"递给|递出|递向|拿开"),
+)
+_ENDING_ACTION = re.compile(
+    r"摘下|取下|脱下|放下|放到|放在|放回|搁下|收手|收回手|把手收回|手收回|松手|松开|"
+    r"关机|关掉|关闭电源|关闭|递给|递出|递向|拿开"
+)
+_MIN_ENDING_ACTION_SECONDS = 2.0
+
+
+def _first_ending_pattern(text):
+    """The earliest affirmed ending action in this text, if it has two or more."""
+    if not isinstance(text, str) or not text:
+        return None
+    found = []
+    for pattern in _ENDING_ACTION_GROUPS:
+        for match in pattern.finditer(text):
+            if not _negated_at(text, match.start()):
+                found.append((match.start(), pattern))
+                break
+    if len(found) < 2:
+        return None
+    found.sort(key=lambda item: item[0])
+    return found[0][1]
+
+
+def _drop_other_ending_actions(text, keep):
+    if not isinstance(text, str) or keep is None:
+        return text
+    drop = re.compile("|".join(
+        pattern.pattern for pattern in _ENDING_ACTION_GROUPS if pattern is not keep))
+    cleaned = _drop_clauses(text, drop)
+    return cleaned
+
+
+def simplify_ending_text(text):
+    """Leave one main ending action. Other action clauses go."""
+    keep = _first_ending_pattern(text)
+    if keep is None:
+        return text
+    cleaned = _drop_other_ending_actions(text, keep)
+    if not str(cleaned or "").strip("，。；、 "):
+        match = keep.search(text)
+        cleaned = text[max(0, match.start() - 8):match.end()] if match else text
+    return cleaned
+
+
+def simplify_ending_shot(shot):
+    """One main action in this ending shot. Brand and presenter only, via the caller."""
+    if not isinstance(shot, dict):
+        return shot
+    description = shot.get("description") if isinstance(shot.get("description"), str) else ""
+    if _first_ending_pattern(description) is None:
+        # Continuity can still stack actions the description already simplified.
+        fields = _picture_fields(shot)
+        if sum(1 for _pattern in _ENDING_ACTION_GROUPS if any(_affirmed_in(_pattern, part) for part in fields)) < 2:
+            return shot
+    revised = {**shot}
+    continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else None
+    if continuity is not None:
+        revised["continuity"] = {**continuity}
+    revised["description"] = simplify_ending_text(description)[:1500]
+    if isinstance(revised.get("continuity"), dict):
+        for key in ("start_state", "allowed_changes", "end_state"):
+            current = revised["continuity"].get(key)
+            if isinstance(current, str):
+                revised["continuity"][key] = simplify_ending_text(current)[:800]
+    if revised == shot:
+        return shot
+    return revised
+
+
+def _ending_action_clauses(text):
+    clauses = []
+    for clause in re.split(r"[，,。；;、]", text or ""):
+        piece = clause.strip()
+        if piece and _affirmed_in(_ENDING_ACTION, piece):
+            clauses.append(piece)
+    return clauses
+
+
+def _speech_covers(shot, spans):
+    shot_id = shot.get("id")
+    for span in spans or []:
+        if not isinstance(span, dict):
+            continue
+        ids = span.get("shot_ids") if isinstance(span.get("shot_ids"), list) else []
+        if shot_id and shot_id in ids:
+            return True
+    return False
+
+
+def _split_ending_shot(shot, spans, taken_ids):
+    """Split a long silent ending into one shot per main action. None when it should stay one shot."""
+    if not isinstance(shot, dict):
+        return None
+    description = shot.get("description") if isinstance(shot.get("description"), str) else ""
+    actions = _ending_action_clauses(description)
+    # Same verb twice is still one main action.
+    groups = []
+    for clause in actions:
+        group = _first_group_index(clause)
+        if group is None:
+            continue
+        if not groups or groups[-1][0] != group:
+            groups.append((group, clause))
+    if len(groups) < 2:
+        return None
+    seconds = _shot_seconds(shot)
+    if seconds is None or seconds + 1e-6 < _MIN_ENDING_ACTION_SECONDS * len(groups):
+        return None
+    if _speech_covers(shot, spans):
+        return None
+    start = float(shot["start"])
+    end = float(shot["end"])
+    slice_seconds = (end - start) / len(groups)
+    pieces = []
+    non_actions = [clause.strip() for clause in re.split(r"[，,。；;、]", description)
+                   if clause.strip() and not _affirmed_in(_ENDING_ACTION, clause)]
+    for index, (_group, clause) in enumerate(groups):
+        piece = {**shot}
+        continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else None
+        if continuity is not None:
+            piece["continuity"] = {**continuity}
+        if index == 0:
+            body = "，".join([clause, *non_actions])
+        else:
+            body = clause
+            piece["id"] = _fresh_shot_id(shot.get("id") or "s", index + 1, taken_ids)
+            taken_ids.add(piece["id"])
+        piece["description"] = body[:1500]
+        piece["start"] = round(start + slice_seconds * index, 4)
+        piece["end"] = round(end if index == len(groups) - 1 else start + slice_seconds * (index + 1), 4)
+        if piece["end"] <= piece["start"]:
+            return None
+        if isinstance(piece.get("continuity"), dict):
+            if index:
+                piece["continuity"]["entry_transition"] = "cut"
+                piece["continuity"]["entry_reason"] = "收束动作分开，一次只做一件"
+                piece["continuity"]["start_state"] = clause[:800]
+            piece["continuity"]["allowed_changes"] = clause[:800]
+            piece["continuity"]["end_state"] = clause[:800]
+        pieces.append(piece)
+    return pieces
+
+
+def _first_group_index(text):
+    for index, pattern in enumerate(_ENDING_ACTION_GROUPS):
+        if _affirmed_in(pattern, text):
+            return index
+    return None
+
+
+def _fresh_shot_id(base, number, taken):
+    stem = re.sub(r"[^A-Za-z0-9_-]", "", str(base or "s")) or "s"
+    candidate = f"{stem}_e{number}"
+    if len(candidate) > 80:
+        candidate = candidate[:80]
+    extra = 2
+    while candidate in taken:
+        suffix = f"_{extra}"
+        candidate = f"{stem[:80 - len(suffix)]}{suffix}"
+        extra += 1
+    return candidate
+
+
+def settle_ending_actions(plan):
+    """One main action in the last shots of a product film or a presenter film.
+
+    A long silent ending is split so each action gets its own shot. A short
+    ending, or one that is still talking, keeps the first action and drops the
+    rest. Story endings are left to the insert close-up. Returns True when the
+    board changes.
+    """
+    if not isinstance(plan, dict):
+        return False
+    from .ad_form_playbook import resolve_playbook_form
+    strategy = plan.get("strategy") if isinstance(plan.get("strategy"), dict) else {}
+    brief = strategy.get("brief") if isinstance(strategy.get("brief"), dict) else {}
+    selected = next((item for item in strategy.get("directions") or []
+                     if isinstance(item, dict) and item.get("id") == strategy.get("selected_direction_id")), {})
+    concept = selected.get("film_concept") if isinstance(selected.get("film_concept"), dict) else {}
+    form = resolve_playbook_form(brief.get("ad_form"), concept.get("structure"))
+    if form not in _PRODUCT_FRAME_FORMS:
+        form = plan.get("ad_form") if plan.get("ad_form") in _PRODUCT_FRAME_FORMS else form
+    if form not in _PRODUCT_FRAME_FORMS:
+        return False
+    segments = plan.get("segments") if isinstance(plan.get("segments"), list) else []
+    if not segments or not isinstance(segments[-1], dict):
+        return False
+    segment = segments[-1]
+    shots = segment.get("shots") if isinstance(segment.get("shots"), list) else []
+    if not shots:
+        return False
+    spans = segment.get("speech_spans") if isinstance(segment.get("speech_spans"), list) else []
+    taken = {shot.get("id") for shot in shots if isinstance(shot, dict)}
+    changed = False
+    last = shots[-1]
+    if isinstance(last, dict) and len(shots) < 18:
+        pieces = _split_ending_shot(last, spans, taken)
+        if pieces:
+            shots[-1:] = pieces
+            changed = True
+    # The closing shot, and the one before it when that one also stacks an ending.
+    for index in range(max(0, len(shots) - 2), len(shots)):
+        shot = shots[index]
+        if not isinstance(shot, dict):
+            continue
+        simplified = simplify_ending_shot(shot)
+        if simplified is not shot:
+            shots[index] = simplified
+            changed = True
+    if not changed:
+        return False
+    segment["shots"] = shots
+    segment["prompt"] = "\n".join(
+        f"{shot['start']:g}–{shot['end']:g}秒：{shot['description']}" for shot in shots if isinstance(shot, dict)
+    )[:8000]
+    for span in spans:
+        if not isinstance(span, dict):
+            continue
+        ids = span.get("shot_ids") if isinstance(span.get("shot_ids"), list) else []
+        visible = [shot for shot in shots if isinstance(shot, dict) and shot.get("id") in ids]
+        evidence = "；".join(shot.get("description") or "" for shot in visible)[:1000]
+        for anchor in span.get("anchors") or []:
+            if isinstance(anchor, dict) and evidence:
+                anchor["visual_evidence"] = evidence
+    return True
+
+
 def lock_product_frame(shot, *, form, final=False):
     """Drop a push that shares a shot with a person doing something.
 
@@ -966,6 +1200,8 @@ def lock_product_frame(shot, *, form, final=False):
     """
     if form not in _PRODUCT_FRAME_FORMS or not isinstance(shot, dict):
         return shot
+    if final:
+        shot = simplify_ending_shot(shot)
     revised = {**shot}
     continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else None
     if continuity is not None:
@@ -973,7 +1209,14 @@ def lock_product_frame(shot, *, form, final=False):
     description = revised.get("description") if isinstance(revised.get("description"), str) else ""
     if final:
         fields = _picture_fields(revised)
-        stacked = form == "presenter_pitch" and sum(_affirmed_count(_STACKED_ACTION, part) for part in fields) >= 2
+        # The same action copied into the state line is still one action.
+        # Two different ending verbs are a stack, and only then are they cleared.
+        ending_groups = set()
+        for part in fields:
+            for index, pattern in enumerate(_ENDING_ACTION_GROUPS):
+                if _affirmed_in(pattern, part):
+                    ending_groups.add(index)
+        stacked = form == "presenter_pitch" and len(ending_groups) >= 2
         if stacked or any(_affirmed_in(_LEAVE_FRAME, part) for part in fields):
             description = _drop_clauses(description, _LEAVE_FRAME)
             if stacked:

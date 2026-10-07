@@ -100,12 +100,74 @@ def test_presenter_ending_keeps_the_product_in_frame_and_drops_stacked_actions()
         locked["continuity"]["camera_move"],
     ])
     assert "推进" not in blob
-    assert "把它放下" not in blob and "关掉" not in blob and "离开画面" not in blob
+    assert "把它放下" not in blob and "松开" not in blob and "离开画面" not in blob
+    assert "关掉" in blob
     assert "不放下" in blob
     assert "留在手里或身前" in locked["continuity"]["start_state"]
     assert "第一帧" in locked["continuity"]["start_state"]
     assert locked["product_visible"] is True
     assert lock_product_frame(shot, form="scene_story", final=True) is shot
+
+
+def test_ending_shots_keep_one_main_action_for_brand_and_presenter():
+    from app.progressive_planning import images_blocked_reason
+    from app.shot_craft import settle_ending_actions, simplify_ending_shot
+
+    stacked = _shot(
+        "她摘下银色耳机，放到桌上，收回手。",
+        "中近景，机位停住",
+        start=6.4,
+        end=10.0,
+        start_state="耳机还戴在头上",
+        allowed_changes="摘下，放下，收手",
+        end_state="手已经收回，耳机在桌上",
+    )
+    for form in ("brand_tvc", "presenter_pitch"):
+        simplified = simplify_ending_shot(stacked)
+        assert "摘下" in simplified["description"]
+        assert "放到" not in simplified["description"] and "收回" not in simplified["description"]
+        plan = {
+            "ad_form": form,
+            "strategy": {"brief": {"ad_form": form}, "selected_direction_id": "d1",
+                         "directions": [{"id": "d1", "film_concept": {"structure": "product_visual"}}]},
+            "segments": [{"id": "seg_1", "duration_seconds": 10, "shots": [
+                {"id": "s6", "start": 0, "end": 6.4, "description": "她拿着耳机看向镜头。"},
+                dict(stacked, id="s7"),
+            ], "speech_spans": []}],
+        }
+        assert settle_ending_actions(plan) is True
+        last = plan["segments"][-1]["shots"][-1]
+        assert "摘下" in last["description"]
+        assert "放到" not in last["description"] and "收回" not in last["description"]
+        assert len(plan["segments"][-1]["shots"]) == 2
+    story = {
+        "strategy": {"brief": {"ad_form": "scene_story"}, "selected_direction_id": "d1",
+                     "directions": [{"id": "d1", "film_concept": {"structure": "scene_action"}}]},
+        "segments": [{"shots": [dict(stacked, id="s7")]}],
+    }
+    assert settle_ending_actions(story) is False
+    assert "放到桌上" in story["segments"][0]["shots"][0]["description"]
+    long = _shot(
+        "她摘下耳机，放到桌上。",
+        "中近景，机位停住",
+        start=0,
+        end=8,
+    )
+    long["id"] = "s7"
+    quiet = {
+        "strategy": {"brief": {"ad_form": "brand_tvc"}, "selected_direction_id": "d1",
+                     "directions": [{"id": "d1", "film_concept": {"structure": "product_visual"}}]},
+        "segments": [{"id": "seg_1", "duration_seconds": 8, "shots": [long], "speech_spans": []}],
+    }
+    assert settle_ending_actions(quiet) is True
+    pieces = quiet["segments"][0]["shots"]
+    assert len(pieces) == 2
+    assert "摘下" in pieces[0]["description"] and "放到" not in pieces[0]["description"]
+    assert "放到" in pieces[1]["description"] and "摘下" not in pieces[1]["description"]
+    assert images_blocked_reason({"review_status": "not_ready", "plan_review": {"ready": False}})
+    assert images_blocked_reason({"review_status": "passed"}) is None
+    assert images_blocked_reason({"review_status": "conservative_fallback"}) is None
+    assert images_blocked_reason({"plan_review": {"ready": True}}) is None
 
 
 def test_compiled_prompt_locks_brand_and_presenter_but_not_a_story_push():

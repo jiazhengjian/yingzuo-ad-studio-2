@@ -569,7 +569,34 @@ def compile_director(raw, strategy, duration, generation_strategy, asset_ids, lo
             payload["segments"] = segments
             plan = Plan.model_validate(payload, context={"require_beat_ids": True, "require_directing_contract": True}).model_dump()
             validate_expression_schedule(plan, schedule)
-    return plan, schedule, draft.model_dump()
+    return _finish_compiled_plan(plan), schedule, draft.model_dump()
+
+
+def _finish_compiled_plan(plan):
+    """Cast lines lose the product, and a brand or presenter ending keeps one action.
+
+    Both run on the compiled board, so a later prompt is not the only place
+    that sees them. A change that no longer validates is put back.
+    """
+    if not isinstance(plan, dict):
+        return plan
+    from .design import settle_cast_appearance
+    from .shot_craft import settle_ending_actions
+    context = {"require_beat_ids": True, "require_directing_contract": True}
+
+    def accept(candidate, fallback):
+        try:
+            return Plan.model_validate(candidate, context=context).model_dump()
+        except (ValueError, ValidationError, KeyError, TypeError):
+            return fallback
+
+    original = deepcopy(plan)
+    if settle_cast_appearance(plan):
+        plan = accept(plan, original)
+    before_ending = deepcopy(plan)
+    if settle_ending_actions(plan):
+        plan = accept(plan, before_ending)
+    return plan
 
 
 def _continuity_signature(director):
@@ -1184,6 +1211,20 @@ def is_placeholder_plan(plan):
     return bool(descriptions) and all("放在画面中间" in item for item in descriptions)
 
 
+def images_blocked_reason(plan):
+    """Why this plan must not start images, or None when it may.
+
+    A passing review, a review that passed after the one repair, and the
+    recorded conservative fallback may start images. not_ready may not.
+    Plans saved before review_status existed are left alone.
+    """
+    if not isinstance(plan, dict) or "review_status" not in plan:
+        return None
+    if plan.get("review_status") in ("passed", "repaired", "conservative_fallback"):
+        return None
+    return "方案检查还没有通过，已有方案保留。请修改后再准备图片。"
+
+
 def is_degenerate_plan(plan):
     """A local template, or a board whose shots all say the same thing.
 
@@ -1428,6 +1469,30 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     def usable(plan):
         return isinstance(plan, dict) and bool(plan.get("segments")) and not is_degenerate_plan(plan)
 
+    def _ensure_review_status(plan):
+        """Every released board names how the last check ended.
+
+        skip_review is the offline tool. It does not invent a status.
+        passed and repaired may start images. not_ready may not.
+        conservative_fallback is the one recorded exception: the check could
+        not be finished, or a continuity-only miss was repaired locally and
+        not sent back to the model. The note on the plan says which.
+        """
+        if skip_review or not isinstance(plan, dict):
+            return
+        if plan.get("review_status") in ("passed", "repaired", "not_ready", "conservative_fallback"):
+            return
+        review = plan.get("plan_review") if isinstance(plan.get("plan_review"), dict) else None
+        if isinstance(review, dict) and review.get("ready") is True:
+            plan["review_status"] = "repaired" if repairs else "passed"
+            return
+        if isinstance(review, dict) and review.get("checks"):
+            plan["review_status"] = "not_ready"
+            plan["review_status_note"] = "综合检查没有通过。已经做过一轮调整，这次检查留在方案上。"
+            return
+        plan["review_status"] = "conservative_fallback"
+        plan["review_status_note"] = "综合检查没有留下可绑定的结论，已按保守放行留下可用分镜。这条已记下。"
+
     def release(plan):
         if is_degenerate_plan(plan):
             record_failure({"nonblocking": True,
@@ -1439,6 +1504,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             raise ProgressivePlanningError(
                 "产品片旁白还在堆卖点，这次不采用。已有方案和素材已保留，尚未开始新的图片或视频生成",
                 issue_summary=["产品片旁白还在堆卖点"], repair_attempts=repairs)
+        _ensure_review_status(plan)
         from .story_logic import settle_inner_monologue, story_plan_issues
         story_issues = story_plan_issues(plan, strategy)
         if story_issues:
@@ -1466,6 +1532,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     skeleton_logged = False
 
     def remember(plan, review=None):
+        nonlocal last_reviewed_plan
         if not isinstance(plan, dict) or is_degenerate_plan(plan):
             return
         script = (plan or {}).get("ad_script") or {}
@@ -1479,11 +1546,11 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
         score_review = None
         if review is not None:
             score_review = review.model_dump() if hasattr(review, "model_dump") else deepcopy(review)
-            # A rejected review can quote model text. Keep it for scoring only.
-            if isinstance(score_review, dict) and score_review.get("ready") is True:
+            # Keep the review even when it is not ready. Dropping it made a
+            # later release look like the check never ran.
+            if isinstance(score_review, dict) and (score_review.get("checks") or score_review.get("ready") is True):
                 stamped["plan_review"] = score_review
-            else:
-                stamped.pop("plan_review", None)
+                last_reviewed_plan = stamped
         real_candidates.append({
             "plan": stamped,
             "review": score_review if isinstance(score_review, dict) and score_review.get("checks") else stamped.get("plan_review"),
@@ -1543,6 +1610,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     last_align_signature = None
     stale_lines_used = False
     prop_review_repaired = False
+    last_reviewed_plan = None
 
     class _PlanAccepted(Exception):
         def __init__(self, plan):
@@ -1555,12 +1623,24 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 issue_summary=list(issues.values()), repair_attempts=repairs,
                 error_code=error_code) from None
         if error_code == "planning_review_incomplete":
-            chosen = best_real()
+            # The check itself did not finish. A usable board can still continue,
+            # but only with this recorded conservative fallback. A finished
+            # review that is not ready stays not_ready and does not start images.
+            chosen = last_reviewed_plan if usable(last_reviewed_plan) else best_real()
             if not usable(chosen) and usable(last_valid_plan):
                 chosen = last_valid_plan
             if usable(chosen):
                 cleaned = deepcopy(chosen)
-                cleaned.pop("plan_review", None)
+                review = cleaned.get("plan_review") if isinstance(cleaned.get("plan_review"), dict) else None
+                if isinstance(review, dict) and review.get("checks") and review.get("ready") is True:
+                    cleaned["review_status"] = "repaired" if repairs else "passed"
+                elif isinstance(review, dict) and review.get("checks"):
+                    cleaned["review_status"] = "not_ready"
+                    cleaned["review_status_note"] = "综合检查没有通过，记录已留在方案上。"
+                else:
+                    cleaned.pop("plan_review", None)
+                    cleaned["review_status"] = "conservative_fallback"
+                    cleaned["review_status_note"] = "综合检查没有完成，已按保守放行留下可用分镜。这条已记下。"
                 record_failure({"nonblocking": True, "message": message,
                                 "issues": list(issues.values())[:8], "error_code": error_code})
                 raise _PlanAccepted(cleaned)
@@ -1570,7 +1650,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
         # it already compiled, or seals the mapping, then continues the review.
         if not accept:
             raise RevisionKept from None
-        chosen = best_real()
+        chosen = last_reviewed_plan if usable(last_reviewed_plan) else best_real()
         if not usable(chosen) and usable(last_valid_plan):
             chosen = last_valid_plan
         if not usable(chosen):
@@ -2099,6 +2179,8 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 review = with_shot_suggestions(review, plan, strategy)
                 review = with_line_focus_suggestions(review, plan, strategy, locked)
                 plan["plan_review"] = review.model_dump()
+                plan["review_status"] = "repaired" if repairs else "passed"
+                plan.pop("review_status_note", None)
                 remember(plan, review)
                 if is_degenerate_plan(plan):
                     chosen = best_real()
@@ -2124,7 +2206,13 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                     continue
             issues.pop(("execution", "state_continuity"), None)
             if not issues:
+                # Documented conservative fallback: a continuity-only miss is
+                # repaired locally once. When that repair changes nothing, the
+                # review stays on the plan and is not sent back to the model.
+                # Images may start because this status is recorded here.
                 plan["plan_review"] = review.model_dump()
+                plan["review_status"] = "conservative_fallback"
+                plan["review_status_note"] = "状态承接没有对上，本地对过一次道具交接，没有再送回模型。综合检查已留下。这条已记下。"
                 remember(plan, review)
                 return release(plan)
             feedback_for_scope = deepcopy(feedback)
@@ -2170,7 +2258,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 raw = await refine(coordinated, repair_scope(feedback_for_scope, coordinated, plan), feedback_for_scope, issues,
                                    plan=plan, schedule=schedule, bound_review=review)
             except RevisionKept:
-                chosen = best_real()
+                chosen = last_reviewed_plan if usable(last_reviewed_plan) else best_real()
                 if chosen is not None:
                     return release(chosen)
                 if (brand_stack_remaining(

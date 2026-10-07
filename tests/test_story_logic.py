@@ -1275,21 +1275,58 @@ def test_a_line_said_alone_drops_lip_sync_even_when_someone_else_is_awake():
     assert "这一镜里没有另一个醒着的人" in playbook
 
 
+def test_bare_wear_is_stripped_and_shot_gender_is_locked():
+    from app.design import settle_cast_appearance
+    from app.strategy import prepare_strategy_ingress
+
+    person = {"id": "char_host", "name": "主讲", "description": "戴银色头戴式耳机，穿深色上衣。"}
+    plan = {"facts": {"name": "降噪耳机"}, "production": {"characters": [person]}, "segments": [{"shots": [
+        {"id": "s1", "description": "她把耳机举到镜头前。", "character_ids": ["char_host"]},
+        {"id": "s7", "description": "她摘下耳机。", "character_ids": ["char_host"]},
+    ]}]}
+    assert settle_cast_appearance(plan) is True
+    assert "耳机" not in person["description"]
+    assert "深色上衣" in person["description"]
+    assert person["description"].startswith("女性")
+    prompt = character_design_request({}, plan, person)["prompt"]
+    assert "耳机" not in prompt
+    assert "不要画成男性" in prompt
+    assert "深色上衣" in prompt
+    offered = prepare_strategy_ingress({
+        "kind": "directions",
+        "message": "三个方向",
+        "brief": {"product_name": "降噪耳机", "ad_form": "brand_tvc", "audience": "通勤的人", "scenario": "地铁"},
+        "directions": [{
+            "id": "d1",
+            "audience": "通勤的人",
+            "scenario": "地铁",
+            "production_notes": ["不编功效"],
+            "hook_type": "mechanism",
+            "production": {"characters": [{"id": "char_host", "name": "主讲", "description": "戴银色头戴式耳机，短发。"}]},
+        }],
+    })
+    stored = offered["directions"][0]["production"]["characters"][0]["description"]
+    assert "耳机" not in stored and "短发" in stored
+
+
 def test_character_sheet_does_not_wear_the_product():
     person = {"id": "char_host", "name": "小夏",
               "description": "二十多岁，穿浅色针织衫，全程佩戴银色头戴式耳机，手里拿着银色头戴式耳机。"}
     plan = {"facts": {"name": "头戴式耳机"}, "production": {"characters": [person]}, "segments": [{"shots": [
         {"id": "s1", "description": "她手里拿着银色头戴式耳机。", "character_ids": ["char_host"]},
     ]}]}
+    assert character_sheet_product_notes(plan) == [
+        "角色设定图不画商品。全程佩戴和镜头里拿在手里对不上，已记下，不因此停下。"]
     prompt = character_design_request({}, plan, person)["prompt"]
     assert "浅色针织衫" in prompt
     assert "全程佩戴" not in prompt and "头戴式耳机" not in prompt
     assert "手里拿" not in prompt
     assert "不要画在身上或手里" in prompt
-    assert "全程佩戴银色头戴式耳机" in person["description"]
-    assert character_sheet_product_notes(plan) == [
-        "角色设定图不画商品。全程佩戴和镜头里拿在手里对不上，已记下，不因此停下。"]
-    worn = {"production": {"characters": [{**person, "description": "二十多岁，全程佩戴银色头戴式耳机。"}]},
+    assert "女性" in prompt and "不要画成男性" in prompt
+    assert "耳机" not in person["description"]
+    assert "女性" in person["description"] and "浅色针织衫" in person["description"]
+    worn = {"production": {"characters": [{"id": "char_host", "name": "小夏",
+                                           "description": "二十多岁，全程佩戴银色头戴式耳机。"}]},
             "segments": [{"shots": [{"id": "s1", "description": "她戴着银色头戴式耳机看向窗外。",
                                      "character_ids": ["char_host"]}]}]}
     assert character_sheet_product_notes(worn) == []

@@ -170,13 +170,25 @@ def _reference_lines(segment, spoken=""):
             else:
                 # Saved 2×2 sheets predate the horizontal contact sheet.
                 sheet = "统一其外貌与服装；四格版式不进入视频。"
+            from .design import cast_look_lock, character_sheet_description
+            sheet_plan = {
+                "facts": segment.get("facts") if isinstance(segment.get("facts"), dict) else {},
+                "strategy": segment.get("strategy") if isinstance(segment.get("strategy"), dict) else {},
+                "production": segment.get("production"),
+                "segments": [{"shots": segment.get("shots") or []}],
+            }
             description = unlock_wet_identity(
-                replace_character_ids(character.get("description") or "", list(characters.values())), spoken)
+                replace_character_ids(
+                    character_sheet_description(character.get("description") or "", sheet_plan),
+                    list(characters.values())), spoken)
+            look = cast_look_lock(sheet_plan, character)
             clause = cast_appearance_clause(description)
             if clause.rstrip("。") in description or ("日常大陆长相" in description and "日常大陆长相" in clause):
                 appearance = description
             else:
                 appearance = f"{clause}{description}"
+            if look:
+                appearance = f"{appearance}{look}"
             duty = f"角色“{character_prose_name(character)}”的四视图，{sheet}{appearance}"
         else:
             raise ValueError("不支持的视频参考图片职责")
@@ -495,6 +507,9 @@ def _compile_grouped_video(segment, template):
             shot = lock_story_insert(
                 shot, final=last and closes_film, previous=shots[index - 1] if index else None)
         if segment.get("ad_form") in ("brand_tvc", "presenter_pitch"):
+            from .shot_craft import simplify_ending_shot
+            if last or index == last_index - 1:
+                shot = simplify_ending_shot(shot)
             shot = lock_product_frame(shot, form=segment.get("ad_form"), final=last and closes_film)
         shot_view = prepare_prompt_shot(shot, spoken_blob)
         lines.extend(shot_prompt_lines(

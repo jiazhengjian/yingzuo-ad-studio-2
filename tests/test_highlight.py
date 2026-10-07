@@ -122,6 +122,42 @@ def test_directions_without_a_selling_point_become_a_clarification():
     assert intake_strategy_response({"kind": "plan", "message": "改一下"}, project, gates=chosen)["kind"] == "plan"
 
 
+def test_a_product_category_is_not_a_selling_point_on_any_form():
+    """降噪耳机 is the product. Every form still asks what to remember.
+
+    Covers a clarification and a model that skipped straight to directions,
+    including a form the app already classified so the type question is absent.
+    """
+    brief = "降噪耳机的产品展示广告"
+    for form in (None, "brand_tvc", "presenter_pitch", "scene_story", "auto"):
+        project = {"ad_form": form, "cta_target": None, "brief": brief}
+        for raw in (
+            _clarify("audience", "给谁看？"),
+            {"kind": "directions", "message": "三个方向", "directions": [{"id": "d1"}]},
+            {"kind": "plan", "message": "直接出方案", "plan": {}},
+        ):
+            result = intake_strategy_response(raw, project)
+            assert result["kind"] == "clarify", (form, raw["kind"])
+            ids = [item["id"] for item in result["questions"]]
+            assert "highlight" in ids, (form, raw["kind"], ids)
+            highlight = result["questions"][ids.index("highlight")]
+            assert highlight["prompt"].startswith("最想让观众记住")
+            assert highlight["allow_skip"] is True and highlight["options"] == []
+            assert "audience" in ids
+            if form is None:
+                assert ids[0] == "ad_form"
+            else:
+                assert "ad_form" not in ids
+            if form == "scene_story":
+                assert "cta_target" not in ids
+            else:
+                assert "cta_target" in ids
+    stated = {"ad_form": "brand_tvc", "cta_target": "ai_decide", "brief": "这款耳机主打降噪"}
+    assert should_ask_highlight(stated) is False
+    asked = intake_strategy_response(_clarify("audience", "给谁看？"), stated)
+    assert all(item["id"] != "highlight" for item in asked["questions"])
+
+
 def test_recommending_a_story_later_ignores_a_saved_destination():
     strategy = {
         "brief": {"ad_form": "auto", "facts": []},
