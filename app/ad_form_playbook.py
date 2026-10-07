@@ -300,6 +300,16 @@ def ending_policy(form: str | None, cta_target: str | None = None) -> dict:
             ),
         }
         instruction = instructions.get(form or "", "结尾约2秒产品留在画面里并停住。不要另加去哪里的话。") + hold
+    if form == "brand_tvc":
+        instruction += (
+            "最后一镜从第一帧起产品就约占画面四成到六成，机位停住；"
+            "不要把人物动作和推近、拉开或变焦写在同一镜。"
+        )
+    elif form == "presenter_pitch":
+        instruction += (
+            "最后一镜从第一帧起产品就留在手里或身前、不放下出画，机位停住；"
+            "不要把关机、放下、松手叠进这一镜，也不要和推近写在同一镜。"
+        )
     return {
         "form": form if form in ("brand_tvc", "presenter_pitch", "scene_story") else None,
         "cta_target": cta_target if is_explicit_cta(cta_target) else "none",

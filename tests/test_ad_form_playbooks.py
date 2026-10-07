@@ -119,6 +119,11 @@ def test_validate_script_uses_the_type_cap_and_keeps_the_legacy_beat_limit():
     assert "点下面链接" in ending("presenter_pitch", "link")["instruction"]
     assert "点下面" not in ending("presenter_pitch", "ai_decide")["instruction"]
     assert "英雄定格" in ending_policy("brand_tvc")["instruction"]
+    assert "四成到六成" in ending_policy("brand_tvc")["instruction"]
+    assert "不放下出画" in ending_policy("presenter_pitch")["instruction"]
+    story_instruction = ending_policy("scene_story")["instruction"]
+    assert "定格" in story_instruction and "推近" in story_instruction
+    assert "四成到六成" not in story_instruction
     assert "定格" in ending_policy("scene_story")["instruction"]
     story_ending = ending("scene_story", "link")["instruction"]
     assert "想带走" not in story_ending and "点下面" not in story_ending

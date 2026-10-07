@@ -12,6 +12,7 @@ from .story_logic import (
     state_prompt_lines, story_gaze_line, story_needs_lens, with_background_line,
 )
 from .runtime_skills import compiler_template
+from .shot_craft import lock_product_frame, shot_prompt_lines
 
 
 _ID_LIKE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,79}$")
@@ -456,7 +457,6 @@ def _compile_grouped_video(segment, template):
                               ad_form=segment.get("ad_form"), inner=bool(inner)))
     if partial_inner:
         lines.append("某一镜里没有别的醒着的人时，这一句改成她自己的内心声音，不对口型，嘴不要动。")
-    from .shot_craft import shot_prompt_lines
     labels = {shot["id"]: f"镜头{index + 1}" for index, shot in enumerate(shots)}
 
     def shot_names(ids):
@@ -492,6 +492,8 @@ def _compile_grouped_video(segment, template):
             shot = {**shot, "description": with_background_line(shot.get("description") or "", shots, index)}
             if last:
                 shot = rest_product_for_story_ending(shot)
+        if segment.get("ad_form") in ("brand_tvc", "presenter_pitch"):
+            shot = lock_product_frame(shot, form=segment.get("ad_form"), final=last and closes_film)
         shot_view = prepare_prompt_shot(shot, spoken_blob)
         lines.extend(shot_prompt_lines(
             shot_view, hold_tail=last and closes_film, continue_tail=last and not closes_film,

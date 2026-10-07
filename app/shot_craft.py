@@ -4,6 +4,10 @@ A storyboard that names a video flow, or marks whether the product is in
 frame, is checked for screen time, literal pictures, camera language, and a
 hero hold. Older drafts omit those fields and are left alone. A rewrite, when
 it runs, only replaces description and camera_move on the named shots.
+Product films and presenter films also get a prompt-only framing lock: a
+character action does not share a shot with a push, pull, or zoom, and the
+last shot already shows the product at its end size. Story endings are left
+alone. This does not reject a plan.
 """
 from __future__ import annotations
 
@@ -35,6 +39,26 @@ _CLAIM_WORDS = ("根治", "治愈", "美白", "减肥", "抗衰", "医用", "治
 _FORM_LABEL = {"brand_tvc": "产品展示", "scene_story": "剧情", "presenter_pitch": "人物讲解"}
 _HOLD_LINE = "机位停住，人物和手都不再动，商品稳稳留在手里或原位、正面朝镜头，不放下、不移出画面，不出现字幕、Logo或字卡。"
 _PUT_DOWN = re.compile(r"放下|放回|收起|递")
+_PRODUCT_FRAME_FORMS = frozenset({"brand_tvc", "presenter_pitch"})
+_FRAMING_WORD = re.compile(r"大特写|特写|中近景|近景|中景|全景|远景|微距|过肩")
+_PUSH_MOVE = re.compile(
+    r"(?:镜头[^，。；、\n]{0,6})?(?:缓慢|慢慢|轻微|轻轻|仍在|继续)?(?:向前)?"
+    r"(?:推近|推进|前推|慢推|拉近|变焦)"
+    r"|(?:推|拉)(?:到|至|成)(?:大特写|特写|近景|中近景)"
+)
+_CHAR_ACTION = re.compile(
+    r"放下|放回|收起|递给|递出|递向|关机|关掉|关闭电源|松手|松开|拿开|"
+    r"移出|出画|离开画面|举起|拿起|按下|按键|换挡|换风嘴|"
+    r"转给|拧开|拧上|盖上|打开盖|对着[^，。；]{0,8}吹|吹几下|"
+    r"手把|用手|手(?:把|用|里)?[^，。；\s]{0,6}转"
+)
+_LEAVE_FRAME = re.compile(r"放下|放回|收起|递给|递出|递向|松手|松开|拿开|移出|出画|离开画面")
+_STACKED_ACTION = re.compile(r"关机|关掉|关闭|放下|放回|收起|松手|松开|拿开|递出|递给|递向|按关|停机")
+_WORLD_PREFIX = re.compile(r"^(生活世界：|产品世界：|衔接：)")
+_NOT_YET_FRAMED = re.compile(r"画面边缘|还在远处|很小|尚未入画|还没入画|只露|看不清|腰部以上|半身以外")
+_BRAND_FRAME = "商品从这一镜第一帧就在画面里，正面朝镜头，大小约占画面四成到六成"
+_PRESENTER_FRAME = "商品从这一镜第一帧就在画面里，留在手里或身前，不放下、不移出画面"
+_PRESENTER_HOLD = "人和商品停住，商品留在手里或身前，正面可认，不再做别的动作"
 _COMPLEX_HAND = re.compile(r"换风嘴|按小按钮|两手交接|两手|快速放下|快速收起|快速转动|翻转|按键|换挡")
 _CONTINUE_LINE = "动作或运镜进行到切点，下一段从同一动作或同一机位方向接上。"
 _WORLD_MARK = re.compile(r"生活世界|产品世界|衔接")
@@ -762,3 +786,242 @@ async def rewrite_shots_if_needed(stage_call, director: dict, plan, strategy):
         return True, None
     revised = apply_shot_rewrite(director, raw, issues, facts_text=facts_text)
     return True, revised
+
+
+def _negated_at(text, start):
+    prefix = text[max(0, start - 3):start]
+    return bool(re.search(r"(?:不要|别要|别|不|没|未)$", prefix))
+
+
+def _affirmed_in(pattern, text):
+    if not isinstance(text, str) or not text:
+        return False
+    return any(not _negated_at(text, match.start()) for match in pattern.finditer(text))
+
+
+def _affirmed_count(pattern, text):
+    if not isinstance(text, str) or not text:
+        return 0
+    return sum(1 for match in pattern.finditer(text) if not _negated_at(text, match.start()))
+
+
+def _picture_fields(shot):
+    parts = []
+    description = shot.get("description")
+    if isinstance(description, str):
+        parts.append(description)
+    continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else {}
+    for key in ("start_state", "allowed_changes", "end_state"):
+        value = continuity.get(key)
+        if isinstance(value, str):
+            parts.append(value)
+    return parts
+
+
+def _shot_seconds(shot):
+    try:
+        return float(shot["end"]) - float(shot["start"])
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def _drop_clauses(text, pattern):
+    if not isinstance(text, str) or not text:
+        return text
+    pieces = re.split(r"([，,。；;、])", text)
+    kept = []
+    for index in range(0, len(pieces), 2):
+        chunk = pieces[index]
+        delim = pieces[index + 1] if index + 1 < len(pieces) else ""
+        if chunk.strip() and _affirmed_in(pattern, chunk):
+            continue
+        kept.append(chunk + delim)
+    result = "".join(kept)
+    result = re.sub(r"^[，,。；;、\s]+", "", result)
+    result = re.sub(r"[，,；;、\s]+$", "", result)
+    return result.strip()
+
+
+def _strip_push(text):
+    if not isinstance(text, str) or not text:
+        return text
+
+    def replacer(match):
+        if _negated_at(text, match.start()):
+            return match.group(0)
+        return "机位停住"
+
+    updated = _PUSH_MOVE.sub(replacer, text)
+    updated = re.sub(r"(?:机位停住[，、]?){2,}", "机位停住", updated)
+    return updated
+
+
+def _framing_word(camera):
+    found = _FRAMING_WORD.search(camera or "")
+    return found.group(0) if found else "中近景"
+
+
+def _locked_camera(camera, form, final):
+    size = _framing_word(camera)
+    if final and form == "brand_tvc":
+        return f"{size}，机位停住，产品从第一帧就约占画面四成到六成"
+    if final and form == "presenter_pitch":
+        return f"{size}，机位停住，产品从第一帧就在手里或身前"
+    return f"{size}，机位停住"
+
+
+def _has_push(shot):
+    camera = _camera_text(shot)
+    description = shot.get("description") if isinstance(shot.get("description"), str) else ""
+    return _affirmed_in(_PUSH_MOVE, camera) or _affirmed_in(_PUSH_MOVE, description) or bool(
+        re.search(r"zoom", f"{camera} {description}", re.IGNORECASE)
+    )
+
+
+def _has_character_action(shot):
+    return any(_affirmed_in(_CHAR_ACTION, part) for part in _picture_fields(shot))
+
+
+def _in_frame_from_first(shot):
+    if shot.get("product_visible") is False:
+        return False
+    continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else {}
+    start = continuity.get("start_state") if isinstance(continuity.get("start_state"), str) else ""
+    description = shot.get("description") if isinstance(shot.get("description"), str) else ""
+    lead = (start or description)[:48]
+    return not bool(re.search(r"不在画面|尚未入画|还没入画|画外|出画|移出", lead))
+
+
+def _keep_closing_push(shot):
+    """A closing push stays only when it is already its own quiet, framed shot."""
+    if not _has_push(shot) or _has_character_action(shot):
+        return False
+    seconds = _shot_seconds(shot)
+    if seconds is None or seconds < 3 - 1e-6:
+        return False
+    return _in_frame_from_first(shot)
+
+
+def _frame_clause(form):
+    return _BRAND_FRAME if form == "brand_tvc" else _PRESENTER_FRAME
+
+
+def _already_framed(text, form):
+    if not isinstance(text, str):
+        return False
+    if form == "brand_tvc":
+        return "四成到六成" in text and "第一帧" in text
+    return "留在手里或身前" in text and "第一帧" in text
+
+
+def _append_clause(text, clause, limit=800):
+    if not isinstance(text, str) or not text.strip():
+        return clause[:limit]
+    if clause in text:
+        return text
+    joiner = "" if text.endswith(("。", "，")) else "。"
+    return (text + joiner + clause + "。")[:limit]
+
+
+def _lead_clause(text, clause, limit=800):
+    """The target size is the first thing this shot is allowed to show."""
+    if not isinstance(text, str) or not text.strip():
+        return clause[:limit]
+    if clause in text:
+        return text
+    return (clause + "。" + text)[:limit]
+
+
+def _hold_description(description, form):
+    prefix = ""
+    match = _WORLD_PREFIX.match(description or "")
+    if match:
+        prefix = match.group(1)
+    body = _PRESENTER_HOLD if form == "presenter_pitch" else "商品停在画面里，正面朝镜头，机位停住，不再做别的动作"
+    return prefix + body
+
+
+def _write_continuity(revised, **updates):
+    continuity = revised.get("continuity")
+    if not isinstance(continuity, dict) or "entry_transition" not in continuity:
+        return False
+    copied = {**continuity}
+    for key, value in updates.items():
+        if isinstance(value, str) and value:
+            copied[key] = value[:800]
+    revised["continuity"] = copied
+    return True
+
+
+def lock_product_frame(shot, *, form, final=False):
+    """Drop a push that shares a shot with a person doing something.
+
+    Brand and presenter prompts only. A closing push is kept when this shot is
+    already at least 3 seconds, has no character action, and the product is in
+    frame on the first frame. The last shot still starts at the target size, so
+    a push the model skips does not leave the product. Presenter endings do not
+    put the product down or stack several actions. Story shots are unchanged.
+    Splitting a shot would move speech windows, so a combined shot loses the
+    move instead.
+    """
+    if form not in _PRODUCT_FRAME_FORMS or not isinstance(shot, dict):
+        return shot
+    revised = {**shot}
+    continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else None
+    if continuity is not None:
+        revised["continuity"] = {**continuity}
+    description = revised.get("description") if isinstance(revised.get("description"), str) else ""
+    if final:
+        fields = _picture_fields(revised)
+        stacked = form == "presenter_pitch" and sum(_affirmed_count(_STACKED_ACTION, part) for part in fields) >= 2
+        if stacked or any(_affirmed_in(_LEAVE_FRAME, part) for part in fields):
+            description = _drop_clauses(description, _LEAVE_FRAME)
+            if stacked:
+                description = _drop_clauses(description, _STACKED_ACTION)
+            if not _WORLD_PREFIX.sub("", description).strip("，。；、 "):
+                description = _hold_description(
+                    shot.get("description") if isinstance(shot.get("description"), str) else "", form)
+            revised["description"] = description[:1500]
+            if isinstance(revised.get("continuity"), dict):
+                for key, fallback in (
+                    ("start_state", _frame_clause(form)),
+                    ("allowed_changes", "人物和商品保持不动"),
+                    ("end_state", "商品仍留在画面里"),
+                ):
+                    current = revised["continuity"].get(key)
+                    if not isinstance(current, str):
+                        continue
+                    cleaned = _drop_clauses(current, _LEAVE_FRAME)
+                    if stacked:
+                        cleaned = _drop_clauses(cleaned, _STACKED_ACTION)
+                    revised["continuity"][key] = (cleaned or fallback)[:800]
+    keep_push = bool(final and _keep_closing_push(shot))
+    drop_push = _has_push(shot) and not keep_push and (final or _has_character_action(shot))
+    if drop_push:
+        description = revised.get("description") if isinstance(revised.get("description"), str) else description
+        revised["description"] = _strip_push(description)[:1500]
+        camera = _camera_text(revised)
+        if isinstance(revised.get("continuity"), dict) and isinstance(revised["continuity"].get("camera_move"), str):
+            revised["continuity"]["camera_move"] = _locked_camera(camera, form, final)
+    if final:
+        clause = _frame_clause(form)
+        wrote = False
+        if isinstance(revised.get("continuity"), dict) and isinstance(revised["continuity"].get("start_state"), str):
+            current = _drop_clauses(revised["continuity"]["start_state"], _NOT_YET_FRAMED)
+            if not _already_framed(current, form):
+                current = _lead_clause(current, clause)
+            revised["continuity"]["start_state"] = (current or clause)[:800]
+            wrote = True
+        elif _write_continuity(revised, start_state=clause):
+            wrote = True
+        current_description = revised.get("description") if isinstance(revised.get("description"), str) else ""
+        if not wrote and not _already_framed(current_description, form):
+            revised["description"] = _lead_clause(current_description, clause, 1500)
+        if drop_push and isinstance(revised.get("continuity"), dict):
+            camera = revised["continuity"].get("camera_move")
+            if isinstance(camera, str) and "机位停住" not in camera:
+                revised["continuity"]["camera_move"] = _locked_camera(camera, form, True)
+        revised["product_visible"] = True
+    if revised == shot:
+        return shot
+    return revised
