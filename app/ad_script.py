@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, Validation
 from .ad_form_playbook import (
     BEAT_CHAR_CEILING, ending_policy, resolve_playbook_form, speech_profile_for_strategy, tagline_policy,
 )
-from .line_quality import key_line_options_schema, prepare_script_lines
+from .line_quality import ends_unfinished, key_line_options_schema, prepare_script_lines
 from .strategy import StrategyRecord
 from .generation_policy import generation_durations, generation_groups
 from .beat_timing import script_capacity_budget
@@ -283,7 +283,7 @@ def validate_script(
         raise ValueError("当前原声广告至少需要一句完整台词，其余节拍可静音")
     if len(narration) > duration_seconds * tenth // 10:
         raise ValueError("广告脚本台词超过所选时长预算")
-    if any(re.search(r"[，,、：:；;]\s*[”’」』\"']*\s*$", beat.narration) for beat in script.beats):
+    if any(ends_unfinished(beat.narration) for beat in script.beats):
         raise ValueError("每个节拍的非空台词必须是完整表达，不能以逗号等未完标点结束")
     if generation_strategy == "continuity_v1":
         grouping = generation_groups(script, duration_seconds, generation_strategy, characters_per_tenth=tenth)

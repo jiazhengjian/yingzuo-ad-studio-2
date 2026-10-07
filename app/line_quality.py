@@ -215,10 +215,32 @@ def _overlap(line: str, idea: str) -> int:
     return 0
 
 
+_UNFINISHED_PUNCTUATION = frozenset("，,、：:；;")
+_CLOSING_QUOTES = frozenset("”’」』\"'\\")
+
+
+def ends_unfinished(text) -> bool:
+    """True when the line still ends on a comma, colon, or pause mark.
+
+    Trailing whitespace and closing quotes are peeled from the end, one
+    character at a time. The check stays linear in the length of that tail.
+    """
+    if not isinstance(text, str) or not text:
+        return False
+    index = len(text)
+    while index:
+        char = text[index - 1]
+        if char.isspace() or char in _CLOSING_QUOTES:
+            index -= 1
+            continue
+        return char in _UNFINISHED_PUNCTUATION
+    return False
+
+
 def _score_line(text, *, form, role, big_idea, beat_cap) -> int | None:
     if not isinstance(text, str) or not text.strip() or len(text) > beat_cap:
         return None
-    if re.search(r"[，,、：:；;]\s*[”’」』\"']*\s*$", text):
+    if ends_unfinished(text):
         return None
     overlap = _overlap(text, big_idea)
     return type_line_score(text, form, role) + (2 * overlap if overlap >= 2 else 0)

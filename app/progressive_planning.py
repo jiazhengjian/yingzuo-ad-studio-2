@@ -5,6 +5,7 @@ the existing allocator still owns content/speech windows and provider grouping.
 """
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 from dataclasses import dataclass
 from decimal import Decimal
@@ -58,6 +59,9 @@ class TimingReductionError(ProgressivePlanningError):
 
 
 MAX_PLAN_REFINEMENTS = 2
+# One storyboard can be recompiled after a local correction. This bound stops
+# a correction that still reports a change after the board is already the same.
+MAX_DIRECTOR_PASSES = 24
 PROGRESSIVE_REFINEMENT_POLICY_VERSION = 1
 
 
@@ -560,6 +564,23 @@ def compile_director(raw, strategy, duration, generation_strategy, asset_ids, lo
             plan = Plan.model_validate(payload, context={"require_beat_ids": True, "require_directing_contract": True}).model_dump()
             validate_expression_schedule(plan, schedule)
     return plan, schedule, draft.model_dump()
+
+
+def _continuity_signature(director):
+    """States a later pass would write again. Identical means the board settled."""
+    from .story_logic import iter_plan_shots
+    rows = []
+    for shot in iter_plan_shots(director):
+        continuity = shot.get("continuity") if isinstance(shot, dict) else None
+        if not isinstance(continuity, dict):
+            rows.append(None)
+            continue
+        rows.append((
+            continuity.get("start_state"),
+            continuity.get("end_state"),
+            continuity.get("entry_transition"),
+        ))
+    return tuple(rows)
 
 
 def _rebind_reviewed_plan(plan):
@@ -1480,12 +1501,13 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     wardrobe_warnings_recorded = False
     clothing_notes_recorded = False
     product_sheet_notes_recorded = False
+    last_align_signature = None
 
     class _PlanAccepted(Exception):
         def __init__(self, plan):
             self.plan = plan
 
-    def stop(message, issues, *, error_code="planning_content_failed", accept=True):
+    async def stop(message, issues, *, error_code="planning_content_failed", accept=True):
         from .planner_recovery import needs_merchant
         if needs_merchant(message, issues):
             raise ProgressivePlanningError(message + "。已有方案和素材已保留，尚未开始新的图片或视频生成",
@@ -1517,9 +1539,9 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 "nonblocking": True, "message": "分镜没有返回，已沿用已有台词",
                 "issues": ["storyboard"], "error_code": "storyboard_kept_lines"})
             try:
-                chosen, _, _ = compile_director(
-                    brand_hold(kept_lines or locked), strategy, duration, generation_strategy,
-                    [asset["id"] for asset in assets], locked, cta_target)
+                chosen, _, _ = await asyncio.to_thread(
+                    compile_director, brand_hold(kept_lines or locked), strategy, duration,
+                    generation_strategy, [asset["id"] for asset in assets], locked, cta_target)
             except (ValueError, KeyError, TypeError, ValidationError):
                 if not kept_lines:
                     raise ProgressivePlanningError(message + "。已有方案和素材已保留，尚未开始新的图片或视频生成",
@@ -1527,8 +1549,8 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                         error_code=error_code) from None
                 log_skeleton()
                 try:
-                    chosen, _, _ = compile_director(
-                        brand_hold(locked), strategy, duration, generation_strategy,
+                    chosen, _, _ = await asyncio.to_thread(
+                        compile_director, brand_hold(locked), strategy, duration, generation_strategy,
                         [asset["id"] for asset in assets], locked, cta_target)
                 except (ValueError, KeyError, TypeError, ValidationError):
                     raise ProgressivePlanningError(message + "。已有方案和素材已保留，尚未开始新的图片或视频生成",
@@ -1548,9 +1570,13 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
         reviewed_timing = (_reviewed_timing_authorization(before, plan, bound_review)
                            if plan is not None and bound_review is not None else None)
         limit_names = {0: "零轮", 1: "一轮", 2: "两轮"}
+        refine_steps = 0
         while True:
+            refine_steps += 1
+            if refine_steps > max_refinements + 3:
+                await stop("自动调整次数已到上限，已停止重复尝试", issues, accept=False)
             if repairs >= max_refinements:
-                stop(f"{limit_names.get(max_refinements, str(max_refinements) + '轮')}自动调整后，本次方案仍有未解决的内容或动作问题", issues, accept=False)
+                await stop(f"{limit_names.get(max_refinements, str(max_refinements) + '轮')}自动调整后，本次方案仍有未解决的内容或动作问题", issues, accept=False)
             progress("refining_storyboard")
             repairs += 1
             refinement = {**data, "stage": "plan_refinement",
@@ -1611,8 +1637,9 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 if restored is not None:
                     try:
                         validate_local_refinement(before, restored, scope, reviewed_timing=reviewed_timing)
-                        compile_director(restored, strategy, duration, generation_strategy,
-                                         [a["id"] for a in assets], locked, cta_target)
+                        await asyncio.to_thread(
+                            compile_director, restored, strategy, duration, generation_strategy,
+                            [a["id"] for a in assets], locked, cta_target)
                     except (TimingReductionError, ValueError, KeyError, TypeError):
                         restored = None
                     else:
@@ -1625,8 +1652,9 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 # overrun afterwards. Authored identity/lock errors still stop.
                 capacity_issue = None
                 try:
-                    compile_director(revised, strategy, duration, generation_strategy,
-                                     [a["id"] for a in assets], locked, cta_target)
+                    await asyncio.to_thread(
+                        compile_director, revised, strategy, duration, generation_strategy,
+                        [a["id"] for a in assets], locked, cta_target)
                 except ValueError as compile_error:
                     if not _is_capacity_error(compile_error):
                         text = str(compile_error)
@@ -1637,7 +1665,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                         else:
                             detail = {("contract",): "方案结构、商品依据或已确认内容需要调整"}
                         record_failure(plan)
-                        stop("本次方案未能满足已确认要求，暂未采用", detail, accept=False)
+                        await stop("本次方案未能满足已确认要求，暂未采用", detail, accept=False)
                     capacity_issue = str(compile_error)
                 beat_positions = {beat["id"]: index + 1 for index, beat in enumerate(before["ad_script"]["beats"])}
                 guard_issues = {("estimate", beat_id): f"第{beat_positions[beat_id]}个内容段的实际动作未变，不能仅降低估时"
@@ -1647,7 +1675,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 issues = {**issues, **guard_issues}
                 if repairs >= max_refinements:
                     record_failure(plan)
-                    stop("自动调整后动作与台词容量仍未改善，已停止重复尝试", issues, accept=False)
+                    await stop("自动调整后动作与台词容量仍未改善，已停止重复尝试", issues, accept=False)
                 original_capacity = script_capacity_budget(before["ad_script"], duration)
                 candidate_capacity = script_capacity_budget(revised["ad_script"], duration)
                 original_budgets = {item["beat_id"]: item for item in original_capacity["beats"]}
@@ -1678,20 +1706,25 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 if _sparse_format_error(error):
                     raise RevisionKept from None
                 record_failure(plan)
-                stop("本次调整未能保留已确认内容或未受影响的方案，已保留调整前的成果", issues, accept=False)
+                await stop("本次调整未能保留已确认内容或未受影响的方案，已保留调整前的成果", issues, accept=False)
             mapping_improved = (initial_feedback.get("kind") == "evidence_mapping"
                 and _evidence_mapping_gaps(revised) < _evidence_mapping_gaps(before))
             if _refinement_content(before) == _refinement_content(revised) and not mapping_improved:
                 record_failure(plan)
-                stop("自动调整没有产生有效的内容变化，已停止重复尝试", issues, accept=False)
+                await stop("自动调整没有产生有效的内容变化，已停止重复尝试", issues, accept=False)
             return revised
 
+    director_passes = 0
     try:
         while True:
+            director_passes += 1
+            if director_passes > MAX_DIRECTOR_PASSES:
+                await stop("分镜校正重复过多次，已停止", {("contract",): "分镜校正没有收敛"})
             current_is_skeleton = isinstance(raw, dict) and bool(raw.pop("_fallback_skeleton", False))
             try:
-                plan, schedule, coordinated = compile_director(raw, strategy, duration, generation_strategy,
-                                                               [a["id"] for a in assets], locked, cta_target)
+                plan, schedule, coordinated = await asyncio.to_thread(
+                    compile_director, raw, strategy, duration, generation_strategy,
+                    [a["id"] for a in assets], locked, cta_target)
             except (ValueError, KeyError, TypeError) as error:
                 # A known reference-to-shot mapping error can use one remaining
                 # repair. A storyboard that cannot even be read is repaired inside
@@ -1718,18 +1751,18 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                             fallback_installed = True
                             continue
                     record_failure(None)
-                    stop("本次方案结构不完整，暂未采用", {("contract",): "方案结构、商品依据或已确认内容需要调整"})
+                    await stop("本次方案结构不完整，暂未采用", {("contract",): "方案结构、商品依据或已确认内容需要调整"})
                 except ValueError:
                     record_failure(None)
-                    stop("本次方案结构不完整，暂未采用", {("contract",): "方案结构、商品依据或已确认内容需要调整"})
+                    await stop("本次方案结构不完整，暂未采用", {("contract",): "方案结构、商品依据或已确认内容需要调整"})
                 text = str(error)
                 if "无人声" in text:
                     record_failure(None)
-                    stop("本次方案未能满足已确认要求，暂未采用",
+                    await stop("本次方案未能满足已确认要求，暂未采用",
                          {("speech",): "已选无人声方向不能增加台词"})
                 if "用户明确固定的台词" in text or "用户固定台词" in text:
                     record_failure(None)
-                    stop("本次方案未能满足已确认要求，暂未采用",
+                    await stop("本次方案未能满足已确认要求，暂未采用",
                          {("fixed_speech",): "用户固定台词未完整保留"})
                 if "选中创意的商品依据必须落实" in text and not selected_evidence_restored:
                     selected_evidence_restored = True
@@ -1772,7 +1805,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                         issues = {("fixed_speech",): "用户固定台词未完整保留"}
                     else:
                         issues = {("contract",): "方案结构、商品依据或已确认内容需要调整"}
-                    stop("本次方案未能满足已确认要求，暂未采用", issues)
+                    await stop("本次方案未能满足已确认要求，暂未采用", issues)
                 # A global packing conflict couples all of these content windows;
                 # the original story/visual contract remains protected separately.
                 scope = capacity_repair_scope(before)
@@ -1780,7 +1813,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                             "capacity": script_capacity_budget(before["ad_script"], duration, tenth)}
                 overrun = feedback["capacity"]["overrun_seconds"]
                 if previous_timing_overrun is not None and overrun >= previous_timing_overrun:
-                    stop("自动调整后动作与台词容量仍未改善，已停止重复尝试", issues)
+                    await stop("自动调整后动作与台词容量仍未改善，已停止重复尝试", issues)
                 previous_timing_overrun = overrun
                 if previous_review is not None:
                     feedback["previous_review"] = previous_review
@@ -1789,7 +1822,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 try:
                     raw = await refine(before, scope, feedback, issues)
                 except RevisionKept:
-                    stop("自动调整后动作与台词容量仍未改善，已停止重复尝试", issues)
+                    await stop("自动调整后动作与台词容量仍未改善，已停止重复尝试", issues)
                 continue
             if current_is_skeleton:
                 chosen = best_real()
@@ -1860,8 +1893,9 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                     called, replacement = await rewrite_shots_if_needed(stage_call, coordinated, plan, strategy)
                     if called and replacement is not None:
                         try:
-                            compile_director(replacement, strategy, duration, generation_strategy,
-                                             [a["id"] for a in assets], locked, cta_target)
+                            await asyncio.to_thread(
+                                compile_director, replacement, strategy, duration, generation_strategy,
+                                [a["id"] for a in assets], locked, cta_target)
                         except (ValueError, KeyError, TypeError):
                             replacement = None
                         else:
@@ -1880,8 +1914,9 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                     craft_accepted = _accept_craft_issue(diagnostic_settings, craft_request) or craft_accepted
                 else:
                     try:
-                        compile_director(revised, strategy, duration, generation_strategy,
-                                         [a["id"] for a in assets], locked, cta_target)
+                        await asyncio.to_thread(
+                            compile_director, revised, strategy, duration, generation_strategy,
+                            [a["id"] for a in assets], locked, cta_target)
                     except (ValueError, KeyError, TypeError):
                         craft_accepted = _accept_craft_issue(diagnostic_settings, craft_request) or craft_accepted
                     else:
@@ -1893,7 +1928,9 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 return release(plan)
             from .story_logic import align_declared_continuity, state_change_warnings, wardrobe_warnings
             aligned, did_align = align_declared_continuity(coordinated)
-            if did_align:
+            signature = _continuity_signature(aligned)
+            if did_align and signature != last_align_signature:
+                last_align_signature = signature
                 raw = aligned
                 continue
             if not state_warnings_recorded:
@@ -1941,9 +1978,14 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             except Exception as error:
                 _reraise_terminal(error)
                 record_failure({"nonblocking": True, "message": type(error).__name__, "issues": ["plan_review"]})
-                stop("本次方案的完整检查尚未完成，暂未采用", {("review",): "综合检查记录不完整或无效"},
+                await stop("本次方案的完整检查尚未完成，暂未采用", {("review",): "综合检查记录不完整或无效"},
                      error_code="planning_review_incomplete")
+            review_rounds = 0
             while True:
+                review_rounds += 1
+                if review_rounds > 3:
+                    await stop("本次方案的完整检查尚未完成，暂未采用", {("review",): "综合检查记录不完整或无效"},
+                               error_code="planning_review_incomplete")
                 try:
                     from .plan_review import PlanReview, normalize_plan_review_wire
                     from .planner_recovery import drop_extra_forbidden, unwrap_planner_object
@@ -1958,7 +2000,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 except (ValueError, KeyError, TypeError) as error:
                     record_failure(plan)
                     if review_response_repair_used:
-                        stop("本次方案的完整检查尚未完成，暂未采用", {("review",): "综合检查记录不完整或无效"},
+                        await stop("本次方案的完整检查尚未完成，暂未采用", {("review",): "综合检查记录不完整或无效"},
                              error_code="planning_review_incomplete")
                     # Correct the review record, never reroll authored content or
                     # erase an explicit rejection. One correction for the entire
@@ -1974,13 +2016,13 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                     except Exception as error:
                         _reraise_terminal(error)
                         record_failure({"nonblocking": True, "message": type(error).__name__, "issues": ["plan_review"]})
-                        stop("本次方案的完整检查尚未完成，暂未采用", {("review",): "综合检查记录不完整或无效"},
+                        await stop("本次方案的完整检查尚未完成，暂未采用", {("review",): "综合检查记录不完整或无效"},
                              error_code="planning_review_incomplete")
                     try:
                         preserve_review_rejections(raw_review, corrected_review, plan)
                     except (ValueError, KeyError, TypeError):
                         record_failure(plan)
-                        stop("本次方案的完整检查尚未完成，暂未采用", {("review",): "综合检查记录不完整或无效"},
+                        await stop("本次方案的完整检查尚未完成，暂未采用", {("review",): "综合检查记录不完整或无效"},
                              error_code="planning_review_incomplete")
                     raw_review = corrected_review
             remember(plan, review)
@@ -2022,7 +2064,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             if isinstance(execution, dict):
                 execution["state_continuity"] = True
             if dialogue_polish_used:
-                stop("单次台词收尾后，本次方案仍有未解决的问题", issues)
+                await stop("单次台词收尾后，本次方案仍有未解决的问题", issues)
             if (max_refinements > 0 and repairs == max_refinements and _only_natural_speech_failed(review)
                     and any(beat["narration"] for beat in coordinated["ad_script"]["beats"])):
                 # Replaying the same completed stage reconstructs this flag after
@@ -2042,18 +2084,18 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 except Exception as error:
                     _reraise_terminal(error)
                     record_failure({"nonblocking": True, "message": type(error).__name__, "issues": ["dialogue_polish"]})
-                    stop("台词收尾未满足仅修改现有台词及逐拍字数预算的要求，暂未采用", issues)
+                    await stop("台词收尾未满足仅修改现有台词及逐拍字数预算的要求，暂未采用", issues)
                 try:
                     raw = compose_dialogue_polish(candidate, coordinated, narration_limits)
                 except (ValueError, KeyError, TypeError):
-                    stop("台词收尾未满足仅修改现有台词及逐拍字数预算的要求，暂未采用", issues)
+                    await stop("台词收尾未满足仅修改现有台词及逐拍字数预算的要求，暂未采用", issues)
                 if raw == coordinated:
-                    stop("台词收尾没有产生实际文字变化，已停止重复尝试", issues)
+                    await stop("台词收尾没有产生实际文字变化，已停止重复尝试", issues)
                 continue  # Compile with existing locks, then review the entire plan.
             capacity = _review_capacity_gaps(feedback, plan, review_input["execution_windows"])
             improved = _capacity_improved(previous_capacity, capacity, previous_draft, coordinated)
             if previous_issues is not None and set(previous_issues).issubset(issues) and not improved:
-                stop("自动调整后同一内容问题仍未改善，已停止重复尝试", issues)
+                await stop("自动调整后同一内容问题仍未改善，已停止重复尝试", issues)
             previous_review, previous_issues = feedback, issues
             previous_capacity, previous_draft = capacity, coordinated
             try:

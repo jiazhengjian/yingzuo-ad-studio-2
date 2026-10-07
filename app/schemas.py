@@ -115,7 +115,8 @@ class SpeechSpan(BaseModel):
     def complete_speech(self):
         if not self.id.strip() or not self.beat_id.strip() or not self.text.strip() or self.end <= self.start:
             raise ValueError("旁白时段须包含非空ID、完整台词和有效时段；静音画面使用镜头表示")
-        if re.search(r"[，,、：:；;]\s*[”’」』\"']*\s*$", self.text):
+        from .line_quality import ends_unfinished
+        if ends_unfinished(self.text):
             raise ValueError("旁白时段须保留完整表达，不能以未完标点结束")
         from .ad_form_playbook import active_speech_tenth
         if len(self.text) > shot_character_limit(self.start, self.end, active_speech_tenth()):

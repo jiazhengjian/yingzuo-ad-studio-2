@@ -545,6 +545,63 @@ def test_cosmetic_refinement_does_not_spend_another_review_or_round(progressive_
     assert state.calls == ["ad_script", "storyboard", "plan_review", "plan_refinement"]
 
 
+def test_alignment_that_never_settles_stops_and_compile_stays_off_the_loop(source, monkeypatch):
+    import time
+    from app import progressive_planning as planning
+    from app.progressive_planning import progressive_plan
+    strategy = chosen_strategy(source)
+    raw = director_output(strategy)
+    counts = {"align": 0, "compile": 0}
+    real_compile = planning.compile_director
+
+    def spin(container):
+        counts["align"] += 1
+        revised = deepcopy(container)
+        shots = revised.get("shots") or []
+        if shots:
+            shots[-1]["continuity"]["end_state"] = f"再改一次{counts['align']}"
+        return revised, True
+
+    monkeypatch.setattr(planning, "MAX_DIRECTOR_PASSES", 6)
+    monkeypatch.setattr("app.story_logic.align_declared_continuity", spin)
+
+    async def stage_call(system, context, assets):
+        if context["stage"] == "plan_review":
+            return accepted_review(context["final_plan"])
+        return deepcopy(raw)
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        compile_started = asyncio.Event()
+
+        def slow_compile(*args, **kwargs):
+            counts["compile"] += 1
+            if counts["compile"] == 1:
+                loop.call_soon_threadsafe(compile_started.set)
+                time.sleep(0.3)
+            return real_compile(*args, **kwargs)
+
+        monkeypatch.setattr(planning, "compile_director", slow_compile)
+        task = asyncio.create_task(progressive_plan(
+            stage_call=stage_call, on_progress=None, record_failure=lambda _item: None,
+            strategy=strategy, draft=raw["ad_script"], draft_issues=[], duration=20,
+            generation_strategy="continuity_v1", assets=[source], conversation=[],
+            merchant_request="蓝瓶商品", current_plan=None))
+        started = time.perf_counter()
+        await asyncio.wait_for(compile_started.wait(), timeout=2)
+        responsive = time.perf_counter() - started
+        plan = await task
+        return responsive, plan
+
+    started = time.perf_counter()
+    responsive, plan = asyncio.run(run())
+    assert time.perf_counter() - started < 8
+    assert responsive < 0.2
+    assert 1 <= counts["align"] <= 6
+    assert counts["compile"] <= 8
+    assert plan["segments"]
+
+
 def test_content_failure_exposes_only_owned_summary_and_is_not_retryable(source):
     from app.progressive_planning import ProgressivePlanningError, progressive_plan
     strategy = chosen_strategy(source)

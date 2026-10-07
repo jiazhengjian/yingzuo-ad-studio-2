@@ -279,3 +279,38 @@ def test_native_creative_alternatives_preserve_speech_timing(plan_data):
     options[0]["segment"]["speech_spans"][0]["start"] = 0.1
     options[0]["segment"]["speech_spans"][0]["anchors"][0]["start"] = 0.1
     with pytest.raises(ValueError, match="保留首段完整旁白"): AgentDecision.model_validate(value)
+
+
+def _span(text, seconds=10):
+    return {"id": "speech", "beat_id": "beat", "text": text, "start": 0, "end": seconds,
+            "shot_ids": ["shot"], "anchors": [{"text": text, "start": 0, "end": seconds,
+            "shot_ids": ["shot"], "visual_evidence": "桌面上的蛋糕切块"}]}
+
+
+def test_a_long_quote_and_space_tail_is_classified_without_stalling():
+    from app.line_quality import ends_unfinished
+    tail = (" ”’」』\"'\\ \t\n" * 80)
+    unfinished = "下午茶选块蛋糕，" + tail
+    finished = "下午茶选块蛋糕。" + tail
+    assert ends_unfinished(unfinished) is True
+    assert ends_unfinished(finished) is False
+    with pytest.raises(ValueError, match="未完标点"):
+        SpeechSpan.model_validate(_span(unfinished[:350]))
+    short = "选块蛋糕。" + "” " * 4
+    assert SpeechSpan.model_validate(_span(short)).text == short
+
+
+def test_unfinished_punctuation_tails_stay_within_a_small_budget():
+    import random
+    import time
+    from app.line_quality import ends_unfinished
+    alphabet = "，,、：:；; \t\n\"'”’」』\\字。！？"
+    rng = random.Random(26)
+    started = time.perf_counter()
+    for length in (32, 80, 200, 800, 2000):
+        for _ in range(40):
+            body = "".join(rng.choice(alphabet) for _ in range(length))
+            ends_unfinished(body)
+            ends_unfinished("她放下叉子，" + body)
+            ends_unfinished("她放下叉子。" + body)
+    assert time.perf_counter() - started < 1.0

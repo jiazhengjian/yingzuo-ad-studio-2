@@ -564,6 +564,30 @@ def test_r20_dryer_handoff_follows_the_next_start_without_a_keyword_table():
     assert twice is False and again == fixed
 
 
+def test_a_result_shot_followed_by_a_hard_cut_settles_instead_of_flipping():
+    """The cake hang: result end was rewritten to the next cut, then written back."""
+    board = {"shots": [
+        {"id": "s1", "continuity": {
+            "start_state": "完整蛋糕", "end_state": "完整蛋糕", "allowed_changes": "她把蛋糕切开",
+            "entry_transition": "opening"}},
+        {"id": "s2", "continuity": {
+            "start_state": "切开的蛋糕", "end_state": "切开的蛋糕", "allowed_changes": "她叉起一小块",
+            "entry_transition": "cut"}},
+        {"id": "s3", "continuity": {
+            "start_state": "盘中近景", "end_state": "盘中近景", "allowed_changes": "奶油轻轻晃一下",
+            "entry_transition": "cut"}},
+    ], "state_changes": [_declared("s1", "s2", subject="蛋糕", start="完整蛋糕", result="切开的蛋糕")]}
+    aligned, changed = align_declared_continuity(board)
+    assert aligned["shots"][1]["continuity"]["end_state"] == "切开的蛋糕"
+    assert aligned["shots"][1]["continuity"]["start_state"] == "切开的蛋糕"
+    assert aligned["shots"][2]["continuity"]["start_state"] == "盘中近景"
+    again, twice = align_declared_continuity(aligned)
+    assert twice is False
+    assert again["shots"][1]["continuity"]["end_state"] == "切开的蛋糕"
+    third, third_time = align_declared_continuity(again)
+    assert third_time is False and third == again
+
+
 def test_state_references_off_gives_every_character_one_ordinary_sheet(monkeypatch):
     from app.config import Settings
     from app.story_logic import state_references_enabled

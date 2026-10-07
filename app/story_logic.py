@@ -487,8 +487,13 @@ def align_declared_continuity(container):
             if isinstance(following, dict) and following.get("entry_transition") in (None, "", "continuous"):
                 changed = _write_state(shots[result_i + 1], "start_state", change["result"]) or changed
     for index in range(len(shots) - 1):
-        nxt = shots[index + 1]
+        current_shot, nxt = shots[index], shots[index + 1]
         if isinstance(nxt, dict) and nxt.get("id") in result_ids:
+            continue
+        # A declared result already opens and ends on its result text. Letting
+        # the next hard cut's start replace that end makes the next pass write
+        # the result back, so the same board never settles.
+        if isinstance(current_shot, dict) and current_shot.get("id") in result_ids:
             continue
         current, following = _continuity_of(shots[index]), _continuity_of(nxt)
         if not isinstance(current, dict) or not isinstance(following, dict):
