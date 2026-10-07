@@ -2290,9 +2290,7 @@ class Gateway:
                 planning_requested=force_plan,
                 existing_work=bool(current_plan) or existing_direction is not None))
             if isinstance(prepared, dict):
-                from app.highlight import merchant_corpus
-                from app.strategy import align_solo_lead, prepare_strategy_ingress
-                prepared = align_solo_lead(prepared, merchant_corpus(project, messages))
+                from app.strategy import prepare_strategy_ingress
                 prepared = prepare_strategy_ingress(prepared)
                 prepared = normalize_model_payload(StrategyDecision, prepared)
             decision = StrategyDecision.model_validate(prepared)
