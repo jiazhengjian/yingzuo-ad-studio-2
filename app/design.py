@@ -62,8 +62,15 @@ def _product_terms(plan):
 
 _WEARABLE_NOUNS = ("头戴式耳机", "耳机", "耳塞", "耳麦", "手表", "眼镜", "墨镜")
 _BARE_WEAR = re.compile(r"佩戴|戴着|戴上|头戴|(?<![摘取])戴")
-_FEMALE_LOOK = re.compile(r"(?<![其])她(?!们)|女生|女性|女孩|女士|女人")
-_MALE_LOOK = re.compile(r"(?<![其把让给向为被])他(?!们)|男生|男性|男孩|男士|男人")
+_SHE = re.compile(r"(?<![其])她(?!们)")
+_HE = re.compile(r"(?<![其把让给向为被])他(?!们)")
+_FEMALE_WORDS = ("年轻女性", "年轻女生", "女生主角", "女主角", "女朋友", "宝妈", "妈妈", "母亲", "闺蜜", "女友", "女儿", "奶奶", "女性", "女生", "女孩", "女士", "女人", "少女", "阿姨")
+_MALE_WORDS = ("年轻男性", "年轻男生", "男生主角", "男主角", "男朋友", "宝爸", "爸爸", "父亲", "男友", "儿子", "爷爷", "男性", "男生", "男孩", "男士", "男人", "少年", "叔叔")
+_FEMALE_ROLE = re.compile(r"妈妈|母亲|宝妈|女儿|女友|女朋友|闺蜜|奶奶|阿姨")
+_MALE_ROLE = re.compile(r"爸爸|父亲|宝爸|儿子|男友|男朋友|爷爷|叔叔")
+_CHILD = re.compile(r"宝宝|婴儿|孩子|小朋友")
+_TO_FEMALE = (("男朋友", "女朋友"), ("男生", "女生"), ("男性", "女性"), ("男人", "女人"), ("男孩", "女孩"), ("男士", "女士"))
+_TO_MALE = (("女朋友", "男朋友"), ("女生", "男生"), ("女性", "男性"), ("女人", "男人"), ("女孩", "男孩"), ("女士", "男士"))
 
 
 def _expanded_product_terms(terms):
@@ -107,11 +114,17 @@ def _strip_product_clauses(description, terms):
     if not description:
         return description
     kept = []
+    dropped = False
     for clause in re.split(r"[，。；]", description):
         clause = clause.strip()
-        if not clause or _clause_draws_product(clause, terms):
+        if not clause:
+            continue
+        if _clause_draws_product(clause, terms):
+            dropped = True
             continue
         kept.append(clause)
+    if not dropped:
+        return description
     return "，".join(kept)
 
 
@@ -139,70 +152,161 @@ def _shot_blob_for(plan, person):
     return "\n".join(parts)
 
 
-def character_gender(plan, person):
-    """female or male, from the shots that show this person. The cast line is only a fallback."""
-    shots = _shot_blob_for(plan, person if isinstance(person, dict) else {})
-    description = person.get("description") if isinstance(person, dict) and isinstance(person.get("description"), str) else ""
-    female_shots = len(_FEMALE_LOOK.findall(shots))
-    male_shots = len(_MALE_LOOK.findall(shots))
-    if female_shots or male_shots:
-        if female_shots >= male_shots and female_shots:
-            return "female"
-        if male_shots:
-            return "male"
-    if _FEMALE_LOOK.search(description):
+def gender_in_text(text):
+    """female, male, or empty. A line that names both is not a decision."""
+    blob = text or ""
+    female = any(word in blob for word in _FEMALE_WORDS) or bool(_SHE.search(blob))
+    male = any(word in blob for word in _MALE_WORDS) or bool(_HE.search(blob))
+    if female and not male:
         return "female"
-    if _MALE_LOOK.search(description):
+    if male and not female:
         return "male"
     return ""
 
 
-def apply_character_gender(description, gender):
-    """Lock the stored line to the gender the shots already use."""
-    description = (description or "").strip()
-    if gender == "female":
-        description = re.sub(r"男性|男生|男人|男孩|男士", "女性", description)
-        description = re.sub(r"(?<![其把让给向为被])他(?!们)", "她", description)
-        if description and not _FEMALE_LOOK.search(description):
-            description = "女性，" + description
-        elif not description:
-            description = "女性"
-    elif gender == "male":
-        description = re.sub(r"女性|女生|女人|女孩|女士", "男性", description)
-        description = re.sub(r"(?<![其])她(?!们)", "他", description)
-        if description and not _MALE_LOOK.search(description):
-            description = "男性，" + description
-        elif not description:
-            description = "男性"
-    return description
+def merchant_gender_corpus(brief):
+    """Audience and merchant facts. A usage scene alone is not a gender."""
+    if not isinstance(brief, dict):
+        return ""
+    parts = []
+    audience = brief.get("audience")
+    if isinstance(audience, str) and audience.strip():
+        parts.append(audience.strip())
+    for fact in brief.get("facts") or []:
+        if not isinstance(fact, dict) or fact.get("source_kind") not in (None, "merchant"):
+            continue
+        text = fact.get("text")
+        if isinstance(text, str) and text.strip():
+            parts.append(text.strip())
+    return "\n".join(parts)
 
 
-def cast_look_lock(plan, person):
-    """One sentence for the image prompt. Shot text wins over an unstated gender."""
-    gender = character_gender(plan, person)
-    if gender == "female":
-        return "这个人是女性，东亚女性面孔，按镜头里的「她」来画，不要画成男性。"
-    if gender == "male":
-        return "这个人是男性，东亚男性面孔，按镜头里的「他」来画，不要画成女性。"
+def _plan_merchant_text(plan):
+    strategy = plan.get("strategy") if isinstance(plan, dict) and isinstance(plan.get("strategy"), dict) else {}
+    brief = strategy.get("brief") if isinstance(strategy.get("brief"), dict) else {}
+    return merchant_gender_corpus(brief)
+
+
+def _role_gender(person):
+    blob = " ".join(part for part in (
+        person.get("name") if isinstance(person, dict) else "",
+        person.get("description") if isinstance(person, dict) else "",
+    ) if isinstance(part, str))
+    female = bool(_FEMALE_ROLE.search(blob))
+    male = bool(_MALE_ROLE.search(blob))
+    if female and not male:
+        return "female"
+    if male and not female:
+        return "male"
     return ""
 
 
-def rewrite_character_description(person, plan):
-    """Drop the product from a stored cast line.
+def gender_for_character(person, merchant_text=""):
+    """Merchant gender when this person is that audience. Otherwise the cast line.
 
-    Gender stays in the image prompt via cast_look_lock. The stored line is
-    rewritten only when it names the opposite gender from the shots, or when
-    it puts the product on the body. Clothes that are not the product stay.
+    A dad in a 年轻女性 ad keeps his own role. A baby does not inherit 宝妈.
+    Shot text is not read here.
+    """
+    if not isinstance(person, dict):
+        return ""
+    merchant = gender_in_text(merchant_text)
+    role = _role_gender(person)
+    description = person.get("description") if isinstance(person.get("description"), str) else ""
+    name = person.get("name") if isinstance(person.get("name"), str) else ""
+    if merchant and role and role != merchant:
+        return role
+    if merchant and _CHILD.search(name + description) and not gender_in_text(description):
+        return ""
+    if merchant:
+        return merchant
+    existing = person.get("gender")
+    if existing in ("female", "male"):
+        return existing
+    return gender_in_text(description)
+
+
+def stored_cast_gender(person):
+    """The recorded gender. Empty when this cast line never decided one."""
+    if not isinstance(person, dict):
+        return ""
+    value = person.get("gender")
+    if value in ("female", "male"):
+        return value
+    return gender_in_text(person.get("description") if isinstance(person.get("description"), str) else "")
+
+
+def character_gender(plan, person):
+    """Stored gender. Shot text is only a fallback for an old plan that never wrote one."""
+    found = stored_cast_gender(person if isinstance(person, dict) else {})
+    if found:
+        return found
+    return gender_in_text(_shot_blob_for(plan, person if isinstance(person, dict) else {}))
+
+
+def align_pronouns(text, gender):
+    """Swap 她/他 to the stored gender. 其他 and 她们 stay."""
+    if not isinstance(text, str) or gender not in ("female", "male"):
+        return text
+    if gender == "female":
+        return _HE.sub("她", text)
+    return _SHE.sub("他", text)
+
+
+def align_gender_words(description, gender):
+    """Replace a gender word that contradicts the record. Do not add hair or clothes."""
+    description = description or ""
+    pairs = _TO_FEMALE if gender == "female" else _TO_MALE if gender == "male" else ()
+    for source, target in pairs:
+        description = description.replace(source, target)
+    return align_pronouns(description, gender)
+
+
+def record_character_gender(person, merchant_text=""):
+    """Write gender onto the character. The rest of the description stays."""
+    if not isinstance(person, dict):
+        return False
+    decided = gender_for_character(person, merchant_text)
+    if not decided:
+        return False
+    changed = False
+    if person.get("gender") != decided:
+        person["gender"] = decided
+        changed = True
+    description = person.get("description") if isinstance(person.get("description"), str) else ""
+    aligned = align_gender_words(description, decided)
+    if aligned != description:
+        person["description"] = aligned[:800]
+        changed = True
+    return changed
+
+
+def cast_look_lock(plan, person):
+    """One sentence for the image prompt, copied from the stored gender."""
+    gender = character_gender(plan, person)
+    if gender == "female":
+        return "这个人是女性，不要画成男性。"
+    if gender == "male":
+        return "这个人是男性，不要画成女性。"
+    return ""
+
+
+def cast_pronoun(plan, person):
+    """她 or 他 for lines that name this person. Unknown stays 她."""
+    if character_gender(plan, person) == "male":
+        return "他"
+    return "她"
+
+
+def rewrite_character_description(person, plan):
+    """Drop the product from a stored cast line. Clothes that are not the product stay.
+
+    Gender is not taken from the shots. A contradicting 她/他 is fixed on the
+    shot, after the cast gender has been recorded.
     """
     if not isinstance(person, dict):
         return False
     description = person.get("description") if isinstance(person.get("description"), str) else ""
     cleaned = _strip_product_clauses(description, _product_terms(plan))
-    gender = character_gender(plan, person)
-    if gender == "female" and _MALE_LOOK.search(cleaned) and not _FEMALE_LOOK.search(cleaned):
-        cleaned = apply_character_gender(cleaned, "female")
-    elif gender == "male" and _FEMALE_LOOK.search(cleaned) and not _MALE_LOOK.search(cleaned):
-        cleaned = apply_character_gender(cleaned, "male")
     if not cleaned:
         cleaned = description.strip()
     if cleaned == description:
@@ -211,14 +315,105 @@ def rewrite_character_description(person, plan):
     return True
 
 
+def _people(plan):
+    production = plan.get("production") if isinstance(plan, dict) and isinstance(plan.get("production"), dict) else {}
+    return [person for person in production.get("characters") or [] if isinstance(person, dict)]
+
+
+def _rewrite_pronoun_fields(holder, keys, gender):
+    changed = False
+    for key in keys:
+        value = holder.get(key) if isinstance(holder, dict) else None
+        if not isinstance(value, str):
+            continue
+        fixed = align_pronouns(value, gender)
+        if fixed != value:
+            holder[key] = fixed
+            changed = True
+    return changed
+
+
+def _align_named_clauses(text, people):
+    if not isinstance(text, str) or not text:
+        return text
+    pieces = re.split(r"([，。；])", text)
+    changed = False
+    for index, piece in enumerate(pieces):
+        if piece in "，。；":
+            continue
+        owners = []
+        for person in people:
+            name = person.get("name") if isinstance(person.get("name"), str) else ""
+            gender = stored_cast_gender(person)
+            if name and name in piece and gender:
+                owners.append(gender)
+        if len(set(owners)) != 1:
+            continue
+        fixed = align_pronouns(piece, owners[0])
+        if fixed != piece:
+            pieces[index] = fixed
+            changed = True
+    return "".join(pieces) if changed else text
+
+
+def settle_shot_pronouns(plan):
+    """Shot and line pronouns follow the stored gender. They do not choose it."""
+    if not isinstance(plan, dict):
+        return False
+    from .story_logic import iter_plan_shots
+    people = _people(plan)
+    if not people:
+        return False
+    changed = False
+    for shot in iter_plan_shots(plan):
+        ids = shot.get("character_ids") if isinstance(shot.get("character_ids"), list) else []
+        present = [person for person in people if not ids or person.get("id") in ids]
+        genders = {stored_cast_gender(person) for person in present}
+        genders.discard("")
+        if len(genders) == 1:
+            gender = next(iter(genders))
+            if _rewrite_pronoun_fields(shot, ("description", "purpose"), gender):
+                changed = True
+            continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else None
+            if continuity and _rewrite_pronoun_fields(continuity, ("start_state", "end_state", "allowed_changes"), gender):
+                changed = True
+        else:
+            for key in ("description", "purpose"):
+                fixed = _align_named_clauses(shot.get(key), present)
+                if fixed != shot.get(key) and isinstance(shot.get(key), str):
+                    shot[key] = fixed
+                    changed = True
+    production = plan.get("production") if isinstance(plan.get("production"), dict) else {}
+    speaker = next((person for person in people if person.get("id") == production.get("speaker_id")), None)
+    speaker_gender = stored_cast_gender(speaker) if speaker else ""
+    shared = {stored_cast_gender(person) for person in people}
+    shared.discard("")
+    line_gender = speaker_gender if len(shared) <= 1 else ""
+    if line_gender:
+        for segment in plan.get("segments") or []:
+            if not isinstance(segment, dict):
+                continue
+            for span in segment.get("speech_spans") or []:
+                if isinstance(span, dict) and _rewrite_pronoun_fields(span, ("text",), line_gender):
+                    changed = True
+        script = plan.get("ad_script") if isinstance(plan.get("ad_script"), dict) else {}
+        for beat in script.get("beats") or []:
+            if isinstance(beat, dict) and _rewrite_pronoun_fields(beat, ("narration",), line_gender):
+                changed = True
+    return changed
+
+
 def settle_cast_appearance(plan):
-    """Rewrite every stored character on this plan. Idempotent."""
+    """Record gender, drop the product, then make 她/他 match that gender."""
     if not isinstance(plan, dict):
         return False
     changed = False
+    merchant = _plan_merchant_text(plan)
     production = plan.get("production") if isinstance(plan.get("production"), dict) else {}
     for person in production.get("characters") or []:
         if rewrite_character_description(person, plan):
+            changed = True
+        if record_character_gender(person, merchant):
             changed = True
     strategy = plan.get("strategy") if isinstance(plan.get("strategy"), dict) else {}
     for direction in strategy.get("directions") or []:
@@ -228,6 +423,10 @@ def settle_cast_appearance(plan):
         for person in nested.get("characters") or []:
             if rewrite_character_description(person, plan):
                 changed = True
+            if record_character_gender(person, merchant):
+                changed = True
+    if settle_shot_pronouns(plan):
+        changed = True
     return changed
 
 

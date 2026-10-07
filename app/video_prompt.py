@@ -441,6 +441,8 @@ def _only_guidance(shot, spans):
 
 def _compile_grouped_video(segment, template):
     """Caller validates Segment before any upload or paid submission."""
+    from .design import settle_shot_pronouns
+    settle_shot_pronouns(segment)
     shots = segment["shots"]
     continuous = segment.get("generation_strategy") == "continuity_v1"
     director = segment.get("director_context") or {}
@@ -467,8 +469,12 @@ def _compile_grouped_video(segment, template):
             for shot in shots)
     lines.extend(_voice_lines(production, director, spans, characters,
                               ad_form=segment.get("ad_form"), inner=bool(inner)))
+    from .design import cast_pronoun
+    speaker = next((person for person in (production or {}).get("characters") or []
+                    if isinstance(person, dict) and person.get("id") == (production or {}).get("speaker_id")), None)
+    own = cast_pronoun(segment, speaker or {})
     if partial_inner:
-        lines.append("某一镜里没有别的醒着的人时，这一句改成她自己的内心声音，不对口型，嘴不要动。")
+        lines.append(f"某一镜里没有别的醒着的人时，这一句改成{own}自己的内心声音，不对口型，嘴不要动。")
     labels = {shot["id"]: f"镜头{index + 1}" for index, shot in enumerate(shots)}
 
     def shot_names(ids):
@@ -532,7 +538,7 @@ def _compile_grouped_video(segment, template):
             lines.append("  本镜停在结果上，不对口型，不念链接。")
         elif (inner or alone_here) and speaking_here:
             gaze = "" if story_needs_lens(shot_view) else "，不转头看镜头"
-            lines.append(f"  本镜不对口型。这句是她自己的内心声音，嘴不要动{gaze}。")
+            lines.append(f"  本镜不对口型。这句是{own}自己的内心声音，嘴不要动{gaze}。")
         elif lip_sync:
             speaker_id = production.get("speaker_id")
             name = shot_labels.get(speaker_id) or characters.get(speaker_id, "")

@@ -71,7 +71,10 @@ class CharacterSpec(BaseModel):
     id: str = Field(pattern=r"^char_[a-z0-9_]{1,40}$")
     name: str = Field(min_length=1, max_length=60, description="故事中的角色称呼")
     description: str = Field(min_length=1, max_length=800,
-        description="创作设定的年龄段、发型、服装和体态。商家没有明确其他外貌时写成中国人、东亚面孔、日常大陆长相；商家明确要求的外貌按该要求写，不要改回中国人。供同一角色参考图与视频复用")
+        description="只写性别和身份，例如一个女生或她。不要写年龄、发型、服装、五官或长相。外貌交给后面的角色图。")
+    gender: Literal["female", "male"] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+        description="程序记下的出镜性别。方向里写她或他即可。")
     appearance: Literal["face_visible", "partial_only"] | None = Field(
         default=None, exclude_if=lambda value: value is None,
         description="本片出镜安排：face_visible至少有脸部可见画面；partial_only只露手、头发或身体局部，不露脸。局部也是人物出镜，不把同一人拆成多个角色；历史缺省不推断")
@@ -124,6 +127,11 @@ def production_authoring_schema(schema):
             production["required"] = [key for key in production["required"] if key != "version"]
     character = schema.get("$defs", {}).get("CharacterSpec")
     if character is not None:
+        # Gender is recorded from 她/他 after the model replies. The model does
+        # not fill this field, so a prose 她 cannot fail validation.
+        character["properties"].pop("gender", None)
+        if "required" in character:
+            character["required"] = [key for key in character["required"] if key != "gender"]
         appearance = character["properties"]["appearance"]
         appearance.update(next(option for option in appearance.pop("anyOf") if option.get("type") != "null"))
         appearance.pop("default", None)

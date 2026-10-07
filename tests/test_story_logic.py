@@ -1308,13 +1308,15 @@ def test_bare_wear_is_stripped_and_shot_gender_is_locked():
     stored = offered["directions"][0]["production"]["characters"][0]["description"]
     assert "耳机" not in stored and "短发" in stored
     male = {"id": "char_host", "name": "主讲", "description": "成年男性，他短发。"}
-    male_plan = {"facts": {"name": "降噪耳机"}, "production": {"characters": [male]}, "segments": [{"shots": [
-        {"id": "s1", "description": "她把耳机举到镜头前。", "character_ids": ["char_host"]},
-    ]}]}
+    shot = {"id": "s1", "description": "她把耳机举到镜头前。", "character_ids": ["char_host"]}
+    male_plan = {"facts": {"name": "降噪耳机"}, "production": {"characters": [male]}, "segments": [{"shots": [shot]}]}
     assert settle_cast_appearance(male_plan) is True
-    assert male["description"].startswith("成年女性")
-    assert "男性" not in male["description"] and "短发" in male["description"]
-    assert "他" not in male["description"] and "她" in male["description"]
+    assert male["gender"] == "male"
+    assert male["description"] == "成年男性，他短发。"
+    assert shot["description"] == "他把耳机举到镜头前。"
+    prompt = character_design_request({}, male_plan, male)["prompt"]
+    assert "不要画成女性" in prompt
+    assert "按镜头" not in prompt
 
 
 def test_character_sheet_does_not_wear_the_product():
