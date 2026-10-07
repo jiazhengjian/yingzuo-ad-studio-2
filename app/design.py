@@ -162,12 +162,14 @@ def apply_character_gender(description, gender):
     description = (description or "").strip()
     if gender == "female":
         description = re.sub(r"男性|男生|男人|男孩|男士", "女性", description)
+        description = re.sub(r"(?<![其把让给向为被])他(?!们)", "她", description)
         if description and not _FEMALE_LOOK.search(description):
             description = "女性，" + description
         elif not description:
             description = "女性"
     elif gender == "male":
         description = re.sub(r"女性|女生|女人|女孩|女士", "男性", description)
+        description = re.sub(r"(?<![其])她(?!们)", "他", description)
         if description and not _MALE_LOOK.search(description):
             description = "男性，" + description
         elif not description:
@@ -186,19 +188,21 @@ def cast_look_lock(plan, person):
 
 
 def rewrite_character_description(person, plan):
-    """Drop the product from a stored cast line and lock gender to the shots.
+    """Drop the product from a stored cast line.
 
-    Returns True when the stored description changes. Clothes that are not the
-    product stay. Callers that only need a prompt can read the same text via
-    character_sheet_description.
+    Gender stays in the image prompt via cast_look_lock. The stored line is
+    rewritten only when it names the opposite gender from the shots, or when
+    it puts the product on the body. Clothes that are not the product stay.
     """
     if not isinstance(person, dict):
         return False
     description = person.get("description") if isinstance(person.get("description"), str) else ""
-    cleaned = apply_character_gender(
-        _strip_product_clauses(description, _product_terms(plan)),
-        character_gender(plan, person),
-    )
+    cleaned = _strip_product_clauses(description, _product_terms(plan))
+    gender = character_gender(plan, person)
+    if gender == "female" and _MALE_LOOK.search(cleaned) and not _FEMALE_LOOK.search(cleaned):
+        cleaned = apply_character_gender(cleaned, "female")
+    elif gender == "male" and _FEMALE_LOOK.search(cleaned) and not _MALE_LOOK.search(cleaned):
+        cleaned = apply_character_gender(cleaned, "male")
     if not cleaned:
         cleaned = description.strip()
     if cleaned == description:

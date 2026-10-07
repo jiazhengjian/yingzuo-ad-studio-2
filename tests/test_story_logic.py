@@ -1166,7 +1166,8 @@ def test_state_sheet_wears_only_this_shots_clothes():
     assert "薄外套" in sheet["prompt"]
     assert "手里拿吹风机" not in sheet["prompt"]
     assert "双手空手，不要商品" in sheet["prompt"]
-    assert person["description"].count("手里拿吹风机") == 1
+    assert "手里拿吹风机" not in person["description"]
+    assert "薄外套" in person["description"]
     start = state_design_request({}, plan, {
         "phase": "start", "label": "湿", "subject": "头发", "shot_id": "s3",
         "character_id": "char_xia", "state_text": "湿，发梢成缕"})
@@ -1287,7 +1288,6 @@ def test_bare_wear_is_stripped_and_shot_gender_is_locked():
     assert settle_cast_appearance(plan) is True
     assert "耳机" not in person["description"]
     assert "深色上衣" in person["description"]
-    assert person["description"].startswith("女性")
     prompt = character_design_request({}, plan, person)["prompt"]
     assert "耳机" not in prompt
     assert "不要画成男性" in prompt
@@ -1307,6 +1307,14 @@ def test_bare_wear_is_stripped_and_shot_gender_is_locked():
     })
     stored = offered["directions"][0]["production"]["characters"][0]["description"]
     assert "耳机" not in stored and "短发" in stored
+    male = {"id": "char_host", "name": "主讲", "description": "成年男性，他短发。"}
+    male_plan = {"facts": {"name": "降噪耳机"}, "production": {"characters": [male]}, "segments": [{"shots": [
+        {"id": "s1", "description": "她把耳机举到镜头前。", "character_ids": ["char_host"]},
+    ]}]}
+    assert settle_cast_appearance(male_plan) is True
+    assert male["description"].startswith("成年女性")
+    assert "男性" not in male["description"] and "短发" in male["description"]
+    assert "他" not in male["description"] and "她" in male["description"]
 
 
 def test_character_sheet_does_not_wear_the_product():
@@ -1324,7 +1332,7 @@ def test_character_sheet_does_not_wear_the_product():
     assert "不要画在身上或手里" in prompt
     assert "女性" in prompt and "不要画成男性" in prompt
     assert "耳机" not in person["description"]
-    assert "女性" in person["description"] and "浅色针织衫" in person["description"]
+    assert "浅色针织衫" in person["description"]
     worn = {"production": {"characters": [{"id": "char_host", "name": "小夏",
                                            "description": "二十多岁，全程佩戴银色头戴式耳机。"}]},
             "segments": [{"shots": [{"id": "s1", "description": "她戴着银色头戴式耳机看向窗外。",
