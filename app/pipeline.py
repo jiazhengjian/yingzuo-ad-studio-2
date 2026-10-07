@@ -712,7 +712,7 @@ class Pipeline:
             frozen_project = frozen["project"] if isinstance(frozen.get("project"), dict) else {}
             longer = lengthen_target(
                 frozen.get("messages"), frozen_project.get("duration_seconds", 20),
-                frozen_project.get("brief", ""), frozen_project.get("plan"))
+                frozen_project.get("brief", ""), frozen_project.get("plan"), project=frozen_project)
             if longer:
                 job = self.store.extend_plan_duration(job["id"], longer)
                 frozen = job["payload"]["frozen"]
@@ -753,11 +753,15 @@ class Pipeline:
         legacy_callbacks = {**callbacks, "gates": detail["gates"]} if callbacks else {}
         plan = validate_plan(await self.gateway.plan(detail["project"], detail["assets"], detail["messages"], **legacy_callbacks),
                              detail["project"].get("duration_seconds", 20), settings=self.settings)
-        from .release_gate import present_checked_plan
-        plan = present_checked_plan(
-            plan, plan.get("strategy"), duration=detail["project"].get("duration_seconds", 20),
-            generation_strategy=plan.get("generation_strategy"),
-            asset_ids=[item["id"] for item in detail["assets"] if item.get("kind") == "product"])
+        from .release_gate import MerchantLineChoice, present_checked_plan
+        try:
+            plan = present_checked_plan(
+                plan, plan.get("strategy"), duration=detail["project"].get("duration_seconds", 20),
+                generation_strategy=plan.get("generation_strategy"),
+                asset_ids=[item["id"] for item in detail["assets"] if item.get("kind") == "product"],
+                project=detail["project"])
+        except MerchantLineChoice as choice:
+            raise ValueError(str(choice)) from None
         if plan is None:
             raise ValueError("这次没能留下能通过检查的方案。已有方案和素材已保留，尚未开始新的图片或视频生成")
         self._guard(job["id"], require_current=True)
@@ -867,8 +871,8 @@ class Pipeline:
         from .release_gate import assert_spend_confirmed, images_blocked_reason, stamp_honest_label
         checked = copy.deepcopy(plan)
         if not checked.get("review_status"):
-            stamp_honest_label(checked, checked.get("strategy"))
-        blocked = images_blocked_reason(checked, strategy=checked.get("strategy"))
+            stamp_honest_label(checked, checked.get("strategy"), project=project)
+        blocked = images_blocked_reason(checked, strategy=checked.get("strategy"), project=project)
         if blocked:
             raise ValueError(blocked)
         assert_spend_confirmed(self.store.get_job(job["id"]), project)

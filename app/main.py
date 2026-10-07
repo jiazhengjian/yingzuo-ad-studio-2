@@ -331,7 +331,8 @@ def create_app(settings=None, gateway=None, run_worker=True):
         from app.release_gate import settle_manual_edit
         submitted = body.plan.model_dump()
         plan, error = settle_manual_edit(
-            detail["project"].get("plan"), submitted, detail["project"].get("duration_seconds", 20))
+            detail["project"].get("plan"), submitted, detail["project"].get("duration_seconds", 20),
+            project=detail["project"])
         if error:
             raise HTTPException(422, error)
         return public(store.update_plan(project_id, plan, expected_revision=body.accepted_revision))

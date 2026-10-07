@@ -23,7 +23,7 @@ PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4
 @pytest.fixture
 def setup(tmp_path):
     store = Store(tmp_path / "db.sqlite", tmp_path / "media")
-    project = store.create_project("测试商品，蓝色瓶身，不增加功效承诺", "product")
+    project = store.create_project("测试商品，蓝色瓶身，不增加功效承诺", "product", ad_form="brand_tvc")
     path = store.media_root / "product.png"
     path.write_bytes(PNG)
     asset = store.add_asset(project["id"], "product", "用户商品图", path, "image/png")
@@ -111,7 +111,7 @@ def execute(store, project, settings, gateway, job=None):
 
 def selected_duration_project(setup, duration):
     store, _, original_plan, settings = setup
-    project = store.create_project("测试用户所选时长", "product", duration_seconds=duration)
+    project = store.create_project("测试用户所选时长", "product", duration_seconds=duration, ad_form="brand_tvc")
     path = store.media_root / f"product_{duration}.png"
     path.write_bytes(PNG)
     asset = store.add_asset(project["id"], "product", "真实商品", path, "image/png")

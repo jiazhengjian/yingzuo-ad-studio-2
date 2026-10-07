@@ -1428,8 +1428,8 @@ class Store:
                     plan = decision["plan"]
                     from .release_gate import images_blocked_reason, stamp_honest_label
                     if not plan.get("review_status"):
-                        stamp_honest_label(plan, plan.get("strategy"))
-                    blocked = images_blocked_reason(plan, strategy=plan.get("strategy"))
+                        stamp_honest_label(plan, plan.get("strategy"), project=p)
+                    blocked = images_blocked_reason(plan, strategy=plan.get("strategy"), project=p)
                     if blocked:
                         raise ValueError(blocked)
                     self._validate_plan_duration(p, plan)

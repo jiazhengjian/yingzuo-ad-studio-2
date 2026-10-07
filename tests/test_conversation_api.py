@@ -66,6 +66,12 @@ def ready_plan(env):
     _, app, pid, asset = env
     job = post_turn(env).json()["job"]
     store = app.state.store
+    # Downstream plan checks need a concrete ad type. Keep a type the test
+    # already set, so a later preference change is still a real change.
+    # The shared fixture stays on "auto" until a plan is actually saved.
+    if store.get_project(pid).get("ad_form") not in ("brand_tvc", "scene_story", "presenter_pitch"):
+        with store._connection(True) as connection:
+            connection.execute("UPDATE projects SET ad_form='brand_tvc' WHERE id=?", (pid,))
     store.claim_job(job["id"])
     plan = plan_for(asset["id"])
     options = [{"id": f"choice_{i}", "label": f"开场{i}", "description": f"以第{i}种构图开场", "segment": copy.deepcopy(plan["segments"][0])} for i in (1, 2)]
@@ -508,7 +514,7 @@ def duration_plan(asset_id, total):
 def duration_project(tmp_path, seconds):
     app = create_app(Settings(data_root=tmp_path / "data", deepseek_api_key="TEST_ONLY", tudou_api_key="TEST_ONLY", max_video_submissions=6), run_worker=False)
     c = TestClient(app)
-    response = c.post("/api/projects", json={"brief": "展示这款商品的真实外观", "duration_seconds": seconds})
+    response = c.post("/api/projects", json={"brief": "展示这款商品的真实外观", "duration_seconds": seconds, "ad_form": "brand_tvc"})
     assert response.status_code == 201
     p = response.json()
     data = io.BytesIO()

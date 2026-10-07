@@ -604,7 +604,11 @@ def test_alignment_that_never_settles_stops_and_compile_stays_off_the_loop(sourc
 
 def test_content_failure_exposes_only_owned_summary_and_is_not_retryable(source):
     from app.progressive_planning import ProgressivePlanningError, progressive_plan
+    from app.strategy import StrategyRecord
     strategy = chosen_strategy(source)
+    raw = strategy.model_dump()
+    raw["brief"]["ad_form"] = "brand_tvc"
+    strategy = StrategyRecord.model_validate(raw)
     raw = director_output(strategy)
     calls = []
     async def stage_call(system, context, assets):
@@ -1019,7 +1023,11 @@ def test_a_voiceover_story_without_the_speaker_in_frame_is_storyboarded_again(so
 
 def test_identical_shot_text_is_not_marked_ready(source):
     from app.progressive_planning import ProgressivePlanningError, is_degenerate_plan, progressive_plan
+    from app.strategy import StrategyRecord
     strategy = chosen_strategy(source)
+    raw_strategy = strategy.model_dump()
+    raw_strategy["brief"]["ad_form"] = "brand_tvc"
+    strategy = StrategyRecord.model_validate(raw_strategy)
     calls = []
 
     async def stage_call(system, data, assets, max_tokens=7000):

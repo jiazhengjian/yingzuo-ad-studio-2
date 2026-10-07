@@ -2331,6 +2331,14 @@ class Gateway:
         repair_attempted = False
         strategy = None
         from app.release_gate import MerchantLineChoice, present_checked_plan
+
+        def _line_choice_decision(choice):
+            return AgentDecision.model_validate({
+                "kind": "clarify",
+                "message": (str(choice) or "这句台词需要你选一下。")[:3000],
+                "questions": list(choice.questions),
+            }).model_dump()
+
         try:
             if selected_strategy is not None:
                 strategy = StrategyRecord.model_validate(selected_strategy)
@@ -2917,26 +2925,26 @@ class Gateway:
                 if choice_enabled:
                     plan["skill_trace"] = copy.deepcopy(skill_trace)
                 from app.release_gate import stamp_honest_label
-                stamp_honest_label(plan, strategy)
+                stamp_honest_label(plan, strategy, project=project)
                 return AgentDecision.model_validate({"kind": "plan", "message": "广告方案已准备好，创意摘要和分镜见下方。需要修改，直接告诉我；确认后再准备图片。",
                     "plan": plan, "planning_brief": strategy.brief.model_dump() if strategy is not None else None, "skill_trace": skill_trace if choice_enabled else None},
                     context={"require_shot_narration": True}).model_dump()
         except StaleRevision:
             raise
         except MerchantLineChoice as choice:
-            return AgentDecision.model_validate({
-                "kind": "clarify",
-                "message": (str(choice) or "这句台词需要你选一下。")[:3000],
-                "questions": list(choice.questions),
-            }).model_dump()
+            return _line_choice_decision(choice)
         except PlannerSyntaxResponse:
             salvaged = current_plan if isinstance(current_plan, dict) and current_plan.get("segments") else None
             if salvaged is None:
                 raise
-            shown = present_checked_plan(
-                salvaged, strategy, duration=duration, generation_strategy=generation_strategy,
-                asset_ids=[item["id"] for item in sources], cta_target=project_cta_mode(project),
-                note="策划回复没有收完，硬门已经核对过上一稿。这条已记下。")
+            try:
+                shown = present_checked_plan(
+                    salvaged, strategy, duration=duration, generation_strategy=generation_strategy,
+                    asset_ids=[item["id"] for item in sources], cta_target=project_cta_mode(project),
+                    project=project,
+                    note="策划回复没有收完，硬门已经核对过上一稿。这条已记下。")
+            except MerchantLineChoice as choice:
+                return _line_choice_decision(choice)
             if shown is None:
                 raise
             brief = shown.get("strategy", {}).get("brief") if isinstance(shown.get("strategy"), dict) else None
@@ -2948,13 +2956,19 @@ class Gateway:
             }
             try:
                 return AgentDecision.model_validate(decision, context={"require_shot_narration": True}).model_dump()
+            except MerchantLineChoice as choice:
+                return _line_choice_decision(choice)
             except (ValidationError, ValueError, KeyError, TypeError):
                 shown.pop("plan_review", None)
                 shown.pop("review_status", None)
-                rebound = present_checked_plan(
-                    shown, strategy, duration=duration, generation_strategy=generation_strategy,
-                    asset_ids=[item["id"] for item in sources], cta_target=project_cta_mode(project),
-                    note="上一稿的检查对不上这一稿，已按硬门重新核对。这条已记下。")
+                try:
+                    rebound = present_checked_plan(
+                        shown, strategy, duration=duration, generation_strategy=generation_strategy,
+                        asset_ids=[item["id"] for item in sources], cta_target=project_cta_mode(project),
+                        project=project,
+                        note="上一稿的检查对不上这一稿，已按硬门重新核对。这条已记下。")
+                except MerchantLineChoice as choice:
+                    return _line_choice_decision(choice)
                 if rebound is None:
                     raise
                 decision["plan"] = rebound
@@ -2973,6 +2987,7 @@ class Gateway:
                     shown = present_checked_plan(
                         salvaged, strategy, duration=duration, generation_strategy=generation_strategy,
                         asset_ids=[item["id"] for item in sources], cta_target=project_cta_mode(project),
+                        project=project,
                         note="综合检查没有完成，已按硬门核对留下可用分镜。这条已记下。")
                     if shown is None:
                         raise ValueError("no usable plan")
@@ -2983,6 +2998,8 @@ class Gateway:
                         "plan": shown, "planning_brief": brief,
                         "skill_trace": skill_trace if choice_enabled else None,
                     }, context={"require_shot_narration": True}).model_dump()
+                except MerchantLineChoice as choice:
+                    return _line_choice_decision(choice)
                 except (ValidationError, ValueError, KeyError, TypeError):
                     pass
             if (last_stage_result is not None and not last_stage_result.get("_diagnostic_saved")

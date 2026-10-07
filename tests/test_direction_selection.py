@@ -441,6 +441,12 @@ def test_real_gateway_pauses_then_uses_only_selected_direction(env, monkeypatch,
     if not real_skills:
         request.getfixturevalue("isolated_skill_loader")
     _, app, pid, asset = env
+    if historical_choice and not progressive:
+        # A historical offer has no film structure, so "auto" never becomes a
+        # concrete type. This case still has to finish a plan, so the project
+        # already carries 产品展示.
+        with app.state.store._connection(True) as connection:
+            connection.execute("UPDATE projects SET ad_form='brand_tvc' WHERE id=?", (pid,))
     settings = app.state.settings
     settings.direction_selection_enabled = True
     settings.progressive_planning_enabled = progressive

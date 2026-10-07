@@ -166,7 +166,9 @@ def test_ending_shots_keep_one_main_action_for_brand_and_presenter():
     assert "放到" in pieces[1]["description"] and "摘下" not in pieces[1]["description"]
     assert images_blocked_reason({"review_status": "not_ready", "plan_review": {"ready": False}})
     assert images_blocked_reason({"review_status": "passed"}) is None
-    assert images_blocked_reason({"review_status": "conservative_fallback"}) is None
+    assert images_blocked_reason({"review_status": "conservative_fallback"})
+    assert images_blocked_reason(
+        {"review_status": "conservative_fallback"}, project={"ad_form": "brand_tvc"}) is None
     # A board with no review record used to be released. It is blocked now.
     assert images_blocked_reason({"plan_review": {"ready": True}})
     placeholder = {"review_status": "conservative_fallback",

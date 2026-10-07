@@ -158,6 +158,8 @@ def test_upload_limit_and_project_asset_ownership(tmp_path):
 def test_stale_tab_cannot_replace_newer_plan(tmp_path):
     c, app = client(tmp_path)
     pid = create(c)
+    with app.state.store._connection(True) as connection:
+        connection.execute("UPDATE projects SET ad_form='brand_tvc' WHERE id=?", (pid,))
     asset = c.post(f"/api/projects/{pid}/assets", files={"file": ("p.png", image_bytes(), "image/png")}).json()
     plan = {"title": "商品广告", "script": "看看商品细节。", "cta": "了解详情", "language": "zh-CN", "aspect_ratio": "9:16",
             "audio_strategy": "voiceover", "facts": {"name": "香水", "claims": []}, "segments": [

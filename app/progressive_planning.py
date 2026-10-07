@@ -1211,10 +1211,10 @@ def is_placeholder_plan(plan):
     return bool(descriptions) and all("放在画面中间" in item for item in descriptions)
 
 
-def images_blocked_reason(plan, *, strategy=None):
+def images_blocked_reason(plan, *, strategy=None, project=None):
     """Delegate to the single release decision. Do not grow a second one here."""
     from .release_gate import images_blocked_reason as decide
-    return decide(plan, strategy=strategy)
+    return decide(plan, strategy=strategy, project=project)
 
 
 def is_degenerate_plan(plan):
@@ -1474,13 +1474,24 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
         from .release_gate import conservative_usable_plan
         return conservative_usable_plan(
             strategy, duration, generation_strategy, [a["id"] for a in assets],
-            locked if keep_locked else (), cta_target)
+            locked if keep_locked else (), cta_target,
+            insisted_lines_=insisted if keep_locked else ())
 
     def release(plan):
         from .release_gate import classify_release
         from .story_logic import settle_inner_monologue
         if not isinstance(plan, dict):
             unfinished_board()
+        from .release_gate import _form_of
+        if _form_of(strategy, plan) is None:
+            # The eight gates cannot run until the ad type is known. A placeholder
+            # can still be replaced. Anything left is labelled not ready.
+            if is_degenerate_plan(plan):
+                chosen = _conservative()
+                if chosen is not None:
+                    return chosen
+            _label_for_release(plan)
+            return plan
         kind, findings = classify_release(plan, strategy, locked_lines=locked, insisted_lines_=insisted)
         if kind == "ask":
             from .release_gate import line_gate_questions

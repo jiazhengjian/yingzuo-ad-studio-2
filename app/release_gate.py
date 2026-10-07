@@ -13,7 +13,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 
 from .line_quality import (
-    brand_stack_remaining, brand_visual_claim_overflow, line_asserts_product_claim,
+    brand_stack_remaining, brand_visual_claim_overflow,
     script_form, script_line_offenses, voice_identity_issues,
 )
 from .schemas import script_character_limit
@@ -85,7 +85,16 @@ def gate_by_id(gate_id):
     return next(gate for gate in RELEASE_TABLE if gate.id == gate_id)
 
 
-def _form_of(strategy, plan=None):
+_CONCRETE_FORMS = ("scene_story", "brand_tvc", "presenter_pitch")
+_UNKNOWN_FORM = "还没确定广告类型，这版不能放行。"
+
+
+def _concrete_form(value):
+    return value if value in _CONCRETE_FORMS else None
+
+
+def _form_of(strategy, plan=None, project=None):
+    """Ad type on the plan, then the project record. Free-text briefs are not guessed."""
     if strategy is not None:
         try:
             form = script_form(strategy)
@@ -101,8 +110,16 @@ def _form_of(strategy, plan=None):
     if isinstance(plan, dict) and brief is None:
         record = plan.get("strategy") if isinstance(plan.get("strategy"), dict) else None
         brief = record.get("brief") if isinstance(record, dict) else None
-    if isinstance(brief, dict) and brief.get("ad_form") in ("scene_story", "brand_tvc", "presenter_pitch"):
-        return brief["ad_form"]
+    found = _concrete_form(brief.get("ad_form")) if isinstance(brief, dict) else None
+    if found:
+        return found
+    if isinstance(project, dict):
+        found = _concrete_form(project.get("ad_form"))
+        if found:
+            return found
+        project_brief = project.get("brief")
+        if isinstance(project_brief, dict):
+            return _concrete_form(project_brief.get("ad_form"))
     return None
 
 
@@ -155,15 +172,35 @@ def _spoken_lines(plan):
     return lines
 
 
-def evaluate_release_table(plan, strategy=None, *, exempt_lines=()):
+def _with_form(strategy, form):
+    """Attach a project ad type the plan itself did not carry."""
+    if hasattr(strategy, "model_copy") and getattr(strategy, "brief", None) is not None:
+        brief = strategy.brief.model_copy(update={"ad_form": form})
+        return strategy.model_copy(update={"brief": brief})
+    if isinstance(strategy, dict):
+        copied = deepcopy(strategy)
+        brief = dict(copied.get("brief")) if isinstance(copied.get("brief"), dict) else {}
+        brief["ad_form"] = form
+        copied["brief"] = brief
+        return copied
+    return {"brief": {"ad_form": form}}
+
+
+def evaluate_release_table(plan, strategy=None, *, exempt_lines=(), project=None):
     """Run the table. exempt_lines are merchant-insisted texts only."""
     from .progressive_planning import is_degenerate_plan
     if not isinstance(plan, dict):
         return [GateFinding("degenerate_plan", "占位稿不是完成的方案", detail="没有方案")]
     strategy = _strategy_of(plan, strategy)
-    form = _form_of(strategy, plan)
+    form = _form_of(strategy, plan, project)
     exempt = {line.strip() for line in exempt_lines or () if isinstance(line, str) and line.strip()}
     findings = []
+    if form is None:
+        if is_degenerate_plan(plan):
+            findings.append(GateFinding("degenerate_plan", "占位稿不是完成的方案"))
+        return findings
+    if _form_of(strategy, plan) != form:
+        strategy = _with_form(strategy, form)
 
     def keep(gate_id, summary, line=None, detail=""):
         if line and line.strip() in exempt:
@@ -252,12 +289,13 @@ def _plan_duration(plan):
     return total or None
 
 
-def images_blocked_reason(plan, *, strategy=None):
+def images_blocked_reason(plan, *, strategy=None, project=None):
     """The only decision: None means this plan may start image generation.
 
     No review record is not released. passed and repaired already cleared the
     review. conservative_fallback is released only when the hard-gate table
-    passes and the board is not a degenerate placeholder. Merchant-insisted
+    passes and the board is not a degenerate placeholder. A plan whose ad type
+    cannot be read from the plan or the project is not released. Merchant-insisted
     lines are the only lines skipped by that check.
     """
     if not isinstance(plan, dict) or "review_status" not in plan:
@@ -266,23 +304,32 @@ def images_blocked_reason(plan, *, strategy=None):
     if status in ("passed", "repaired"):
         return None
     if status == "conservative_fallback":
-        findings = evaluate_release_table(plan, strategy, exempt_lines=insisted_lines(plan))
+        if _form_of(_strategy_of(plan, strategy), plan, project) is None:
+            return _UNKNOWN_FORM
+        findings = evaluate_release_table(plan, strategy, exempt_lines=insisted_lines(plan), project=project)
         if findings:
             return "方案检查还没有通过，已有方案保留。请修改后再准备图片。"
         return None
     return "方案检查还没有通过，已有方案保留。请修改后再准备图片。"
 
 
-def stamp_honest_label(plan, strategy=None, *, repairs=0):
+def stamp_honest_label(plan, strategy=None, *, repairs=0, project=None):
     """Write the review label the table actually supports. Returns the status."""
     if not isinstance(plan, dict):
         return None
     if plan.get("review_status") in ("passed", "repaired"):
         return plan["review_status"]
-    findings = evaluate_release_table(plan, strategy, exempt_lines=insisted_lines(plan))
+    if _form_of(_strategy_of(plan, strategy), plan, project) is None:
+        plan["review_status"] = "not_ready"
+        plan["review_status_note"] = _UNKNOWN_FORM
+        return "not_ready"
+    findings = evaluate_release_table(plan, strategy, exempt_lines=insisted_lines(plan), project=project)
     if findings:
         plan["review_status"] = "not_ready"
-        plan["review_status_note"] = "硬门没有通过，这版不会拿去确认。"
+        if any(item.gate_id == "ad_form_unknown" for item in findings):
+            plan["review_status_note"] = _UNKNOWN_FORM
+        else:
+            plan["review_status_note"] = "硬门没有通过，这版不会拿去确认。"
         return "not_ready"
     review = plan.get("plan_review") if isinstance(plan.get("plan_review"), dict) else None
     if isinstance(review, dict) and review.get("ready") is True and review.get("checks"):
@@ -295,11 +342,11 @@ def stamp_honest_label(plan, strategy=None, *, repairs=0):
     return "conservative_fallback"
 
 
-def classify_release(plan, strategy=None, *, locked_lines=(), insisted_lines_=()):
+def classify_release(plan, strategy=None, *, locked_lines=(), insisted_lines_=(), project=None):
     """ok, ask, or repair. ask is only when every hit is a locked, uninsisted line."""
     insisted = {line.strip() for line in insisted_lines_ or () if isinstance(line, str) and line.strip()}
     locked = {line.strip() for line in locked_lines or () if isinstance(line, str) and line.strip()}
-    findings = evaluate_release_table(plan, strategy, exempt_lines=insisted)
+    findings = evaluate_release_table(plan, strategy, exempt_lines=insisted, project=project)
     if not findings:
         return "ok", []
     line_hits = [item for item in findings if item.line and item.line in locked and item.line not in insisted]
@@ -429,8 +476,18 @@ def line_gate_questions(findings):
     return MerchantLineChoice("这句台词碰到了一条不能直接放行的规则。", questions)
 
 
-def duration_hold(locked_lines, duration, strategy):
-    tenth = _tenth(strategy)
+def _rate_strategy(strategy, project=None):
+    """Prefer a strategy that already names a form; otherwise the project record."""
+    if _form_of(strategy):
+        return strategy
+    form = _form_of(None, None, project)
+    if form:
+        return {"brief": {"ad_form": form}}
+    return strategy
+
+
+def duration_hold(locked_lines, duration, strategy, project=None):
+    tenth = _tenth(_rate_strategy(strategy, project))
     for line in locked_lines or ():
         if isinstance(line, str) and line.strip() and not line_fits_duration(line.strip(), duration, tenth):
             question = duration_question(line.strip(), duration, tenth)
@@ -440,7 +497,7 @@ def duration_hold(locked_lines, duration, strategy):
     return None
 
 
-def lengthen_target(messages, duration, brief="", current_plan=None):
+def lengthen_target(messages, duration, brief="", current_plan=None, project=None):
     """Seconds to grow to after the merchant picks lengthen, or None."""
     texts = [brief] + [item.get("content", "") for item in messages or [] if isinstance(item, dict) and item.get("role") == "user"]
     if not any(isinstance(text, str) and _LENGTHEN.search(text) for text in texts):
@@ -448,7 +505,8 @@ def lengthen_target(messages, duration, brief="", current_plan=None):
     if type(duration) is not int or duration >= 60:
         return None
     locked, _insisted = line_locks(brief, messages, current_plan)
-    tenth = 29
+    strategy = current_plan.get("strategy") if isinstance(current_plan, dict) else None
+    tenth = _tenth(_rate_strategy(strategy, project))
     needed = duration
     for line in locked:
         if not line_fits_duration(line, duration, tenth):
@@ -472,28 +530,56 @@ def changed_lines(previous, submitted):
     return [line for line in gather(submitted) if line not in before]
 
 
-def settle_manual_edit(previous, submitted, duration, strategy=None):
+def _strip_client_review(plan):
+    """Drop review labels and insist markers the client is not allowed to set."""
+    plan.pop("review_status", None)
+    plan.pop("review_status_note", None)
+    plan.pop("plan_review", None)
+    plan.pop("merchant_insisted_lines", None)
+    plan.pop("merchant_locked_lines", None)
+    for segment in plan.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        for span in segment.get("speech_spans") or []:
+            if isinstance(span, dict):
+                span.pop("merchant_insisted", None)
+    return plan
+
+
+def settle_manual_edit(previous, submitted, duration, strategy=None, project=None):
     """Label a hand edit, or say which locked line needs a choice.
 
     Returns (plan, error). error is a plain sentence when the edit must not
-    be shown for confirmation.
+    be shown for confirmation. Review labels and insist markers on the
+    submitted plan are ignored. An insist marker is copied only from the
+    plan already stored for this project.
     """
     if not isinstance(submitted, dict):
         return None, "这版方案没能通过检查，上一版还在。"
-    plan = deepcopy(submitted)
-    locked = changed_lines(previous, plan)
-    existing = [line for line in (plan.get("merchant_locked_lines") or []) if isinstance(line, str) and line.strip()]
-    plan["merchant_locked_lines"] = list(dict.fromkeys([*existing, *locked]))
-    insisted = insisted_lines(plan)
-    hold = duration_hold(locked, duration, strategy or plan.get("strategy"))
+    plan = _strip_client_review(deepcopy(submitted))
+    strategy = strategy or plan.get("strategy")
+    spoken = set(_spoken_lines(plan))
+    previous_locks = []
+    if isinstance(previous, dict):
+        for line in previous.get("merchant_locked_lines") or []:
+            if isinstance(line, str) and line.strip() and line.strip() in spoken:
+                previous_locks.append(line.strip())
+    changed = changed_lines(previous, plan)
+    locked = list(dict.fromkeys([*previous_locks, *changed]))
+    insisted = [line for line in insisted_lines(previous) if line in spoken]
+    plan["merchant_locked_lines"] = locked
+    if insisted:
+        mark_insisted_lines(plan, insisted)
+    hold = duration_hold(locked, duration, strategy, project)
     if hold is not None:
         return None, hold.questions[0]["prompt"]
-    kind, findings = classify_release(plan, strategy or plan.get("strategy"), locked_lines=locked, insisted_lines_=insisted)
+    kind, findings = classify_release(
+        plan, strategy, locked_lines=locked, insisted_lines_=insisted, project=project)
     if kind == "ask":
         parts = [f"「{item.line}」碰到了这条规则：{item.summary}" for item in findings if item.line]
         return None, ("；".join(parts) + "。可以让系统改写，你自己改一句，或在对话里说就按这句来。")[:500]
-    status = stamp_honest_label(plan, strategy or plan.get("strategy"))
-    if status == "not_ready" or images_blocked_reason(plan, strategy=strategy or plan.get("strategy")):
+    status = stamp_honest_label(plan, strategy, project=project)
+    if status == "not_ready" or images_blocked_reason(plan, strategy=strategy, project=project):
         return None, "这版方案没能通过检查，上一版还在。"
     return plan, None
 
@@ -561,8 +647,47 @@ def _align_voice(strategy):
     return StrategyRecord.model_validate(data)
 
 
+def _kept_lines(locked_lines):
+    found = []
+    for line in locked_lines or ():
+        if isinstance(line, str) and line.strip() and line.strip() not in found:
+            found.append(line.strip())
+    return found
+
+
+def _hold_description(product, index):
+    """Distinct, non-placeholder shots. A locked line never shares a shot to make room."""
+    options = (
+        f"{product}放在桌上，光从侧面过来。",
+        f"{product}留在原处，镜头停近一些，没有人把它举起来。",
+        f"{product}仍在桌上，人看着手边，机位不动。",
+        f"桌面还是{product}，光线不变，人没有转向镜头。",
+    )
+    if index < len(options):
+        return options[index]
+    return f"{product}还在桌上，这是第{index + 1}个停顿，机位不动，人看着手边。"
+
+
+def _speech_mode(strategy):
+    selected = next(item for item in strategy.directions if item.id == strategy.selected_direction_id)
+    if selected.production is None:
+        return "voiceover"
+    return selected.production.speech_mode
+
+
+def _ask_to_keep(lines, summary):
+    findings = [GateFinding("merchant_line", summary, line) for line in lines]
+    choice = line_gate_questions(findings)
+    if choice is not None:
+        raise choice
+
+
 def _conservative_director(strategy, locked_lines=()):
-    """A plain product hold that is not the two-line placeholder."""
+    """A plain product hold that is not the two-line placeholder.
+
+    Merchant-locked lines are copied unchanged. Filler lines are used only
+    when the merchant did not lock any line.
+    """
     selected = next(item for item in strategy.directions if item.id == strategy.selected_direction_id)
     evidence = list(dict.fromkeys(selected.evidence_ids)) or [fact.id for fact in strategy.brief.facts[:1]]
     characters = list(selected.production.characters) if selected.production else []
@@ -572,25 +697,20 @@ def _conservative_director(strategy, locked_lines=()):
         speaker = selected.production.speaker_id or (characters[0].id if characters else "")
     character_ids = [speaker] if speaker else ([characters[0].id] if characters else [])
     form = _form_of(strategy)
-    lines = [line.strip() for line in locked_lines or () if isinstance(line, str) and line.strip()]
-    if speech == "none":
+    locked = _kept_lines(locked_lines)
+    if locked:
+        lines = locked
+    elif speech == "none":
         lines = []
     elif form == "scene_story":
-        lines = [line for line in lines if not line_asserts_product_claim(line)] or ["先放这儿。", "就这样。"]
+        lines = ["先放这儿。", "就这样。"]
     elif form == "brand_tvc":
-        lines = lines[:1] or ["看清这件。"]
+        lines = ["看清这件。"]
     else:
-        lines = lines or ["看一下这个。", "我拿着。"]
-    lines = lines[:4]
+        lines = ["看一下这个。", "我拿着。"]
     product = (strategy.brief.product_name or "商品").strip() or "商品"
     timing = {"visual_seconds": 2, "speech_overlap": True, "action_plan": "商品留在原处，供人看清",
               "start_state": "商品在画面里", "end_state": "商品在画面里", "time_transition": "continuous"}
-    shots_text = [
-        f"{product}放在桌上，光从侧面过来。",
-        f"{product}留在原处，镜头停近一些，没有人把它举起来。",
-        f"{product}仍在桌上，人看着手边，机位不动。",
-        f"桌面还是{product}，光线不变，人没有转向镜头。",
-    ]
     beats, shots = [], []
     count = max(len(lines), 1)
     for index in range(count):
@@ -599,7 +719,7 @@ def _conservative_director(strategy, locked_lines=()):
                       "visual_role": "商品留在画面里", "narration": line,
                       "evidence_ids": list(evidence), "timing": deepcopy(timing)})
         shots.append({"id": f"shot_{index}", "coverage": [{"beat_id": f"b{index}", "weight": 1}],
-                      "description": shots_text[index % len(shots_text)], "product_visible": True,
+                      "description": _hold_description(product, index), "product_visible": True,
                       "purpose": "看清商品", "evidence_ids": list(evidence), "character_ids": list(character_ids),
                       "continuity": {"start_state": "商品留在桌上", "allowed_changes": "商品保持不动",
                                      "end_state": "商品留在桌上", "camera_move": "中景，机位固定",
@@ -614,25 +734,55 @@ def _conservative_director(strategy, locked_lines=()):
             "shots": shots}
 
 
-def conservative_usable_plan(strategy, duration, generation_strategy, asset_ids, locked_lines=(), cta_target=None):
-    """A usable board that passes the hard-gate table, or None."""
+def conservative_usable_plan(strategy, duration, generation_strategy, asset_ids, locked_lines=(), cta_target=None,
+                             insisted_lines_=()):
+    """A usable board that passes the hard-gate table, or None.
+
+    Every merchant-locked line is kept verbatim. If one does not fit the
+    duration, or a silent film cannot speak it, or it still fails a hard gate
+    and the merchant has not insisted, this raises MerchantLineChoice instead
+    of dropping the line. Insisted lines stay exempt from the hard gates.
+    """
     from .progressive_planning import compile_director
     aligned = _align_voice(strategy)
     if aligned is None:
         return None
+    locked = _kept_lines(locked_lines)
+    insisted = _kept_lines(insisted_lines_)
     tenth = _tenth(aligned)
-    safe_locked = [line for line in locked_lines or () if isinstance(line, str) and line_fits_duration(line, duration, tenth)]
+    speech = _speech_mode(aligned)
+    if locked:
+        overflow = [line for line in locked if not line_fits_duration(line, duration, tenth)]
+        if overflow:
+            question = duration_question(overflow[0], duration, tenth)
+            if question is not None:
+                raise MerchantLineChoice(question["prompt"], [question])
+        if speech == "none":
+            _ask_to_keep(locked, "这条广告没有旁白，这句不能悄悄删掉")
     try:
-        director = _conservative_director(aligned, safe_locked)
+        director = _conservative_director(aligned, locked)
         plan, _schedule, _coordinated = compile_director(
-            director, aligned, duration, generation_strategy, list(asset_ids or []), safe_locked, cta_target)
+            director, aligned, duration, generation_strategy, list(asset_ids or []), locked, cta_target)
     except (TypeError, ValueError, KeyError, AttributeError):
+        if locked:
+            _ask_to_keep(locked, "这句放不进现在的保守方案")
         return None
     if not isinstance(plan, dict):
         return None
+    spoken = _spoken_lines(plan)
+    missing = [line for line in locked if line not in spoken]
+    if missing:
+        _ask_to_keep(missing, "这句放不进现在的保守方案")
+    plan["merchant_locked_lines"] = list(locked)
+    mark_insisted_lines(plan, [line for line in insisted if line in spoken])
     plan["review_status_note"] = "硬门没有通过，已换成一份能通过检查的保守方案。这条已记下。"
     plan.pop("review_status", None)
     plan.pop("plan_review", None)
+    kind, findings = classify_release(plan, aligned, locked_lines=locked, insisted_lines_=insisted)
+    if kind == "ask":
+        choice = line_gate_questions(findings)
+        if choice is not None:
+            raise choice
     status = stamp_honest_label(plan, aligned)
     if status != "conservative_fallback" or images_blocked_reason(plan, strategy=aligned):
         return None
@@ -640,23 +790,40 @@ def conservative_usable_plan(strategy, duration, generation_strategy, asset_ids,
 
 
 def present_checked_plan(plan, strategy=None, *, duration=None, generation_strategy=None,
-                         asset_ids=(), locked_lines=(), cta_target=None, note=None, repairs=0):
+                         asset_ids=(), locked_lines=(), cta_target=None, note=None, repairs=0,
+                         project=None, insisted_lines_=()):
     """Label a board honestly, or substitute one that passes. None means do not show it."""
     board = deepcopy(plan) if isinstance(plan, dict) else None
     if isinstance(board, dict) and note and board.get("review_status") not in ("passed", "repaired", "not_ready"):
         board["review_status"] = "conservative_fallback"
         board["review_status_note"] = note
+    use_locked = _kept_lines(locked_lines)
+    use_insisted = _kept_lines(insisted_lines_)
+    if isinstance(plan, dict):
+        if not use_locked:
+            use_locked = _kept_lines(plan.get("merchant_locked_lines"))
+        if not use_insisted:
+            use_insisted = insisted_lines(plan)
     conservative = None
+    choice = None
     if strategy is not None and type(duration) is int:
         try:
             conservative = conservative_usable_plan(
-                strategy, duration, generation_strategy or "legacy_10s", asset_ids, locked_lines, cta_target)
+                strategy, duration, generation_strategy or "legacy_10s", asset_ids, use_locked, cta_target,
+                insisted_lines_=use_insisted)
+        except MerchantLineChoice as exc:
+            choice = exc
         except (TypeError, ValueError, KeyError, AttributeError):
             conservative = None
-    return finalize_unlabeled_plan(board, strategy, repairs=repairs, conservative=conservative)
+    shown = finalize_unlabeled_plan(board, strategy, repairs=repairs, conservative=conservative, project=project)
+    if shown is not None:
+        return shown
+    if choice is not None:
+        raise choice
+    return None
 
 
-def finalize_unlabeled_plan(plan, strategy=None, *, repairs=0, conservative=None):
+def finalize_unlabeled_plan(plan, strategy=None, *, repairs=0, conservative=None, project=None):
     """Give an unlabeled or fallback board an honest label, or a substitute that passes.
 
     Returns the plan to show, or None when nothing usable passed the table.
@@ -666,12 +833,12 @@ def finalize_unlabeled_plan(plan, strategy=None, *, repairs=0, conservative=None
         plan = None
     elif is_degenerate_plan(plan):
         plan = None
-    elif stamp_honest_label(plan, strategy, repairs=repairs) == "not_ready":
+    elif stamp_honest_label(plan, strategy, repairs=repairs, project=project) == "not_ready":
         plan = None
-    elif images_blocked_reason(plan, strategy=strategy):
+    elif images_blocked_reason(plan, strategy=strategy, project=project):
         plan = None
     if plan is not None:
         return plan
     if conservative is None:
         return None
-    return conservative if images_blocked_reason(conservative, strategy=strategy) is None else None
+    return conservative if images_blocked_reason(conservative, strategy=strategy, project=project) is None else None

@@ -73,7 +73,7 @@ class RecordingGateway(FakeGateway):
 
 
 def _project(store, duration, segments):
-    project = store.create_project("测试商品，蓝色瓶身", "product", duration_seconds=duration)
+    project = store.create_project("测试商品，蓝色瓶身", "product", duration_seconds=duration, ad_form="brand_tvc")
     product_path = store.media_root / f"product-{duration}.png"
     scene_path = store.media_root / f"scene-{duration}.png"
     from test_pipeline import PNG
