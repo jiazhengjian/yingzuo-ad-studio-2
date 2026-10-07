@@ -23,7 +23,8 @@ def env(tmp_path):
     client = TestClient(app)
     # These downstream gate tests start after the merchant has delegated the
     # advertising form. Unselected-form intake is covered separately.
-    p = client.post("/api/projects", json={"brief": "为我的透明玻璃瓶做商品广告", "ad_form": "auto"}).json()
+    p = client.post("/api/projects", json={
+        "brief": "为我的透明玻璃瓶做商品广告，主打瓶身透明，自己用", "ad_form": "auto"}).json()
     # Downstream tests start after the destination question as well. Asking it
     # is covered by the intake tests; these jobs already chose “让 AI 决定”.
     with app.state.store._connection(True) as connection:

@@ -23,6 +23,7 @@ _APPLIANCE = re.compile(r"吹风机|电器|耳机|手机|风扇|净化|扫地|�
 _BEAUTY = re.compile(r"口红|面霜|护肤|化妆|香水|面膜|精华")
 _FASHION = re.compile(r"衣|裙|鞋|包|饰品|帽子")
 _FIXED = ("ad_form", "highlight", "audience", "cta_target")
+_DELEGATE = re.compile(r"你来定|你看着定|你来决定|交给你定|帮我定")
 
 
 def highlight_examples(text):
@@ -87,10 +88,19 @@ def highlight_closed(gates):
     return False
 
 
-def should_ask_highlight(project, messages=(), gates=()):
+def merchant_delegated(project, messages=(), *, planning_requested=False):
+    """The merchant handed the missing point to us, so it is not asked again."""
+    if planning_requested:
+        return True
+    return bool(_DELEGATE.search(merchant_corpus(project, messages)))
+
+
+def should_ask_highlight(project, messages=(), gates=(), *, planning_requested=False):
     if not isinstance(project, dict):
         return False
     if highlight_closed(gates):
+        return False
+    if merchant_delegated(project, messages, planning_requested=planning_requested):
         return False
     if stated_highlight(merchant_corpus(project, messages)):
         return False

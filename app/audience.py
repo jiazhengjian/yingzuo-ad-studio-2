@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from .highlight import merchant_corpus
+from .highlight import merchant_corpus, merchant_delegated
 
 
 _STATED = re.compile(
@@ -105,10 +105,12 @@ def known_audience_text(gates):
     return found
 
 
-def should_ask_audience(project, messages=(), gates=()):
+def should_ask_audience(project, messages=(), gates=(), *, planning_requested=False):
     if not isinstance(project, dict):
         return False
     if audience_closed(gates):
+        return False
+    if merchant_delegated(project, messages, planning_requested=planning_requested):
         return False
     if stated_audience(merchant_corpus(project, messages)):
         return False

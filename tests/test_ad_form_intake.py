@@ -200,7 +200,8 @@ def test_real_acceptance_sequence_through_api_frozen_gateway_and_reopened_store(
     client, app, pid, _ = env
     store = app.state.store
     with store._connection(True) as c:
-        c.execute("UPDATE projects SET ad_form=NULL WHERE id=?", (pid,))
+        c.execute("UPDATE projects SET ad_form=NULL, brief=? WHERE id=?",
+                  ("为我的透明玻璃瓶做商品广告，主打瓶身透明，自己用", pid))
     opening = post_turn(env, client_turn_id="opening").json()["job"]
     store.claim_job(opening["id"])
     store.finish_decision(opening["id"], {"kind": "clarify", "message": "确认主要表达", "questions": [ad_form_question()]})
@@ -384,7 +385,8 @@ def test_preference_and_skipped_facts_are_not_merchant_evidence(label):
 def test_gateway_intake_requests_only_reply_or_clarify_until_form_is_chosen(env, monkeypatch, isolated_skill_loader):
     _, app, _, original = env
     app.state.settings.direction_selection_enabled = True
-    p = {**app.state.store.get_project(env[2]), "ad_form": None, "cta_target": None}
+    p = {**app.state.store.get_project(env[2]), "ad_form": None, "cta_target": None,
+         "brief": "为我的透明玻璃瓶做商品广告"}
     contexts = []
     async def fake(self, system, data, sources, **kwargs):
         contexts.append(deepcopy(data))
@@ -481,7 +483,8 @@ def test_actual_gateway_candidate_and_selected_job_inherit_preference(env, monke
     store = app.state.store
     app.state.settings.direction_selection_enabled = True
     with store._connection(True) as c:
-        c.execute("UPDATE projects SET cta_target='ai_decide' WHERE id=?", (pid,))
+        c.execute("UPDATE projects SET cta_target='ai_decide', brief=? WHERE id=?",
+                  ("为我的透明玻璃瓶做商品广告，主打瓶身透明，自己用", pid))
     job = turn(store, pid, ad_form=form)
     candidate = candidates_for(env)
     raw_brief = candidate.brief.model_dump()

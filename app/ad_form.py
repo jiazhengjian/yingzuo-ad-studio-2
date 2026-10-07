@@ -207,7 +207,7 @@ def answer_ad_form(answer):
     return explicit_ad_form(answer.get("text", ""))
 
 
-def pack_clarification_questions(model_questions, project, messages=(), gates=()):
+def pack_clarification_questions(model_questions, project, messages=(), gates=(), *, planning_requested=False):
     """Fixed questions take the card first. The model fills only the slots left.
 
     Order: ad form, selling point, audience, then destination. A story omits
@@ -223,8 +223,8 @@ def pack_clarification_questions(model_questions, project, messages=(), gates=()
     fixed = []
     if isinstance(project, dict) and "ad_form" in project and project.get("ad_form") is None:
         fixed.append(ad_form_question())
-    ask_highlight = should_ask_highlight(project, messages, gates)
-    ask_audience = should_ask_audience(project, messages, gates)
+    ask_highlight = should_ask_highlight(project, messages, gates, planning_requested=planning_requested)
+    ask_audience = should_ask_audience(project, messages, gates, planning_requested=planning_requested)
     if ask_highlight:
         fixed.append(highlight_question(corpus))
     if ask_audience:
@@ -260,7 +260,21 @@ def confirmation_message(questions):
     return f"先确认{'、'.join(parts)}，再继续准备方案。"
 
 
-def intake_strategy_response(raw, project, *, ask_preference=True, messages=(), gates=()):
+def _fresh_proposal(project, gates, *, existing_work=False):
+    """A first offer. An existing plan, or a direction already chosen, stays put."""
+    if existing_work:
+        return False
+    if isinstance(project, dict) and project.get("plan"):
+        return False
+    for gate in gates or ():
+        if (isinstance(gate, dict) and gate.get("kind") == "direction"
+                and gate.get("status") == "answered" and gate.get("selected_option_id")):
+            return False
+    return True
+
+
+def intake_strategy_response(raw, project, *, ask_preference=True, messages=(), gates=(),
+                             planning_requested=False, existing_work=False):
     """Canonicalize one preference card before validating model output.
 
     Existing frozen jobs without the new project field retain their contract.
@@ -274,7 +288,9 @@ def intake_strategy_response(raw, project, *, ask_preference=True, messages=(), 
         guarded = guard_ad_form_confirmation(result, project)
         if guarded is not result:
             return guarded
+    from .audience import should_ask_audience
     from .cta import should_ask_cta
+    from .highlight import should_ask_highlight
     form = project.get("ad_form")
     kind = result.get("kind")
     if ask_preference and kind == "clarify":
@@ -286,11 +302,19 @@ def intake_strategy_response(raw, project, *, ask_preference=True, messages=(), 
             # A redundant form-only clarification should not force a user to
             # answer again. The existing one-shot correction can reroute it.
             raise ValueError("广告倾向已确认，不应重复提问；根据已有信息回复或继续策划")
-        result["questions"] = pack_clarification_questions(questions, project, messages, gates)
-    elif ask_preference and kind in ("directions", "plan") and (
-            needs_ad_form_choice(project) or should_ask_cta(project)):
-        questions = pack_clarification_questions([], project, messages, gates)
-        result = {"kind": "clarify", "message": confirmation_message(questions), "questions": questions}
+        result["questions"] = pack_clarification_questions(
+            questions, project, messages, gates, planning_requested=planning_requested)
+    elif ask_preference and kind in ("directions", "plan"):
+        # A fresh offer still asks a missing selling point or audience, even
+        # when the model skipped clarify and returned directions. Editing or
+        # reselecting a plan that is already saved does not reopen the card.
+        missing_story = _fresh_proposal(project, gates, existing_work=existing_work) and (
+            should_ask_highlight(project, messages, gates, planning_requested=planning_requested)
+            or should_ask_audience(project, messages, gates, planning_requested=planning_requested))
+        if needs_ad_form_choice(project) or should_ask_cta(project) or missing_story:
+            questions = pack_clarification_questions(
+                [], project, messages, gates, planning_requested=planning_requested)
+            result = {"kind": "clarify", "message": confirmation_message(questions), "questions": questions}
     brief = result.get("brief")
     if isinstance(brief, dict):
         bind_brief_ad_form(brief, project)

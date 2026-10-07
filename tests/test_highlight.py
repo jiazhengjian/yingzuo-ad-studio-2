@@ -89,6 +89,34 @@ def test_story_answer_discards_the_destination_and_a_later_story_ignores_it(tmp_
     assert project_cta_mode({"ad_form": "scene_story", "cta_target": "link", "brief": "点下面链接"}) == "none"
 
 
+def test_directions_without_a_selling_point_become_a_clarification():
+    brief = "我想做一个蛋糕的剧情广告，下午茶场景，女生主角。"
+    project = {"ad_form": "scene_story", "cta_target": None, "brief": brief}
+    offered = {"kind": "directions", "message": "三个方向", "directions": [{"id": "d1"}]}
+    result = intake_strategy_response(offered, project)
+    assert result["kind"] == "clarify"
+    assert [item["id"] for item in result["questions"]] == ["highlight"]
+    assert "最想让观众记住" in result["questions"][0]["prompt"]
+    assert offered["kind"] == "directions"
+    no_scene = {"ad_form": "scene_story", "cta_target": None, "brief": "我想做一个蛋糕的剧情广告，女生主角。"}
+    both = intake_strategy_response(offered, no_scene)
+    assert [item["id"] for item in both["questions"]] == ["highlight", "audience"]
+    skipped = [{"kind": "clarification", "status": "answered",
+                "questions": [highlight_question(brief)],
+                "answers": [{"question_id": "highlight", "skipped": True}]}]
+    kept = intake_strategy_response(offered, project, gates=skipped)
+    assert kept["kind"] == "directions"
+    delegated = intake_strategy_response(offered, {**project, "brief": brief + "你来定。"})
+    assert delegated["kind"] == "directions"
+    resumed = intake_strategy_response(offered, project, planning_requested=True)
+    assert resumed["kind"] == "directions"
+    editing = intake_strategy_response(offered, {**project, "plan": {"segments": []}})
+    assert editing["kind"] == "directions"
+    chosen = [{"kind": "direction", "status": "answered", "selected_option_id": "d1",
+               "questions": [], "answers": []}]
+    assert intake_strategy_response({"kind": "plan", "message": "改一下"}, project, gates=chosen)["kind"] == "plan"
+
+
 def test_recommending_a_story_later_ignores_a_saved_destination():
     strategy = {
         "brief": {"ad_form": "auto", "facts": []},

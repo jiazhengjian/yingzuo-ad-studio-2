@@ -53,7 +53,7 @@ def test_an_audience_answer_is_kept_on_the_brief_and_as_a_fact():
     gates = [{"kind": "clarification", "status": "answered",
               "questions": [question],
               "answers": [{"question_id": "audience", "text": answer}]}]
-    project = {"ad_form": "brand_tvc", "cta_target": "ai_decide", "brief": "我想做一个蛋糕广告"}
+    project = {"ad_form": "brand_tvc", "cta_target": "ai_decide", "brief": "我想做一个蛋糕广告，主打松软"}
     messages = [{"id": "m1", "role": "user", "content": question["prompt"] + "：" + answer}]
     raw = {"kind": "directions", "message": "三个方向", "brief": {
         "product_name": "蛋糕", "category": "food", "audience": "", "scenario": "",
