@@ -188,7 +188,8 @@ def should_ask_cta(project):
         return False
     # A story ends on the result. The platform button does the converting,
     # so the clarification card does not ask for a spoken destination.
-    if project.get("ad_form") == "scene_story":
+    # The destination waits until the form is chosen, and a story never asks.
+    if project.get("ad_form") in (None, "scene_story"):
         return False
     if project.get("cta_target") == "ai_decide" or is_explicit_cta(project.get("cta_target")):
         return False

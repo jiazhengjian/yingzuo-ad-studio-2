@@ -23,7 +23,7 @@ const storyChoice = (text: string) => {
 export function hidesCta(answer?: Answer): boolean {
   if (!answer || answer.skipped) return false;
   if (answer.option_id === 'scene_story') return true;
-  return answer.text !== undefined && storyChoice(answer.text);
+  return typeof answer.text === 'string' && storyChoice(answer.text);
 }
 export function visibleQuestions(gate: Gate, answers: Record<string, Answer>): Question[] {
   if (gate.kind !== 'clarification' || !hidesCta(answers.ad_form)) return gate.questions;
@@ -96,6 +96,8 @@ export function answerCurrentWithText(gate: Gate, draft: GateDraft, input: strin
 export function answerLabel(question: Question, answer?: Answer) {
   if (!answer) return '未作答';
   if (answer.skipped) return '已跳过';
-  if (answer.text !== undefined) return answer.text;
-  return question.options.find(option => option.id === answer.option_id)?.label ?? '已保存的选择';
+  const text = typeof answer.text === 'string' ? answer.text.trim() : '';
+  if (text) return text;
+  if (answer.option_id) return question.options.find(option => option.id === answer.option_id)?.label ?? '已保存的选择';
+  return '已保存的选择';
 }

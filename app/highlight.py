@@ -16,13 +16,13 @@ _STATED = re.compile(
     r"香味|香甜|奶香|好用|安静|降噪|快干|护发|颜值|透气|防水"
 )
 _SPEC_PROMPT = re.compile(r"种类|几个|数量|尺寸|包装|规格|多大|几寸|多少个|几块|具体是什么")
-_DUPLICATE_PROMPT = re.compile(r"记住|卖点|亮点|最想让")
+_DUPLICATE_PROMPT = re.compile(r"记住|卖点|亮点|最想让|特点")
 _SKIPPED = "暂不确定，请使用谨慎表达"
 _FOOD = re.compile(r"蛋糕|面包|甜点|甜品|饼干|巧克力|月饼|奶茶|咖啡|食品|零食|水果|糕点|冰淇淋|冰激凌")
 _APPLIANCE = re.compile(r"吹风机|电器|耳机|手机|风扇|净化|扫地|洗衣|空调|家电|风筒|剃须刀|牙刷")
 _BEAUTY = re.compile(r"口红|面霜|护肤|化妆|香水|面膜|精华")
 _FASHION = re.compile(r"衣|裙|鞋|包|饰品|帽子")
-_FIXED = ("ad_form", "cta_target", "highlight")
+_FIXED = ("ad_form", "highlight", "audience", "cta_target")
 
 
 def highlight_examples(text):
@@ -97,16 +97,22 @@ def should_ask_highlight(project, messages=(), gates=()):
     return True
 
 
-def _replaced_by_highlight(item):
-    """Specs and a second selling-point question give up the slot."""
+def spec_question(item):
+    """Count, size and packaging. They do not take a fixed-question slot."""
     if not isinstance(item, dict):
         return False
-    if item.get("id") in {"highlight", "product_info"}:
+    if item.get("id") == "product_info":
         return True
-    prompt = str(item.get("prompt") or "")
-    if _SPEC_PROMPT.search(prompt):
+    return bool(_SPEC_PROMPT.search(str(item.get("prompt") or "")))
+
+
+def displaced_highlight(item):
+    """Specs and a second selling-point question give up the slot."""
+    if not isinstance(item, dict) or item.get("id") == "highlight":
+        return False
+    if spec_question(item):
         return True
-    return bool(item.get("id") != "highlight" and _DUPLICATE_PROMPT.search(prompt))
+    return bool(_DUPLICATE_PROMPT.search(str(item.get("prompt") or "")))
 
 
 def _place_highlight(questions, question):
@@ -158,6 +164,6 @@ def attach_highlight_question(result, project, messages=(), gates=()):
     if not isinstance(questions, list):
         return result
     corpus = merchant_corpus(project, messages)
-    kept = [item for item in questions if not _replaced_by_highlight(item)]
+    kept = [item for item in questions if not displaced_highlight(item)]
     result["questions"] = cap_questions(_place_highlight(kept, highlight_question(corpus)))
     return result

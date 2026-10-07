@@ -2254,6 +2254,10 @@ class Gateway:
             "current_plan": {key: value for key, value in current_plan.items() if key != "cta"} if current_plan else None,
             "schema": decision_schema,
         }
+        from app.audience import known_audience_text
+        audience_text = known_audience_text(gates)
+        if audience_text:
+            context["known_audience"] = audience_text
         if "directions" in allowed_decisions:
             context["allowed_hook_types"] = playbook_hook_ids(hook_form)
         if not choice_enabled:

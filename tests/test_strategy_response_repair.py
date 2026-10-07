@@ -264,7 +264,10 @@ def test_invalid_response_can_return_to_clarification_without_planning_or_media(
     assert result["status"] == "awaiting_input"
     assert case.stages() == ["strategy", "strategy"]
     gate = case.store.pending_gate(case.pid)
-    assert gate["kind"] == "clarification" and gate["questions"][0]["id"] == "benefit"
+    assert gate["kind"] == "clarification"
+    assert [item["id"] for item in gate["questions"]] == ["highlight", "audience"]
+    assert "最想让观众记住" in gate["questions"][0]["prompt"]
+    assert "拍给谁看" in gate["questions"][1]["prompt"]
     assert "direction_candidates" not in result["payload"]
     assert_no_plan_or_media(case, result)
 

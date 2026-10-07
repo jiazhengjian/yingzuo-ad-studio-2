@@ -93,3 +93,29 @@ test('the card recounts live once 剧情 is the saved answer', () => {
   assert.match(product, /看完视频后，希望观众去哪里/);
   assert.match(product, /2 \/ 3/);
 });
+
+test('a confirmed option shows its label when the stored text is null', () => {
+  const answered = {
+    ...gate,
+    status: 'answered',
+    questions: [
+      adForm,
+      { id: 'audience_use', prompt: '主要给谁看？', allow_custom: true, allow_skip: true,
+        options: [option('styling', '造型')] },
+    ],
+    answers: [
+      { question_id: 'ad_form', option_id: 'brand_tvc', text: null },
+      { question_id: 'audience_use', option_id: 'styling', text: null },
+    ],
+  };
+  const html = renderToStaticMarkup(React.createElement(ConversationGate, {
+    gate: answered, busy: false, onSubmit: async () => {}, onCreativeSubmit: async () => {},
+  }));
+  assert.match(html, /选项已确认/);
+  assert.match(html, /产品展示广告/);
+  assert.match(html, /造型/);
+  assert.equal(draft.answerLabel(adForm, answered.answers[0]), '产品展示广告');
+  assert.equal(draft.answerLabel(answered.questions[1], answered.answers[1]), '造型');
+  const written = { ...answered.answers[1], text: '送给妈妈' };
+  assert.equal(draft.answerLabel(answered.questions[1], written), '送给妈妈');
+});

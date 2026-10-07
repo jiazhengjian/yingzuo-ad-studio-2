@@ -16,22 +16,26 @@ def test_a_bare_cake_brief_asks_what_to_remember_instead_of_specs():
     project = {"ad_form": None, "cta_target": None, "brief": "我想做一个蛋糕广告"}
     raw = _clarify("product_info", "这次要拍的蛋糕具体是什么？比如种类、几个、尺寸或包装。")
     result = intake_strategy_response(raw, project)
-    assert [item["id"] for item in result["questions"]] == ["ad_form", "cta_target", "highlight"]
-    highlight = result["questions"][2]
+    assert [item["id"] for item in result["questions"]] == ["ad_form", "highlight", "audience"]
+    highlight = result["questions"][1]
     assert highlight["options"] == []
     assert highlight["allow_skip"] is True and highlight["allow_custom"] is True
     assert "最想让观众记住" in highlight["prompt"]
     assert "夹心" in highlight["prompt"] and "制作工艺" in highlight["prompt"]
     assert "尺寸" not in highlight["prompt"] and "包装" not in highlight["prompt"]
+    audience = result["questions"][2]
+    assert audience["options"] == [] and audience["allow_skip"] is True
+    assert "拍给谁看" in audience["prompt"] and "生日聚会" in audience["prompt"]
+    assert should_ask_cta(project) is False
 
 
 def test_other_forms_keep_the_destination_and_a_story_card_does_not():
     brief = {"brief": "我想做一个蛋糕广告", "cta_target": None}
     for form in ("brand_tvc", "presenter_pitch", "auto"):
         result = intake_strategy_response(_clarify("audience", "给谁看？"), {**brief, "ad_form": form})
-        assert [item["id"] for item in result["questions"]] == ["audience", "cta_target", "highlight"]
+        assert [item["id"] for item in result["questions"]] == ["highlight", "audience", "cta_target"]
     story = intake_strategy_response(_clarify("audience", "给谁看？"), {**brief, "ad_form": "scene_story"})
-    assert [item["id"] for item in story["questions"]] == ["audience", "highlight"]
+    assert [item["id"] for item in story["questions"]] == ["highlight", "audience"]
     assert should_ask_cta({**brief, "ad_form": "scene_story", "cta_target": "link"}) is False
 
 

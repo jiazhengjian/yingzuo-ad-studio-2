@@ -207,6 +207,58 @@ def answer_ad_form(answer):
     return explicit_ad_form(answer.get("text", ""))
 
 
+def pack_clarification_questions(model_questions, project, messages=(), gates=()):
+    """Fixed questions take the card first. The model fills only the slots left.
+
+    Order: ad form, selling point, audience, then destination. The destination
+    is absent until the form is known, and absent for a story. Spec questions
+    do not take a slot on a card that already has one of these.
+    """
+    from .audience import AUDIENCE_IDS, audience_question, displaced_audience, should_ask_audience
+    from .cta import cta_question, should_ask_cta
+    from .highlight import displaced_highlight, highlight_question, merchant_corpus, should_ask_highlight, spec_question
+
+    corpus = merchant_corpus(project, messages)
+    fixed = []
+    if isinstance(project, dict) and "ad_form" in project and project.get("ad_form") is None:
+        fixed.append(ad_form_question())
+    ask_highlight = should_ask_highlight(project, messages, gates)
+    ask_audience = should_ask_audience(project, messages, gates)
+    if ask_highlight:
+        fixed.append(highlight_question(corpus))
+    if ask_audience:
+        fixed.append(audience_question(corpus))
+    if should_ask_cta(project):
+        fixed.append(cta_question())
+    fixed = fixed[:3]
+    blocked = {"ad_form", "highlight", "audience", "cta_target", *AUDIENCE_IDS}
+    rest = []
+    for item in model_questions or []:
+        if not isinstance(item, dict) or item.get("id") in blocked:
+            continue
+        if ask_highlight and displaced_highlight(item):
+            continue
+        if fixed and spec_question(item):
+            continue
+        if ask_audience and displaced_audience(item):
+            continue
+        rest.append(item)
+    return [*fixed, *rest[: 3 - len(fixed)]]
+
+
+def confirmation_message(questions):
+    labels = {
+        "ad_form": "广告怎么拍",
+        "highlight": "最想让观众记住的一点",
+        "audience": "拍给谁看、在什么情境下使用",
+        "cta_target": "看完去哪里",
+    }
+    parts = [labels[item["id"]] for item in questions if isinstance(item, dict) and item.get("id") in labels]
+    if not parts:
+        return "先确认还缺的信息，再继续准备方案。"
+    return f"先确认{'、'.join(parts)}，再继续准备方案。"
+
+
 def intake_strategy_response(raw, project, *, ask_preference=True, messages=(), gates=()):
     """Canonicalize one preference card before validating model output.
 
@@ -229,42 +281,21 @@ def intake_strategy_response(raw, project, *, ask_preference=True, messages=(), 
         if not isinstance(authored_questions, list) or any(not isinstance(q, dict) for q in authored_questions):
             raise ValueError("澄清问题须为对象列表")
         questions = [q for q in authored_questions if q.get("id") != "ad_form"]
-        if form is None:
-            result["questions"] = [ad_form_question(), *questions[:2]]
-        elif questions:
-            result["questions"] = questions
-        else:
+        if form is not None and not questions:
             # A redundant form-only clarification should not force a user to
             # answer again. The existing one-shot correction can reroute it.
             raise ValueError("广告倾向已确认，不应重复提问；根据已有信息回复或继续策划")
-        from .cta import attach_cta_question
-        from .highlight import attach_highlight_question
-        result = attach_cta_question(result, project)
-        result = attach_highlight_question(result, project, messages, gates)
+        result["questions"] = pack_clarification_questions(questions, project, messages, gates)
     elif ask_preference and kind in ("directions", "plan") and (
             needs_ad_form_choice(project) or should_ask_cta(project)):
-        from .cta import cta_question
-        from .highlight import cap_questions, highlight_question, merchant_corpus, should_ask_highlight
-        questions = []
-        if needs_ad_form_choice(project):
-            questions.append(ad_form_question())
-        if should_ask_cta(project):
-            questions.append(cta_question())
-        ask_highlight = should_ask_highlight(project, messages, gates)
-        if ask_highlight:
-            questions.append(highlight_question(merchant_corpus(project, messages)))
-        if ask_highlight and should_ask_cta(project) and needs_ad_form_choice(project):
-            message = "先确认广告怎么拍、看完去哪里，以及最想让观众记住的一点，再继续准备方案。"
-        elif ask_highlight and should_ask_cta(project):
-            message = "先确认看完去哪里，以及最想让观众记住的一点，再继续准备方案。"
-        elif ask_highlight:
-            message = "先确认广告的表达方式，以及最想让观众记住的一点，再继续准备方案。"
-        else:
-            message = "先确认看完视频后希望观众去哪里，再继续准备方案。"
-        result = {"kind": "clarify", "message": message, "questions": cap_questions(questions)}
+        questions = pack_clarification_questions([], project, messages, gates)
+        result = {"kind": "clarify", "message": confirmation_message(questions), "questions": questions}
     brief = result.get("brief")
     if isinstance(brief, dict):
         bind_brief_ad_form(brief, project)
+        from .audience import apply_known_audience
+        from .planning import evidence_sources
+        apply_known_audience(brief, gates, evidence_sources(project, messages, gates))
     return result
 
 
