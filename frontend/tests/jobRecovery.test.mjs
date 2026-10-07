@@ -400,6 +400,27 @@ test('an exhausted or permanent video refusal uses the system sentence', () => {
   assert.doesNotMatch(html, /重试失败片段|视频片段未生成|继续制作|<button/);
 });
 
+test('a spend-time recheck sends the merchant back to the composer', () => {
+  const job = fixture({
+    error: '这版方案需要重新检查。请在对话里改完再制作，这次不会生成图片或视频。',
+    progress: { error_code: 'release_recheck', retryable: false, retry_action: 'edit_plan' },
+  });
+  assert.deepEqual(recoveryForJob(job), { kind: 'edit_plan', label: '回到对话修改' });
+  assert.equal(retryRequest(job), null);
+  const calls = [];
+  const element = RecoveryCard({ job, busy: '', canEditVoice: true, canShorten: true, hasExistingResult: false,
+    onRetry() { calls.push('retry'); }, onEditVoice() {}, onShorten() {},
+    onChangePlan() { calls.push('focus'); }, onRestart() {}, onSettings() {} });
+  const html = renderToStaticMarkup(element);
+  assert.match(html, /这版方案需要重新检查/);
+  assert.match(html, /回到对话修改/);
+  assert.doesNotMatch(html, /继续制作|重新生成/);
+  const button = buttons(element).find(node => [].concat(node.props.children).some(child => child === '回到对话修改'));
+  assert.ok(button);
+  button.props.onClick();
+  assert.deepEqual(calls, ['focus']);
+});
+
 test('the last-resort card button requests a restart from the saved brief', () => {
   const calls = [];
   const job = fixture({ kind: 'plan', progress: { error_code: 'planning_invalid_response', retryable: false,

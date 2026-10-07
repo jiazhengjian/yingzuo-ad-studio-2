@@ -1,9 +1,10 @@
 """The only image-release decision, and the hard-gate table it consults.
 
 Eight gates stay blocking. The degenerate-plan check sits on the same table
-as a structure check. A plan with no review record is not released. A
-conservative fallback is released only when this table passes and the board
-is not a placeholder. Merchant-insisted lines are the only exemption.
+as a structure check. Image and video spend always re-run this table. A stored
+label from planning time, including passed, repaired, and conservative_fallback,
+does not skip that check. A later edit or an older saved board can change the
+words and leave the label. Merchant-insisted lines are the only exemption.
 """
 from __future__ import annotations
 
@@ -87,6 +88,18 @@ def gate_by_id(gate_id):
 
 _CONCRETE_FORMS = ("scene_story", "brand_tvc", "presenter_pitch")
 _UNKNOWN_FORM = "还没确定广告类型，这版不能放行。"
+SPEND_RECHECK = "这版方案需要重新检查。请在对话里改完再制作，这次不会生成图片或视频。"
+
+
+class ReleaseRecheck(ValueError):
+    """The board failed the spend-time gate. Go back to chat. Do not call a provider."""
+
+    error_code = "release_recheck"
+    retryable = False
+    retry_action = "edit_plan"
+
+    def __init__(self):
+        super().__init__(SPEND_RECHECK)
 
 
 def _concrete_form(value):
@@ -290,27 +303,24 @@ def _plan_duration(plan):
 
 
 def images_blocked_reason(plan, *, strategy=None, project=None):
-    """The only decision: None means this plan may start image generation.
+    """The only decision before image or video spend. None means it may start.
 
-    No review record is not released. passed and repaired already cleared the
-    review. conservative_fallback is released only when the hard-gate table
-    passes and the board is not a degenerate placeholder. A plan whose ad type
-    cannot be read from the plan or the project is not released. Merchant-insisted
-    lines are the only lines skipped by that check.
+    The stored label is ignored. Planning wrote passed, repaired, or
+    conservative_fallback earlier; a later edit or an older saved board can
+    change the words while leaving that label. This check runs the eight hard
+    gates and the placeholder check again. Merchant-insisted lines, already
+    recorded on the plan, are the only exemption. The ad type is the plan's
+    own type, then the project's. auto does not count. No concrete type blocks.
     """
-    if not isinstance(plan, dict) or "review_status" not in plan:
-        return "方案还没有检查记录，不能准备图片。"
-    status = plan.get("review_status")
-    if status in ("passed", "repaired"):
-        return None
-    if status == "conservative_fallback":
-        if _form_of(_strategy_of(plan, strategy), plan, project) is None:
-            return _UNKNOWN_FORM
-        findings = evaluate_release_table(plan, strategy, exempt_lines=insisted_lines(plan), project=project)
-        if findings:
-            return "方案检查还没有通过，已有方案保留。请修改后再准备图片。"
-        return None
-    return "方案检查还没有通过，已有方案保留。请修改后再准备图片。"
+    if not isinstance(plan, dict):
+        return SPEND_RECHECK
+    if _form_of(_strategy_of(plan, strategy), plan, project) is None:
+        return SPEND_RECHECK
+    findings = evaluate_release_table(
+        plan, strategy, exempt_lines=insisted_lines(plan), project=project)
+    if findings:
+        return SPEND_RECHECK
+    return None
 
 
 def stamp_honest_label(plan, strategy=None, *, repairs=0, project=None):

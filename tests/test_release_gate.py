@@ -1,16 +1,21 @@
 """One release decision, the hard-gate table, locked lines, and pre-spend confirmation."""
+import asyncio
 from copy import deepcopy
 
 import pytest
 
+from app.config import Settings
 from app.db import Store
+from app.pipeline import Pipeline
 from app.release_gate import (
-    RELEASE_TABLE, MerchantLineChoice, assert_spend_confirmed, classify_release, conservative_usable_plan,
-    duration_needed, duration_question, evaluate_release_table, images_blocked_reason, lengthen_target,
-    line_locks, present_checked_plan, settle_manual_edit, stamp_honest_label,
+    RELEASE_TABLE, SPEND_RECHECK, MerchantLineChoice, assert_spend_confirmed, classify_release,
+    conservative_usable_plan, duration_needed, duration_question, evaluate_release_table,
+    images_blocked_reason, lengthen_target, line_locks, present_checked_plan, settle_manual_edit,
+    stamp_honest_label,
 )
 from app.strategy import StrategyRecord
 from test_line_quality import typed
+from test_pipeline import PNG
 from test_progressive_planning import chosen_strategy
 
 
@@ -55,7 +60,8 @@ def test_hard_gate_table_keeps_eight_blocking_checks_and_names_ad_types():
 
 def test_missing_review_record_is_not_released_and_fallback_must_pass_the_table():
     assert images_blocked_reason({"segments": []})
-    assert images_blocked_reason({"review_status": "passed"}) is None
+    # A stored pass with no concrete ad type is not a release. The label is ignored.
+    assert images_blocked_reason({"review_status": "passed"})
     clean = {"review_status": "conservative_fallback", "segments": [
         {"shots": [{"description": "瓶身在左侧。"}, {"description": "瓶身靠近一些。"}]}]}
     assert images_blocked_reason(clean, project={"ad_form": "brand_tvc"}) is None
@@ -397,3 +403,100 @@ def test_legacy_unlabeled_plan_is_labelled_and_unknown_form_is_blocked():
     blocked = deepcopy(plain)
     assert stamp_honest_label(blocked) == "not_ready"
     assert images_blocked_reason(blocked)
+
+
+@pytest.mark.parametrize("label", ["passed", "repaired", "conservative_fallback"])
+def test_a_labeled_plan_whose_content_later_breaks_a_gate_is_blocked(label):
+    """The stored label was written at planning time. Later words are checked again."""
+    strategy = _strategy("brand_tvc")
+    stacked = "它带负离子，吹完是顺的。这风不吵。"
+    changed = _board(strategy, ["看清这件。"], ["瓶身在左侧。", "瓶身靠近一些。"])
+    changed["review_status"] = label
+    changed["ad_script"]["beats"][0]["narration"] = stacked
+    changed["segments"][0]["speech_spans"][0]["text"] = stacked
+    assert images_blocked_reason(changed, strategy=changed["strategy"]) == SPEND_RECHECK
+
+
+def test_labeled_plan_with_no_concrete_type_is_blocked():
+    """auto and a missing project type are not a guess from the brief text."""
+    labelled = {
+        "review_status": "passed",
+        "strategy": {"brief": {"ad_form": "auto", "product_name": "蓝瓶"}},
+        "segments": [{"shots": [
+            {"description": "瓶身在左侧。"}, {"description": "瓶身靠近一些。"},
+        ]}],
+    }
+    assert images_blocked_reason(labelled) == SPEND_RECHECK
+    assert images_blocked_reason(labelled, project={"ad_form": "auto"}) == SPEND_RECHECK
+    assert images_blocked_reason(labelled, project={"brief": {"ad_form": "根据商品推荐"}}) == SPEND_RECHECK
+    assert images_blocked_reason(labelled, project={}) == SPEND_RECHECK
+
+
+def test_a_normal_passed_plan_still_goes_through():
+    strategy = _strategy("brand_tvc")
+    board = _board(strategy, ["看清这件。"], ["瓶身在左侧。", "瓶身靠近一些。"])
+    board["review_status"] = "passed"
+    assert images_blocked_reason(board, strategy=board["strategy"]) is None
+
+
+def test_merchant_insisted_line_still_goes_through():
+    strategy = _strategy("brand_tvc")
+    stacked = "它带负离子，吹完是顺的。这风不吵。"
+    board = _board(strategy, [stacked], ["瓶身留在桌角。", "瓶身仍在原处。"])
+    board["review_status"] = "passed"
+    board["merchant_insisted_lines"] = [stacked]
+    board["segments"][0]["speech_spans"][0]["merchant_insisted"] = True
+    assert images_blocked_reason(board, strategy=board["strategy"]) is None
+
+
+def test_changed_passed_plan_is_blocked_before_any_image_or_video_spend(tmp_path):
+    store = Store(tmp_path / "db.sqlite", tmp_path / "media")
+    project = store.create_project("蓝瓶", "product", duration_seconds=10, ad_form="brand_tvc")
+    path = store.media_root / "product.png"
+    path.write_bytes(PNG)
+    asset = store.add_asset(project["id"], "product", "原图", path, "image/png")
+    strategy = _strategy("brand_tvc")
+    stacked = "它带负离子，吹完是顺的。这风不吵。"
+    plan = {
+        "title": "方案", "script": stacked, "language": "zh-CN", "aspect_ratio": "9:16",
+        "audio_strategy": "voiceover", "review_status": "passed", "strategy": strategy.model_dump(),
+        "facts": {"name": "蓝瓶", "claims": []},
+        "ad_script": {"core_message": "看清商品", "beats": [{
+            "id": "b0", "narration": stacked, "purpose": "看清商品", "message": "看清外观",
+            "visual_role": "商品留在画面里"}]},
+        "segments": [{"id": "s0", "duration_seconds": 10, "purpose": "展示", "prompt": "真实商品展示",
+                      "shots": [{"start": 0, "end": 5, "description": "瓶身在左侧。"},
+                                {"start": 5, "end": 10, "description": "瓶身靠近一些。"}],
+                      "reference_asset_ids": [asset["id"]]}],
+    }
+    project = store.update_plan(project["id"], plan)
+    job = store.create_job(project["id"], "generate", project["revision"])
+
+    class _Gateway:
+        def __init__(self):
+            self.designs = 0
+            self.videos = 0
+
+        async def create_designs(self, *args, **kwargs):
+            self.designs += 1
+            return []
+
+        async def submit_video(self, *args, **kwargs):
+            self.videos += 1
+            return {}
+
+    gateway = _Gateway()
+    settings = Settings(data_root=tmp_path, deepseek_api_key="TEST_ONLY", tudou_api_key="TEST_ONLY",
+                        ffmpeg_path="TEST_ONLY", max_video_submissions=1, max_active_runs=1,
+                        poll_seconds=0.01, provider_timeout_seconds=1, tts_voice="TEST_ONLY",
+                        video_model="TEST_ONLY")
+    result = asyncio.run(Pipeline(store, gateway, settings).execute(job["id"]))
+    assert result["status"] == "failed"
+    assert result["submission_count"] == 0
+    assert "这版方案需要重新检查" in (result.get("error") or "")
+    assert result["progress"]["error_code"] == "release_recheck"
+    assert result["progress"]["retry_action"] == "edit_plan"
+    assert result["progress"]["retryable"] is False
+    assert gateway.designs == 0 and gateway.videos == 0
+    messages = store.project_detail(project["id"])["messages"]
+    assert any(item["role"] == "assistant" and "这版方案需要重新检查" in item["content"] for item in messages)

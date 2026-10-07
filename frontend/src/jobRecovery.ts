@@ -69,6 +69,8 @@ export function recoveryForJob(job?: Job): JobRecovery | null {
   if (/请重新选择时长|所选时长不一致/.test(job.error || '')) return { kind: 'edit_plan', label: '重新选择时长' };
   if (job.progress.error_code === 'image_generation_failed') return { kind: 'edit_plan' };
   if (/请修改方案/.test(job.error || '')) return { kind: 'edit_plan', label: '修改方案' };
+  // Spend-time recheck failed. The merchant edits in the composer. Do not offer another generate.
+  if (job.progress.error_code === 'release_recheck') return { kind: 'edit_plan', label: '回到对话修改' };
   if (job.progress.retryable === false) return {
     kind: job.progress.error_code === 'reference_image_unreadable' ? 'check_materials' : 'unavailable',
   };
@@ -117,6 +119,9 @@ export function cardMessage(job: Job, recovery: JobRecovery): string {
   if (recovery.kind === 'retry_failed_segments') {
     if (code === 'reference_image_unreadable') return '视频服务未能读取参考图片。已有图片和成功片段仍保留。';
     return '有的视频片段没有生成，已有图片和成功片段仍保留。';
+  }
+  if (code === 'release_recheck') {
+    return '这版方案需要重新检查。请在对话里改完再制作，这次不会生成图片或视频。';
   }
   if (recovery.kind === 'edit_plan') {
     if (recovery.label === '重新选择时长') return '方案与所选时长不一致，已有内容仍保留。请重新选择时长后再制作。';

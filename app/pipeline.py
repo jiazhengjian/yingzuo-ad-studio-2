@@ -625,7 +625,13 @@ class Pipeline:
                     progress.update(issue_summary=getattr(exc, "issue_summary", [])[:8],
                         repair_attempts=getattr(exc, "repair_attempts", 0))
                 changes["progress"] = progress
-            if job["kind"] == "generate" and held_submission:
+            if job["kind"] == "generate" and getattr(exc, "error_code", None) == "release_recheck":
+                progress = dict(self.store.get_job(job_id).get("progress") or {})
+                progress.update(error_code="release_recheck", retryable=False, retry_action="edit_plan")
+                changes["progress"] = progress
+                changes["error"] = str(exc)[:500]
+                self.store.add_message(job["project_id"], "assistant", str(exc), job_id)
+            elif job["kind"] == "generate" and held_submission:
                 from .generate_retry import ACCOUNT_RETRY_CODES
                 progress = dict(self.store.get_job(job_id).get("progress") or {})
                 # 401/402 did not accept a task. The merchant can fix the account
@@ -865,16 +871,19 @@ class Pipeline:
                 self.store.add_event(job["project_id"], job["id"], "step", "已自动校正，继续制作中")
         return plan
 
+    def _refuse_unreleased(self, job, plan):
+        """Re-run the hard gates before any image or video provider call."""
+        from .release_gate import ReleaseRecheck, images_blocked_reason
+        project = self.store.get_project(job["project_id"])
+        strategy = plan.get("strategy") if isinstance(plan, dict) else None
+        if images_blocked_reason(plan, strategy=strategy, project=project):
+            raise ReleaseRecheck()
+
     async def _generate(self, job):
         project = self.store.get_project(job["project_id"])
         plan = await self._generation_plan(job, project)
-        from .release_gate import assert_spend_confirmed, images_blocked_reason, stamp_honest_label
-        checked = copy.deepcopy(plan)
-        if not checked.get("review_status"):
-            stamp_honest_label(checked, checked.get("strategy"), project=project)
-        blocked = images_blocked_reason(checked, strategy=checked.get("strategy"), project=project)
-        if blocked:
-            raise ValueError(blocked)
+        self._refuse_unreleased(job, plan)
+        from .release_gate import assert_spend_confirmed
         assert_spend_confirmed(self.store.get_job(job["id"]), project)
         if project["route"] == "presenter" and not getattr(self.settings, "presenter_verified", False):
             raise ValueError("中文出镜口播能力尚未验证，目前不能生成口播路线")
@@ -1116,6 +1125,7 @@ class Pipeline:
             callback["on_asset"] = save_design
         if replace_keys and "replace_keys" in inspect.signature(create).parameters:
             callback["replace_keys"] = replace_keys
+        self._refuse_unreleased(job, plan)
         self.gateway._submission_busy_notice = lambda: self.store.add_event(
             job["project_id"], job["id"], "step", "图片平台繁忙，正在自动重新提交")
         try:
@@ -1189,8 +1199,10 @@ class Pipeline:
         if step and step["state"] in ("rejected", "failed"):
             raise ValueError("该视频任务已明确失败，原run不自动重新生成；需要新的明确授权与方案版本")
         if not step:
+            fresh = self.store.get_job(jid)
+            self._refuse_unreleased(fresh, (fresh.get("payload") or {}).get("plan"))
             from .release_gate import assert_spend_confirmed
-            assert_spend_confirmed(self.store.get_job(jid), self.store.get_project(job["project_id"]))
+            assert_spend_confirmed(fresh, self.store.get_project(job["project_id"]))
             allowed = job.get("payload", {}).get("retry_segment_ids")
             if allowed is not None and spec["id"] not in allowed:
                 raise ValueError("本次只允许重新提交明确失败的片段")

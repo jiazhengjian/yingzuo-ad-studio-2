@@ -199,7 +199,13 @@ def _saved_presenter_job(tmp_path, sheet_metadata):
         "product_constraints": [{"text": "多层切面", "evidence_ids": ["layers"]}],
         "characters": [{"id": "char_host", "name": "讲解人",
                         "description": "创作设定：成年女性，齐肩深色直发，浅灰色家居长袖上衣"}],
-        "speech_mode": "voiceover", "speaker_id": "", "voice_description": "自然普通话"}
+        "speech_mode": "character_dialogue", "speaker_id": "char_host", "voice_description": "自然普通话"}
+    for segment in plan["segments"]:
+        for shot in segment["shots"]:
+            if shot["id"] in ("desk", "detail"):
+                shot["character_ids"] = ["char_host"]
+        for span in segment.get("speech_spans") or []:
+            span["speaker_id"] = "char_host"
     plan["review_status"] = "passed"
     project = store.update_plan(project["id"], plan)
     job = store.create_job(project["id"], "generate", project["revision"], {"pause_for_creative": True})
@@ -290,8 +296,10 @@ def _ready_review(plan):
     spans, shots = [], []
     for segment in plan["segments"]:
         for span in segment.get("speech_spans") or []:
+            mode = (plan.get("production") or {}).get("speech_mode")
             spans.append({"segment_id": segment["id"], "span_id": span["id"], "passed": True,
-                          "speaker_visibility": "not_applicable", "note": "完整台词与当前画面相容。"})
+                          "speaker_visibility": "visible_speaking" if mode == "character_dialogue" else "not_applicable",
+                          "note": "完整台词与当前画面相容。"})
         for shot in segment["shots"]:
             shots.append({"segment_id": segment["id"], "shot_id": shot["id"], "passed": True,
                           "visual_execution": {"verdict": "clear", "source": "description",
