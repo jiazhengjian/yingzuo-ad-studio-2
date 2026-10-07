@@ -6,8 +6,8 @@ import pytest
 from app.ad_script import derive_script_evidence, script_stage_schema
 from app.line_quality import (
     LINE_REWRITE_SYSTEM, apply_brand_claim_collapse, apply_line_rewrite, brand_stack_remaining,
-    collapse_brand_claims, line_offenses, line_style, narration_budget_ok, offending_lines,
-    prepare_script_lines, prepare_speech_draft, product_terms, rewrite_director_if_needed,
+    collapse_brand_claims, drop_stale_story_lines, line_offenses, line_style, narration_budget_ok,
+    offending_lines, prepare_script_lines, prepare_speech_draft, product_terms, rewrite_director_if_needed,
     rewrite_script_if_needed, script_line_offenses, story_explainer_remaining, type_line_score,
     voice_identity_issues,
 )
@@ -745,3 +745,115 @@ def test_blanked_voiceover_pointer_is_scrubbed_from_the_shot():
     assert folded["shots"][1]["description"] == "这一拍不说话，画面停住。"
     assert "快速推近" in folded["shots"][0]["description"]
     assert folded["shots"][0]["description"].endswith("风口对着发尾。")
+
+
+def _cake_story(*lines, shots):
+    return {
+        "ad_script": _lines(*lines),
+        "shots": shots,
+    }
+
+
+def test_a_repeated_cut_line_is_blanked_after_the_cut_has_happened():
+    strategy = typed("scene_story")
+    director = _cake_story(
+        "第一刀归你。", "", "蛋糕第一刀，你来。", "再尝一口。",
+        shots=[
+            {"id": "s1", "coverage": [{"beat_id": "b0", "weight": 1}],
+             "description": "她把刀递过去。",
+             "continuity": {"end_state": "蛋糕还是完整的", "allowed_changes": ""}},
+            {"id": "s2", "coverage": [{"beat_id": "b1", "weight": 1}],
+             "description": "她已经把蛋糕切开。",
+             "continuity": {"end_state": "切开的蛋糕", "allowed_changes": "第一刀已经切下"}},
+            {"id": "s3", "coverage": [{"beat_id": "b2", "weight": 1}],
+             "description": "她看着蛋糕说「蛋糕第一刀，你来。」",
+             "continuity": {"end_state": "盘里还有蛋糕", "allowed_changes": ""}},
+            {"id": "s4", "coverage": [{"beat_id": "b3", "weight": 1}],
+             "description": "她叉起一块。",
+             "continuity": {"end_state": "盘里还有蛋糕", "allowed_changes": ""}},
+        ],
+    )
+    dropped, changed = drop_stale_story_lines(director, strategy)
+    assert changed is True
+    narrations = [beat["narration"] for beat in dropped["ad_script"]["beats"]]
+    assert narrations[0] == "第一刀归你。"
+    assert narrations[2] == ""
+    assert narrations[3] == "再尝一口。"
+    assert "蛋糕第一刀" not in dropped["shots"][2]["description"]
+    again, twice = drop_stale_story_lines(dropped, strategy)
+    assert twice is False
+    assert [beat["narration"] for beat in again["ad_script"]["beats"]] == narrations
+
+
+def test_an_invitation_after_the_action_is_blanked_without_a_matching_earlier_line():
+    strategy = typed("scene_story")
+    director = _cake_story(
+        "先坐下。", "你来切。", "再尝一口。",
+        shots=[
+            {"id": "s1", "coverage": [{"beat_id": "b0", "weight": 1}],
+             "description": "她拉开椅子。", "continuity": {"end_state": "人已经坐下"}},
+            {"id": "s2", "coverage": [{"beat_id": "b1", "weight": 1}],
+             "description": "蛋糕已经切开。", "continuity": {"end_state": "切开的蛋糕"}},
+            {"id": "s3", "coverage": [{"beat_id": "b2", "weight": 1}],
+             "description": "她叉起一块。", "continuity": {"end_state": "盘里还有蛋糕"}},
+        ],
+    )
+    # The cut is on the same shot as 「你来切。」, so that line is not yet late.
+    same_shot, changed = drop_stale_story_lines(director, strategy)
+    assert changed is False
+    assert same_shot["ad_script"]["beats"][1]["narration"] == "你来切。"
+    late = _cake_story(
+        "先坐下。", "", "你来切。",
+        shots=[
+            {"id": "s1", "coverage": [{"beat_id": "b0", "weight": 1}],
+             "description": "她拉开椅子。", "continuity": {"end_state": "人已经坐下"}},
+            {"id": "s2", "coverage": [{"beat_id": "b1", "weight": 1}],
+             "description": "蛋糕已经切开。", "continuity": {"end_state": "切开的蛋糕"}},
+            {"id": "s3", "coverage": [{"beat_id": "b2", "weight": 1}],
+             "description": "她把叉子递过来。", "continuity": {"end_state": "叉子在手里"}},
+        ],
+    )
+    dropped, changed = drop_stale_story_lines(late, strategy)
+    assert changed is True
+    assert [beat["narration"] for beat in dropped["ad_script"]["beats"]] == ["先坐下。", "", ""]
+
+
+def test_a_locked_line_and_the_only_spoken_line_stay():
+    strategy = typed("scene_story")
+    locked = _cake_story(
+        "第一刀归你。", "蛋糕第一刀，你来。",
+        shots=[
+            {"id": "s1", "coverage": [{"beat_id": "b0", "weight": 1}],
+             "description": "她把刀递过去。", "continuity": {"end_state": "蛋糕还是完整的"}},
+            {"id": "s2", "coverage": [{"beat_id": "b1", "weight": 1}],
+             "description": "蛋糕已经切开。", "continuity": {"end_state": "切开的蛋糕"}},
+        ],
+    )
+    kept, changed = drop_stale_story_lines(locked, strategy, ["蛋糕第一刀，你来。"])
+    assert changed is False
+    assert kept["ad_script"]["beats"][1]["narration"] == "蛋糕第一刀，你来。"
+    only = _cake_story(
+        "蛋糕第一刀，你来。",
+        shots=[
+            {"id": "s1", "coverage": [{"beat_id": "b0", "weight": 1}],
+             "description": "蛋糕已经切开。", "continuity": {"end_state": "切开的蛋糕"}},
+        ],
+    )
+    _same, only_changed = drop_stale_story_lines(only, strategy)
+    assert only_changed is False
+    pitch = typed("presenter_pitch")
+    _untouched, pitch_changed = drop_stale_story_lines(locked, pitch)
+    assert pitch_changed is False
+
+
+def test_a_generic_shared_phrase_is_not_treated_as_a_repeat():
+    strategy = typed("scene_story")
+    director = _cake_story(
+        "今天下午茶。", "下午茶见。",
+        shots=[
+            {"id": "s1", "coverage": [{"beat_id": "b0", "weight": 1}], "description": "杯子放上桌。"},
+            {"id": "s2", "coverage": [{"beat_id": "b1", "weight": 1}], "description": "她坐下。"},
+        ],
+    )
+    _same, changed = drop_stale_story_lines(director, strategy)
+    assert changed is False

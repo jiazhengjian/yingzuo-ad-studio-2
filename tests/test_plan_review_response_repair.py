@@ -29,6 +29,31 @@ def test_known_wire_position_is_repaired_without_another_request(progressive_gat
     assert state.calls == ['ad_script', 'storyboard', 'plan_review']
 
 
+def test_a_prop_count_mismatch_is_repaired_before_a_continuity_only_release(progressive_gateway):
+    state = progressive_gateway
+
+    def cherries(director):
+        shots = director["shots"]
+        shots[-2]["continuity"]["end_state"] = "蛋糕上有两颗樱桃"
+        shots[-1]["continuity"]["start_state"] = "蛋糕上剩下一颗樱桃"
+        shots[-1]["continuity"]["entry_transition"] = "cut"
+
+    def only_continuity(review):
+        review["ready"] = False
+        review["execution_check"]["state_continuity"] = False
+
+    state.first_director_mutation = cherries
+    state.first_review_mutation = only_continuity
+    plan = state.run()
+    shots = plan["segments"][-1]["shots"]
+    assert shots[-1]["continuity"]["start_state"] == "蛋糕上有两颗樱桃"
+    assert shots[-2]["continuity"]["end_state"] == "蛋糕上有两颗樱桃"
+    assert plan["plan_review"]["ready"] is False
+    assert plan["plan_review"]["execution_check"]["state_continuity"] is False
+    assert state.calls == ["ad_script", "storyboard", "plan_review"]
+    assert state.phases.count("refining_storyboard") == 0
+
+
 def test_a_continuity_only_failure_is_saved_and_not_reviewed_again(progressive_gateway):
     state = progressive_gateway
 

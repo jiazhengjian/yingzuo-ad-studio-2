@@ -471,10 +471,11 @@ def compile_director(raw, strategy, duration, generation_strategy, asset_ids, lo
     selected = next(d for d in strategy.directions if d.id == strategy.selected_direction_id)
     from .ad_form_playbook import resolve_playbook_form
     structure = selected.film_concept.structure if selected.film_concept is not None else None
+    form = resolve_playbook_form(strategy.brief.ad_form, structure)
     schedule = expression_schedule(script, grouping["durations"],
         beat_groups=grouping["beat_groups"] if generation_strategy == "continuity_v1" else None,
         characters_per_tenth=tenth,
-        ad_form=resolve_playbook_form(strategy.brief.ad_form, structure))
+        ad_form=form)
     segments = []
     used_shots = set()
     for index, reserved in enumerate(schedule):
@@ -521,10 +522,9 @@ def compile_director(raw, strategy, duration, generation_strategy, asset_ids, lo
             "prompt": "\n".join(f"{shot['start']:g}–{shot['end']:g}秒：{shot['description']}" for shot in shots)[:8000],
             "reference_asset_ids": list(asset_ids), "shots": shots, "speech_spans": spans,
             "narration": "".join(span["text"] for span in spans)})
-    from .planning import align_ending_hold, ending_hold_seconds
+    from .planning import align_ending_hold, ending_hold_seconds, fit_story_insert
     from .story_logic import snap_declared_speech
-    hold = ending_hold_seconds(script, resolve_playbook_form(
-        strategy.brief.ad_form, structure))
+    hold = ending_hold_seconds(script, form)
     if hold and segments:
         last_beat = next((beat for beat in reversed(script.beats) if beat.narration), None)
         action = None
@@ -536,9 +536,13 @@ def compile_director(raw, strategy, duration, generation_strategy, asset_ids, lo
             validate_expression_schedule({"segments": segments}, schedule)
         except (ValueError, KeyError, TypeError):
             segments[-1] = original
+    if form == "scene_story" and segments and schedule:
+        fit_story_insert(segments[-1], schedule[-1])
     speech_segments = deepcopy(segments)
     speech_schedule = deepcopy(schedule)
     snapped = snap_declared_speech(segments, schedule)
+    if form == "scene_story" and segments and schedule:
+        fit_story_insert(segments[-1], schedule[-1])
     payload = {"title": draft.title, "ad_script": script.model_dump(),
         "script": narration, "strategy": strategy.model_dump(), "audio_strategy": "native",
         "facts": {"name": strategy.brief.product_name, "claims": [fact.text for fact in strategy.brief.facts]},
@@ -560,6 +564,8 @@ def compile_director(raw, strategy, duration, generation_strategy, asset_ids, lo
             segments = speech_segments
             schedule.clear()
             schedule.extend(speech_schedule)
+            if form == "scene_story" and segments and schedule:
+                fit_story_insert(segments[-1], schedule[-1])
             payload["segments"] = segments
             plan = Plan.model_validate(payload, context={"require_beat_ids": True, "require_directing_contract": True}).model_dump()
             validate_expression_schedule(plan, schedule)
@@ -1300,7 +1306,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     from .beat_timing import script_capacity_budget
     from .line_quality import (
         apply_brand_claim_collapse, brand_stack_remaining, brand_visual_claim_overflow,
-        offending_lines, rewrite_director_if_needed, script_line_offenses,
+        drop_stale_story_lines, offending_lines, rewrite_director_if_needed, script_line_offenses,
         voice_identity_issues,
     )
     from .plan_review import plan_review_schema, lower_failed_plan_verdicts, validate_plan_review
@@ -1502,6 +1508,8 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     clothing_notes_recorded = False
     product_sheet_notes_recorded = False
     last_align_signature = None
+    stale_lines_used = False
+    prop_review_repaired = False
 
     class _PlanAccepted(Exception):
         def __init__(self, plan):
@@ -1837,6 +1845,12 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             if did_fold:
                 raw = folded
                 continue
+            if not stale_lines_used:
+                stale_lines_used = True
+                dropped, did_drop = drop_stale_story_lines(coordinated, strategy, locked)
+                if did_drop:
+                    raw = dropped
+                    continue
             # Per-line jargon stays independent of the strategy. Cross-line craft
             # still sees the ad type, without opening the product-reference check.
             if not jargon_rewrite_used and (
@@ -1926,13 +1940,21 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 craft_accepted = _accept_craft_issue(diagnostic_settings, craft_request) or craft_accepted
             if skip_review:
                 return release(plan)
-            from .story_logic import align_declared_continuity, state_change_warnings, wardrobe_warnings
+            from .story_logic import (
+                align_declared_continuity, repair_prop_handoff, state_change_warnings, wardrobe_warnings,
+            )
             aligned, did_align = align_declared_continuity(coordinated)
-            signature = _continuity_signature(aligned)
-            if did_align and signature != last_align_signature:
-                last_align_signature = signature
-                raw = aligned
-                continue
+            board = aligned if did_align else coordinated
+            repaired, did_prop = repair_prop_handoff(board)
+            if did_align or did_prop:
+                signature = _continuity_signature(repaired)
+                # A pass that rewrites and then lands on the same states is not
+                # compiled again. A pass that still differs from the board in
+                # hand is compiled once more, inside the same cap.
+                if signature != last_align_signature or signature != _continuity_signature(coordinated):
+                    last_align_signature = signature
+                    raw = repaired
+                    continue
             if not state_warnings_recorded:
                 notes = state_change_warnings(plan)
                 if notes:
@@ -2052,8 +2074,18 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             record_failure(plan)
             feedback = review.model_dump(exclude={"reviewed_plan_sha256", "reviewed_reference_asset_ids"})
             issues = _review_issues(feedback, plan)
-            # Declared handoffs are aligned before this review. A remaining
-            # continuity flag is not sent back to the model.
+            # A prop count or presence jump is repaired and compiled again
+            # before this plan can be released. Anything else still is not
+            # sent back to the model.
+            execution = feedback.get("execution_check") if isinstance(feedback, dict) else None
+            if (isinstance(execution, dict) and execution.get("state_continuity") is False
+                    and not prop_review_repaired):
+                from .story_logic import repair_prop_handoff
+                prop_review_repaired = True
+                repaired, did_prop = repair_prop_handoff(coordinated)
+                if did_prop:
+                    raw = repaired
+                    continue
             issues.pop(("execution", "state_continuity"), None)
             if not issues:
                 plan["plan_review"] = review.model_dump()

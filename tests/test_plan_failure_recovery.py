@@ -8,7 +8,7 @@ import pytest
 from app.ad_form import infer_ad_form, needs_ad_form_choice, plain_merchant_text
 from app.db import Store
 from app.line_quality import offending_lines
-from app.planning import ending_hold_seconds, expression_schedule
+from app.planning import ending_hold_seconds, expression_schedule, fit_story_insert
 from app.planning_session import fingerprint
 from app.progressive_planning import compile_director, fallback_director, progressive_plan
 from app.shot_craft import _clauses, shot_prompt_lines, shot_suggestions
@@ -426,6 +426,61 @@ def test_line_focus_stays_a_suggestion(source):
     assert any(item.kind == "line_focus" and item.note.startswith("台词是否对焦商品、前后连贯。")
                for item in attached.suggestions)
     assert attached.reviewed_plan_sha256 == review.reviewed_plan_sha256
+
+
+def _insert_segment(last_start, *, speech_on_last=False):
+    last_end = 20.0
+    segment = {
+        "duration_seconds": 20,
+        "prompt": "old",
+        "shots": [
+            {"id": "s4", "start": 12.0, "end": last_start, "beat_id": "b1", "beat_ids": ["b1"],
+             "description": "她切开蛋糕。"},
+            {"id": "s5", "start": last_start, "end": last_end, "beat_id": "b2", "beat_ids": ["b2"],
+             "description": "蛋糕近景。"},
+        ],
+        "speech_spans": [{
+            "id": "speech_1", "beat_id": "b2" if speech_on_last else "b1",
+            "text": "第一刀归你。", "start": 14.0, "end": 16.5, "shot_ids": ["s5" if speech_on_last else "s4"],
+            "anchors": [{"text": "第一刀归你。", "start": 14.0, "end": 16.5,
+                         "shot_ids": ["s5" if speech_on_last else "s4"], "visual_evidence": "她把刀递过去"}],
+        }],
+    }
+    booked = {"duration_seconds": 20, "groups": [
+        {"beat_id": "b1", "start": 12.0, "end": last_start, "text": "" if speech_on_last else "第一刀归你。",
+         "speech_start": None if speech_on_last else 14.0, "speech_end": None if speech_on_last else 16.5},
+        {"beat_id": "b2", "start": last_start, "end": last_end,
+         "text": "第一刀归你。" if speech_on_last else "",
+         "speech_start": 14.0 if speech_on_last else None, "speech_end": 16.5 if speech_on_last else None},
+    ]}
+    if not speech_on_last:
+        booked["groups"][0]["speech_start"] = 14.0
+        booked["groups"][0]["speech_end"] = 16.5
+    return segment, booked
+
+
+def test_story_insert_closeup_is_pulled_toward_two_seconds():
+    segment, booked = _insert_segment(16.5)
+    assert fit_story_insert(segment, booked) is True
+    assert segment["shots"][0]["start"] == 12
+    assert segment["shots"][0]["end"] == 18
+    assert (segment["shots"][1]["start"], segment["shots"][1]["end"]) == (18, 20)
+    assert booked["groups"][0]["end"] == 18
+    assert booked["groups"][1]["start"] == 18
+    assert segment["speech_spans"][0]["shot_ids"] == ["s4"]
+    assert "18–20秒：蛋糕近景。" in segment["prompt"]
+    assert fit_story_insert(segment, booked) is False
+    short, short_booked = _insert_segment(19)
+    assert fit_story_insert(short, short_booked) is True
+    assert (short["shots"][1]["start"], short["shots"][1]["end"]) == (18, 20)
+    blocked, blocked_booked = _insert_segment(16.5, speech_on_last=True)
+    blocked["speech_spans"][0]["start"] = blocked["speech_spans"][0]["anchors"][0]["start"] = 16.8
+    blocked["speech_spans"][0]["end"] = blocked["speech_spans"][0]["anchors"][0]["end"] = 18.2
+    blocked_booked["groups"][1]["speech_start"] = 16.8
+    blocked_booked["groups"][1]["speech_end"] = 18.2
+    assert fit_story_insert(blocked, blocked_booked) is False
+    assert blocked["shots"][1]["start"] == 16.5
+    assert blocked["shots"][1]["end"] == 20
 
 
 def test_closing_line_keeps_its_budget_before_the_hold():

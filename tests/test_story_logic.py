@@ -13,7 +13,8 @@ from app.picture_rules import action_issues, state_change_issues
 from app.production import required_designs, validate_design_assets
 from app.story_logic import (
     apply_background_rewrite, background_issues, cast_distinction_issues, line_is_punchline,
-    align_declared_continuity, plan_state_references, proof_highlight_issues, rewrite_background_if_needed,
+    align_declared_continuity, plan_state_references, proof_highlight_issues, repair_prop_handoff,
+    rewrite_background_if_needed,
     scrub_story_purposes,     settle_inner_monologue, snap_declared_speech, stamp_background_lines, state_change_warnings,
     state_pairing_issues, story_ending_issues, story_gaze_line, story_plan_issues,
     storyboard_content_failure, wardrobe_warnings, with_background_line,
@@ -586,6 +587,75 @@ def test_a_result_shot_followed_by_a_hard_cut_settles_instead_of_flipping():
     assert again["shots"][1]["continuity"]["end_state"] == "切开的蛋糕"
     third, third_time = align_declared_continuity(again)
     assert third_time is False and third == again
+
+
+def test_a_prop_count_mismatch_is_copied_forward_and_then_settles():
+    board = {"shots": [
+        {"id": "s4", "continuity": {
+            "start_state": "蛋糕还没切", "end_state": "蛋糕上有两颗樱桃",
+            "allowed_changes": "她切下一刀", "entry_transition": "cut"}},
+        {"id": "s5", "continuity": {
+            "start_state": "蛋糕上剩下一颗樱桃", "end_state": "盘中近景",
+            "allowed_changes": "奶油轻轻晃一下", "entry_transition": "cut"}},
+    ]}
+    repaired, changed = repair_prop_handoff(board)
+    assert changed is True
+    assert repaired["shots"][0]["continuity"]["end_state"] == "蛋糕上有两颗樱桃"
+    assert repaired["shots"][1]["continuity"]["start_state"] == "蛋糕上有两颗樱桃"
+    again, twice = repair_prop_handoff(repaired)
+    assert twice is False
+    assert again["shots"][1]["continuity"]["start_state"] == "蛋糕上有两颗樱桃"
+    missing = {"shots": [
+        {"id": "s4", "continuity": {"end_state": "蛋糕上有两颗樱桃", "start_state": "蛋糕上有两颗樱桃"}},
+        {"id": "s5", "continuity": {"start_state": "蛋糕上没有樱桃", "end_state": "盘中近景"}},
+    ]}
+    fixed, did = repair_prop_handoff(missing)
+    assert did is True
+    assert fixed["shots"][1]["continuity"]["start_state"] == "蛋糕上有两颗樱桃"
+    people = {"shots": [
+        {"id": "s4", "continuity": {"end_state": "桌边有两个人", "start_state": "桌边有两个人"}},
+        {"id": "s5", "continuity": {"start_state": "桌边有一个人", "end_state": "桌边有一个人"}},
+    ]}
+    _same, people_changed = repair_prop_handoff(people)
+    assert people_changed is False
+
+
+def test_a_declared_result_shot_keeps_its_opening_when_the_prop_count_differs():
+    board = {"shots": [
+        {"id": "s4", "continuity": {
+            "start_state": "蛋糕上有两颗樱桃", "end_state": "蛋糕上有两颗樱桃", "entry_transition": "cut"}},
+        {"id": "s5", "continuity": {
+            "start_state": "蛋糕上剩下一颗樱桃", "end_state": "蛋糕上剩下一颗樱桃", "entry_transition": "cut"}},
+    ], "state_changes": [_declared("s4", "s5", subject="蛋糕", start="蛋糕上有两颗樱桃", result="蛋糕上剩下一颗樱桃")]}
+    repaired, changed = repair_prop_handoff(board)
+    assert changed is False
+    assert repaired["shots"][1]["continuity"]["start_state"] == "蛋糕上剩下一颗樱桃"
+    aligned, _did_align = align_declared_continuity(board)
+    settled, did_repair = repair_prop_handoff(aligned)
+    assert did_repair is False
+    assert settled["shots"][1]["continuity"]["start_state"] == "蛋糕上剩下一颗樱桃"
+    _again, twice = align_declared_continuity(settled)
+    assert twice is False
+
+
+def test_prop_repair_does_not_restart_the_result_shot_flip():
+    board = {"shots": [
+        {"id": "s1", "continuity": {
+            "start_state": "完整蛋糕", "end_state": "完整蛋糕", "allowed_changes": "她把蛋糕切开",
+            "entry_transition": "opening"}},
+        {"id": "s2", "continuity": {
+            "start_state": "切开的蛋糕", "end_state": "切开的蛋糕", "allowed_changes": "她叉起一小块",
+            "entry_transition": "cut"}},
+        {"id": "s3", "continuity": {
+            "start_state": "盘中近景", "end_state": "盘中近景", "allowed_changes": "奶油轻轻晃一下",
+            "entry_transition": "cut"}},
+    ], "state_changes": [_declared("s1", "s2", subject="蛋糕", start="完整蛋糕", result="切开的蛋糕")]}
+    aligned, _changed = align_declared_continuity(board)
+    repaired, did_repair = repair_prop_handoff(aligned)
+    assert did_repair is False
+    again, twice = align_declared_continuity(repaired)
+    assert twice is False
+    assert again["shots"][1]["continuity"]["end_state"] == "切开的蛋糕"
 
 
 def test_state_references_off_gives_every_character_one_ordinary_sheet(monkeypatch):

@@ -512,6 +512,102 @@ def align_declared_continuity(container):
     return revised, changed
 
 
+_COUNT_WORDS = {
+    "零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+}
+_PROP_COUNT = re.compile(
+    r"(?:剩下|只剩|还有|就剩|仅剩|剩)?([零一两二三四五六七八九十]|\d+)"
+    r"(颗|只|个|枚|块|片|根|支)([\u4e00-\u9fff]{1,4})"
+)
+_PROP_ABSENT = re.compile(
+    r"(?:没有|没了|不见了?)(?:[零一两二三四五六七八九十]|\d+)?"
+    r"(?:颗|只|个|枚|块|片|根|支)?([\u4e00-\u9fff]{1,4})"
+    r"|([\u4e00-\u9fff]{1,4})(?:不见了|没有了|没了)"
+)
+_PROP_SKIP = {"人", "她", "他", "女生", "男生"}
+_PROP_TAIL = set("了的在上里和与放还已")
+
+
+def _clean_prop_noun(noun):
+    if not isinstance(noun, str):
+        return ""
+    while noun and noun[-1] in _PROP_TAIL:
+        noun = noun[:-1]
+    return noun.strip()
+
+
+def _skip_prop_noun(noun):
+    if not noun:
+        return True
+    return noun in _PROP_SKIP or noun.rstrip("们") in _PROP_SKIP
+
+
+def _prop_counts(text):
+    """Count or absence of a prop noun. People are not props."""
+    found = {}
+    if not isinstance(text, str) or not text:
+        return found
+    for match in _PROP_COUNT.finditer(text):
+        noun = _clean_prop_noun(match.group(3))
+        if _skip_prop_noun(noun):
+            continue
+        raw = match.group(1)
+        found[noun] = _COUNT_WORDS[raw] if raw in _COUNT_WORDS else int(raw)
+    for match in _PROP_ABSENT.finditer(text):
+        noun = _clean_prop_noun(match.group(1) or match.group(2))
+        if _skip_prop_noun(noun):
+            continue
+        found[noun] = 0
+    return found
+
+
+def repair_prop_handoff(container):
+    """Copy a prop's end state onto the next shot when the count or presence disagrees.
+
+    A declared result shot keeps the result it was given. The previous shot's
+    ending is not rewritten, so this pass does not trade states with the
+    continuity alignment.
+    """
+    if not isinstance(container, dict):
+        return container, False
+    shots = iter_plan_shots(container)
+    if len(shots) < 2:
+        return container, False
+    kept, _warnings = accepted_state_changes(container, enabled_only=False)
+    order = _shot_order(shots)
+    owned = set()
+    for change in kept:
+        start_i, result_i = order.get(change["start_shot"]), order.get(change["result_shot"])
+        if start_i is None or result_i is None:
+            continue
+        for index in range(start_i + 1, result_i + 1):
+            shot_id = shots[index].get("id")
+            if isinstance(shot_id, str):
+                owned.add(shot_id)
+    edits = []
+    for index in range(len(shots) - 1):
+        current, nxt = shots[index], shots[index + 1]
+        if isinstance(nxt.get("id"), str) and nxt["id"] in owned:
+            continue
+        current_state, next_state = _continuity_of(current), _continuity_of(nxt)
+        if not isinstance(current_state, dict) or not isinstance(next_state, dict):
+            continue
+        end, start = current_state.get("end_state"), next_state.get("start_state")
+        if not isinstance(end, str) or not isinstance(start, str) or not end or end == start:
+            continue
+        left, right = _prop_counts(end), _prop_counts(start)
+        if any(left[noun] != right[noun] for noun in left.keys() & right.keys()):
+            edits.append(index)
+    if not edits:
+        return container, False
+    revised = deepcopy(container)
+    revised_shots = iter_plan_shots(revised)
+    for index in edits:
+        revised_shots[index + 1]["continuity"]["start_state"] = revised_shots[index]["continuity"]["end_state"]
+    return revised, True
+
+
 def state_pairing_issues(container):
     """Pairing is no longer a reason to refuse a plan."""
     return []

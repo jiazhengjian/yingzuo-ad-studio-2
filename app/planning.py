@@ -4,6 +4,7 @@ Rules are local editorial guidance, not live research or proof of ad performance
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Literal
 from itertools import combinations_with_replacement
 import math
@@ -295,6 +296,152 @@ def align_ending_hold(segment, *, silence=2.0, action_seconds=None):
         for anchor in span.get("anchors") or []:
             if isinstance(anchor, dict):
                 anchor["shot_ids"] = list(visible)
+
+
+def _shot_beats(shot):
+    beats = [beat for beat in (shot.get("beat_ids") or []) if isinstance(beat, str) and beat]
+    if not beats and isinstance(shot.get("beat_id"), str) and shot["beat_id"]:
+        beats = [shot["beat_id"]]
+    return beats
+
+
+def _overlapping_shot_ids(shots, start, end):
+    found = []
+    for shot in shots:
+        try:
+            if min(float(shot["end"]), end) - max(float(shot["start"]), start) > 1e-7:
+                found.append(shot["id"])
+        except (TypeError, ValueError, KeyError):
+            continue
+    return found
+
+
+def fit_story_insert(segment, booked=None):
+    """Pull a story insert close-up toward two seconds without changing the film.
+
+    The window is 1.5–2.5 seconds. Only the cut against the previous shot moves.
+    Speech clocks stay put. If the move would leave a line outside its group, or
+    the previous shot cannot give enough time, the segment is left as it was.
+    """
+    shots = segment.get("shots") if isinstance(segment, dict) else None
+    if not isinstance(shots, list) or len(shots) < 2:
+        return False
+    previous, last = shots[-2], shots[-1]
+    try:
+        prev_start = float(previous["start"])
+        last_start, last_end = float(last["start"]), float(last["end"])
+    except (TypeError, ValueError, KeyError):
+        return False
+    length = last_end - last_start
+    if 1.5 - 1e-6 <= length <= 2.5 + 1e-6:
+        return False
+    low = round(prev_start + 0.4, 1)
+    high = round(last_end - 0.4, 1)
+    desired = round(last_end - 2.0, 1)
+    new_start = round(min(max(desired, low), high), 1)
+    new_length = round(last_end - new_start, 1)
+    if new_length < 1.5 - 1e-6 or new_length > 2.5 + 1e-6 or abs(new_start - last_start) < 0.05:
+        return False
+    backup_shots = [(shot.get("start"), shot.get("end")) for shot in shots]
+    backup_spans = deepcopy(segment.get("speech_spans"))
+    had_prompt = "prompt" in segment
+    backup_prompt = segment.get("prompt")
+    groups = booked.get("groups") if isinstance(booked, dict) else None
+    if not isinstance(groups, list):
+        groups = []
+    backup_groups = [(group.get("start"), group.get("end")) for group in groups if isinstance(group, dict)]
+
+    def restore():
+        for shot, bounds in zip(shots, backup_shots):
+            shot["start"], shot["end"] = bounds
+        if backup_spans is None:
+            segment.pop("speech_spans", None)
+        else:
+            segment["speech_spans"] = backup_spans
+        if had_prompt:
+            segment["prompt"] = backup_prompt
+        elif "prompt" in segment:
+            segment.pop("prompt", None)
+        index = 0
+        for group in groups:
+            if isinstance(group, dict):
+                group["start"], group["end"] = backup_groups[index]
+                index += 1
+
+    previous["end"] = new_start
+    last["start"] = new_start
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        owned = [shot for shot in shots if group.get("beat_id") in _shot_beats(shot)]
+        if not owned:
+            restore()
+            return False
+        group["start"] = min(float(shot["start"]) for shot in owned)
+        group["end"] = max(float(shot["end"]) for shot in owned)
+        if group.get("text"):
+            try:
+                speech_start, speech_end = float(group["speech_start"]), float(group["speech_end"])
+            except (TypeError, ValueError, KeyError):
+                restore()
+                return False
+            if speech_start < float(group["start"]) - 0.051 or speech_end > float(group["end"]) + 0.051:
+                restore()
+                return False
+        for key in ("visual_start", "visual_end"):
+            if group.get(key) is None:
+                continue
+            try:
+                mark = float(group[key])
+            except (TypeError, ValueError):
+                restore()
+                return False
+            if mark < float(group["start"]) - 0.051 or mark > float(group["end"]) + 0.051:
+                restore()
+                return False
+    if groups:
+        for shot in shots:
+            expected = [group["beat_id"] for group in groups if isinstance(group, dict)
+                        and min(float(shot["end"]), float(group["end"])) - max(float(shot["start"]), float(group["start"])) > 1e-7]
+            if _shot_beats(shot) != expected:
+                restore()
+                return False
+    for span in segment.get("speech_spans") or []:
+        if not isinstance(span, dict):
+            continue
+        try:
+            span_start, span_end = float(span["start"]), float(span["end"])
+        except (TypeError, ValueError, KeyError):
+            restore()
+            return False
+        visible = _overlapping_shot_ids(shots, span_start, span_end)
+        if not visible:
+            restore()
+            return False
+        span["shot_ids"] = visible
+        for anchor in span.get("anchors") or []:
+            if not isinstance(anchor, dict):
+                continue
+            try:
+                anchor_ids = _overlapping_shot_ids(shots, float(anchor["start"]), float(anchor["end"]))
+            except (TypeError, ValueError, KeyError):
+                restore()
+                return False
+            if not anchor_ids or not set(anchor_ids).issubset(visible):
+                restore()
+                return False
+            anchor["shot_ids"] = anchor_ids
+    if had_prompt or any(isinstance(shot.get("description"), str) for shot in shots):
+        segment["prompt"] = "\n".join(
+            f"{float(shot['start']):g}–{float(shot['end']):g}秒：{shot.get('description') or ''}"
+            for shot in shots)[:8000]
+    if groups and isinstance(booked, dict):
+        try:
+            validate_expression_schedule({"segments": [segment]}, [booked])
+        except (ValueError, KeyError, TypeError):
+            restore()
+            return False
+    return True
 
 
 def validate_expression_schedule(plan, schedule):

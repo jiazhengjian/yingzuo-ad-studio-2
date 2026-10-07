@@ -415,6 +415,53 @@ def _near_duplicate(left, right):
     return short in long and len(long) - len(short) <= 8
 
 
+_GENERIC_SHARES = {"下午茶", "今天", "现在", "这个", "那个", "我们", "他们", "她们"}
+# An invitation to do something, paired with wording that the picture already finished it.
+_STALE_ACTIONS = (
+    (re.compile(r"第一刀|切一刀|你来切|切开|切吧"), re.compile(r"切开|切下|切好|切过|刀口|第一刀")),
+)
+
+
+def _specific_share(left, right):
+    """True when a later line repeats a specific run from an earlier line."""
+    first, second = _spoken_core(left), _spoken_core(right)
+    shorter = min(len(first), len(second))
+    if shorter < 3:
+        return False
+    for size in range(shorter, 2, -1):
+        for index in range(len(first) - size + 1):
+            piece = first[index:index + size]
+            if piece in _GENERIC_SHARES or piece not in second:
+                continue
+            return size / shorter >= 0.5
+    return False
+
+
+def _earlier_picture(shots, beat_id, beat_index, beat_count):
+    indexes = [index for index, shot in enumerate(shots) if beat_id and beat_id in _shot_beat_ids(shot)]
+    if not indexes and shots and beat_count == len(shots) and isinstance(beat_index, int) and 0 <= beat_index < len(shots):
+        indexes = [beat_index]
+    if not indexes:
+        return ""
+    parts = []
+    for shot in shots[:min(indexes)]:
+        if isinstance(shot.get("description"), str):
+            parts.append(shot["description"])
+        continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else {}
+        for key in ("end_state", "allowed_changes"):
+            value = continuity.get(key)
+            if isinstance(value, str):
+                parts.append(value)
+    return "".join(parts)
+
+
+def _invites_finished_action(narration, shots, beat_id, beat_index, beat_count):
+    picture = _earlier_picture(shots, beat_id, beat_index, beat_count)
+    if not picture:
+        return False
+    return any(invite.search(narration or "") and done.search(picture) for invite, done in _STALE_ACTIONS)
+
+
 def _is_question(text):
     stripped = text.strip()
     return "？" in stripped or "?" in stripped or stripped.rstrip("。！! ") .endswith("吗")
@@ -1517,6 +1564,59 @@ def apply_brand_claim_collapse(director, strategy, locked_lines=(), duration_sec
     if not isinstance(director, dict) or _brand_form(strategy) != "brand_tvc":
         return director, False
     return _fold_brand_director(director, locked_lines, duration_seconds)
+
+
+def drop_stale_story_lines(director, strategy, locked_lines=()):
+    """Blank a later story line that repeats an earlier line or invites a finished action.
+
+    The first spoken line stays when nothing earlier already did the action.
+    Locked lines stay. At least one spoken line stays. A blanked quote is
+    removed from the shot that was still saying it.
+    """
+    if not isinstance(director, dict) or _brand_form(strategy) != "scene_story":
+        return director, False
+    script = director.get("ad_script")
+    if not isinstance(script, dict):
+        return director, False
+    beats = [beat for beat in _beats(script) if isinstance(beat, dict)]
+    spoken = [
+        index for index, beat in enumerate(beats)
+        if isinstance(beat.get("narration"), str) and beat["narration"].strip()
+    ]
+    if len(spoken) < 2:
+        return director, False
+    shots = _iter_shots(director)
+    revised = deepcopy(director)
+    revised_beats = [beat for beat in _beats(revised.get("ad_script") or {}) if isinstance(beat, dict)]
+    changed = False
+    for position, index in enumerate(spoken):
+        beat = revised_beats[index]
+        narration = beat.get("narration") or ""
+        if _locked(narration, locked_lines):
+            continue
+        earlier = [revised_beats[earlier_index].get("narration") or "" for earlier_index in spoken[:position]]
+        stale = any(
+            previous.strip() and (_near_duplicate(narration, previous) or _specific_share(narration, previous))
+            for previous in earlier
+        )
+        if not stale and _invites_finished_action(narration, shots, beat.get("id"), index, len(beats)):
+            stale = True
+        if not stale:
+            continue
+        remaining = sum(
+            1 for item in revised_beats
+            if isinstance(item.get("narration"), str) and item["narration"].strip()
+        )
+        if remaining <= 1:
+            continue
+        beat["narration"] = ""
+        changed = True
+    if not changed:
+        return director, False
+    _sync_quoted_narration(revised, script, revised.get("ad_script") or {})
+    if isinstance(revised.get("narration"), str):
+        revised["narration"] = "".join(beat.get("narration") or "" for beat in revised_beats)
+    return revised, True
 
 
 def narration_budget_ok(script: dict, strategy, duration_seconds: int) -> bool:
