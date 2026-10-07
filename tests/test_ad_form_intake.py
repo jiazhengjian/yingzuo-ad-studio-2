@@ -201,7 +201,7 @@ def test_real_acceptance_sequence_through_api_frozen_gateway_and_reopened_store(
     store = app.state.store
     with store._connection(True) as c:
         c.execute("UPDATE projects SET ad_form=NULL, brief=? WHERE id=?",
-                  ("为我的透明玻璃瓶做商品广告，主打瓶身透明，自己用", pid))
+                  ("为我的透明玻璃瓶做商品广告，主打瓶身透明，上班族", pid))
     opening = post_turn(env, client_turn_id="opening").json()["job"]
     store.claim_job(opening["id"])
     store.finish_decision(opening["id"], {"kind": "clarify", "message": "确认主要表达", "questions": [ad_form_question()]})
@@ -484,7 +484,7 @@ def test_actual_gateway_candidate_and_selected_job_inherit_preference(env, monke
     app.state.settings.direction_selection_enabled = True
     with store._connection(True) as c:
         c.execute("UPDATE projects SET cta_target='ai_decide', brief=? WHERE id=?",
-                  ("为我的透明玻璃瓶做商品广告，主打瓶身透明，自己用", pid))
+                  ("为我的透明玻璃瓶做商品广告，主打瓶身透明，上班族", pid))
     job = turn(store, pid, ad_form=form)
     candidate = candidates_for(env)
     raw_brief = candidate.brief.model_dump()

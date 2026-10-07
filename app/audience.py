@@ -1,9 +1,9 @@
-"""Ask who the ad is for, before another scene question takes the slot.
+"""Ask which buyer group the ad is for.
 
-The question is fixed, like the selling point and the destination. It appears
-when the brief never names an audience or a use situation, and the merchant has
-not already answered or skipped it. A free answer is kept as the brief's
-audience so later planning uses the merchant's words.
+The question is fixed, like the selling point. It appears when the brief never
+names a group such as 上班族 or 宝妈, and the merchant has not already answered
+or skipped it. A usage scene or a lead role is not that group. A free answer
+is kept as the brief's audience so later planning uses the merchant's words.
 """
 from __future__ import annotations
 
@@ -12,10 +12,10 @@ import re
 from .highlight import merchant_corpus, merchant_delegated
 
 
+# Buyer groups only. 下午茶 is a scene. 女生主角 is a role. Neither is a group.
 _STATED = re.compile(
-    r"给谁看|拍给谁|观众是|受众是|受众为|目标受众|人群是|人群为|目标人群|适合谁|"
-    r"送给|自用|自己用|自己吃|宝妈|年轻人|上班族|"
-    r"生日聚会|下午茶|送礼|礼物|使用场景|使用情境|什么时候用"
+    r"年轻女性|年轻女生|年轻男性|年轻男生|年轻人|"
+    r"上班族|白领|宝妈|宝爸|学生|大学生|中老年|老年人|儿童|小朋友|家长"
 )
 _DUPLICATE = re.compile(r"给谁看|拍给谁|人群|受众|使用情境|使用场景|什么情境|适合谁")
 _SKIPPED = "暂不确定，请使用谨慎表达"
@@ -31,23 +31,23 @@ AUDIENCE_IDS = frozenset({
 
 
 def audience_examples(text):
-    """Category-shaped examples. The merchant still answers in their own words."""
+    """Category-shaped groups. The merchant still answers in their own words."""
     blob = str(text or "")
     if _FOOD.search(blob):
-        return "例如自己吃、送给别人、生日聚会、下午茶"
+        return "例如上班族、宝妈、学生、年轻人"
     if _APPLIANCE.search(blob):
-        return "例如自己用、送给家人、上班出门前"
+        return "例如上班族、学生、宝妈"
     if _BEAUTY.search(blob):
-        return "例如自己用、送给朋友、出门前"
+        return "例如年轻女性、上班族、学生"
     if _FASHION.search(blob):
-        return "例如自己穿、送给别人、日常出门"
-    return "例如自己用、送给别人、具体场合"
+        return "例如年轻女性、学生、上班族"
+    return "例如年轻女性、上班族、宝妈、学生"
 
 
 def audience_question(text=""):
     return {
         "id": "audience",
-        "prompt": f"这条广告主要拍给谁看、在什么情境下使用？{audience_examples(text)}。",
+        "prompt": f"这条广告主要拍给哪一类人？{audience_examples(text)}。",
         "options": [],
         "allow_custom": True,
         "allow_skip": True,
@@ -55,7 +55,7 @@ def audience_question(text=""):
 
 
 def stated_audience(text):
-    """True when the merchant already named who the ad is for or the use situation."""
+    """True when the merchant named a buyer group. A scene or a lead is not one."""
     return bool(_STATED.search(str(text or "")))
 
 

@@ -251,7 +251,7 @@ def confirmation_message(questions):
     labels = {
         "ad_form": "广告怎么拍",
         "highlight": "最想让观众记住的一点",
-        "audience": "拍给谁看、在什么情境下使用",
+        "audience": "拍给哪一类人",
         "cta_target": "看完去哪里",
     }
     parts = [labels[item["id"]] for item in questions if isinstance(item, dict) and item.get("id") in labels]

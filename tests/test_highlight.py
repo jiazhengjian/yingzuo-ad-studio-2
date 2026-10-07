@@ -25,7 +25,8 @@ def test_a_bare_cake_brief_asks_what_to_remember_instead_of_specs():
     assert "尺寸" not in highlight["prompt"] and "包装" not in highlight["prompt"]
     audience = result["questions"][2]
     assert audience["options"] == [] and audience["allow_skip"] is True
-    assert "拍给谁看" in audience["prompt"] and "生日聚会" in audience["prompt"]
+    assert "哪一类人" in audience["prompt"] and "上班族" in audience["prompt"]
+    assert "下午茶" not in audience["prompt"] and "生日聚会" not in audience["prompt"]
     assert should_ask_cta(project) is True
     assert result["questions"][3]["id"] == "cta_target"
 
@@ -95,16 +96,24 @@ def test_directions_without_a_selling_point_become_a_clarification():
     offered = {"kind": "directions", "message": "三个方向", "directions": [{"id": "d1"}]}
     result = intake_strategy_response(offered, project)
     assert result["kind"] == "clarify"
-    assert [item["id"] for item in result["questions"]] == ["highlight"]
+    assert [item["id"] for item in result["questions"]] == ["highlight", "audience"]
     assert "最想让观众记住" in result["questions"][0]["prompt"]
+    assert "哪一类人" in result["questions"][1]["prompt"] and "上班族" in result["questions"][1]["prompt"]
     assert offered["kind"] == "directions"
-    no_scene = {"ad_form": "scene_story", "cta_target": None, "brief": "我想做一个蛋糕的剧情广告，女生主角。"}
-    both = intake_strategy_response(offered, no_scene)
-    assert [item["id"] for item in both["questions"]] == ["highlight", "audience"]
+    grouped = {"ad_form": "scene_story", "cta_target": None, "brief": "我想做一个蛋糕的剧情广告，给上班族。"}
+    only_highlight = intake_strategy_response(offered, grouped)
+    assert [item["id"] for item in only_highlight["questions"]] == ["highlight"]
     skipped = [{"kind": "clarification", "status": "answered",
                 "questions": [highlight_question(brief)],
                 "answers": [{"question_id": "highlight", "skipped": True}]}]
-    kept = intake_strategy_response(offered, project, gates=skipped)
+    still_open = intake_strategy_response(offered, project, gates=skipped)
+    assert [item["id"] for item in still_open["questions"]] == ["audience"]
+    closed = [{"kind": "clarification", "status": "answered",
+               "questions": [highlight_question(brief), {"id": "audience", "prompt": "哪一类人？", "options": []}],
+               "answers": [
+                   {"question_id": "highlight", "skipped": True},
+                   {"question_id": "audience", "skipped": True}]}]
+    kept = intake_strategy_response(offered, project, gates=closed)
     assert kept["kind"] == "directions"
     delegated = intake_strategy_response(offered, {**project, "brief": brief + "你来定。"})
     assert delegated["kind"] == "directions"
