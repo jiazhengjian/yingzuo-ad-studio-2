@@ -93,6 +93,40 @@ def test_unseen_lipsync_claim_is_sent_only_inside_plan_review():
     assert hits == ["app/skills/ads-video-plan-review/references/plan-review.md"]
 
 
+def test_model_prompts_do_not_keep_a_shorter_brand_duration():
+    from app.ad_script import AD_SCRIPT_STAGE_SYSTEM
+    from app.line_quality import LINE_REWRITE_SYSTEM, line_style
+    from app.planning import FILM_CONCEPT_SYSTEM, STRATEGY_SELECTION_SYSTEM, STRATEGY_SYSTEM
+    from app.progressive_planning import DIRECTOR_SYSTEM, PLAN_REVIEW_SYSTEM
+    from app.speech_draft import SPEECH_DRAFT_SYSTEM
+
+    prompts = {
+        "director": DIRECTOR_SYSTEM,
+        "line_style": line_style("brand_tvc"),
+        "line_rewrite": LINE_REWRITE_SYSTEM,
+        "speech_draft": SPEECH_DRAFT_SYSTEM,
+        "ad_script": AD_SCRIPT_STAGE_SYSTEM,
+        "plan_review": PLAN_REVIEW_SYSTEM,
+        "strategy": STRATEGY_SYSTEM,
+        "strategy_selection": STRATEGY_SELECTION_SYSTEM,
+        "film_concept": FILM_CONCEPT_SYSTEM,
+    }
+    assert "产品片时长和句数按类型 playbook" in prompts["director"]
+    assert "产品片时长和句数按类型 playbook" in prompts["line_style"]
+    assert "时长和句数按类型 playbook" in prompts["line_rewrite"]
+    assert "产品片时长和句数按类型 playbook" in prompts["speech_draft"]
+    for name, text in prompts.items():
+        assert "大约15秒" not in text and "大约 15 秒" not in text, name
+        assert BRAND_SENTENCE_COUNT not in text, name
+    hits = []
+    for path in Path("app").rglob("*"):
+        if path.is_file() and path.suffix in {".py", ".md", ".txt"}:
+            text = path.read_text()
+            if "大约15秒" in text or "大约 15 秒" in text:
+                hits.append(path.as_posix())
+    assert hits == []
+
+
 def test_brand_voiceover_stays_fifteen_to_twenty_seconds_in_one_place():
     context = runtime_skills.stage_skill_context("plan_review", playbook_form="brand_tvc")
     brand = next(item for item in context["shared_references"] if item["id"] == "ad-form-playbook-brand-tvc")
