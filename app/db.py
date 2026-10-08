@@ -1591,6 +1591,9 @@ class Store:
             extra = {"selected_strategy": strategy.model_dump(),
                 "direction_gate_id": gate["id"], "direction_selection_request": body,
                 "inherited_skill_trace": trace or []}
+            follow = (source["payload"].get("decision") or {}).get("model_next_steps")
+            if isinstance(follow, list) and follow:
+                extra["model_next_step"] = list(follow)
             if (spec and spec.get("abandoned") is not True and spec.get("direction_id") == selected.id
                     and isinstance(spec.get("entries"), dict) and spec["entries"]):
                 extra["stage_result_cache"] = copy.deepcopy(spec["entries"])

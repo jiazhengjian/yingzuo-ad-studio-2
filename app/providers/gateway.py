@@ -2081,7 +2081,8 @@ class Gateway:
     async def decide(self, project, assets, messages, gates, current_plan, *, force_plan=False, on_progress=None,
                      selected_strategy=None, inherited_skill_trace=(), on_skill_trace=None,
                      planning_checkpoint=None, on_checkpoint=None, stage_result_cache=None,
-                     stage_cache_sink=None, abandon_check=None, on_planner_stream=None, job_id=None):
+                     stage_cache_sink=None, abandon_check=None, on_planner_stream=None, job_id=None,
+                     model_next_step=None):
         """Resolve intent/choice, then draft -> direct -> independent plan review.
 
         Replies/clarifications cost one request; new choices include one review.
@@ -2442,9 +2443,24 @@ class Gateway:
                 "questions": list(choice.questions),
             }).model_dump()
 
+        from app.early_schedule import (EarlySchedule, NEXT_STEP_FOLLOWUP_SYSTEM, creative_steps,
+            detach_model_schedule, next_step_followup_schema, schedule_from_choice, still_only_speech)
+        strategy_input = selected_strategy
+        stored = schedule_from_choice(model_next_step)
+        if isinstance(selected_strategy, dict):
+            strategy_input = copy.deepcopy(selected_strategy)
+            embedded = detach_model_schedule(strategy_input)
+            if not stored.steps and stored.refused is None:
+                stored = embedded
+        if stored.refused:
+            logger.info("Model named a program-owned step %s; timing, review and spend stay with the program", stored.refused)
+        # clarify/directions go back to the one entry call. They are not a second request after it.
+        use_selected = strategy_input is not None and stored.step not in ("clarify", "directions")
+        seen_schedule = EarlySchedule()
+        ran_entry = False
         try:
-            if selected_strategy is not None:
-                strategy = StrategyRecord.model_validate(selected_strategy)
+            if use_selected:
+                strategy = StrategyRecord.model_validate(strategy_input)
                 if strategy.selection_mode != "merchant_choice":
                     raise ValueError("方向选择续写缺少已确认的用户选择")
                 if "ad_form" in project and strategy.brief.ad_form != project.get("ad_form"):
@@ -2453,6 +2469,7 @@ class Gateway:
                 if not sources:
                     raise ValueError("已选择方向的商品原图不存在")
             else:
+                ran_entry = True
                 request_context = context
                 strategy_started = time.monotonic()
                 strategy_budget = _planner_budget_seconds(self.settings, stage_route(self.settings, "strategy"))
@@ -2479,6 +2496,12 @@ class Gateway:
                         recovery_override["wall"] = None
                         recovery_override["kind"] = None
                     try:
+                        if isinstance(raw, dict):
+                            found = detach_model_schedule(raw)
+                            if found.steps or found.refused:
+                                seen_schedule = found
+                                if found.refused:
+                                    logger.info("Model named a program-owned step %s; timing, review and spend stay with the program", found.refused)
                         if choice_enabled and isinstance(raw, dict):
                             required_ids = missing_clarification_ids(
                                 project, messages, gates, planning_requested=force_plan,
@@ -2592,8 +2615,12 @@ class Gateway:
                         offer_message = "你要求更换创意方向，先前的选择先放下。请从下面三个方向里重新选一个。"
                     else:
                         offer_message = "准备了三个不同的广告方向，选一个后再展开脚本和画面。"
-                    return AgentDecision(kind="directions", message=offer_message,
-                        direction_candidates=candidates, planning_brief=candidates.brief, skill_trace=skill_trace).model_dump()
+                    offered = AgentDecision(kind="directions", message=offer_message,
+                        direction_candidates=candidates, planning_brief=candidates.brief, skill_trace=skill_trace)
+                    follow = [step for step in seen_schedule.steps if step in ("speech", "storyboard")]
+                    if follow:
+                        offered.model_next_steps = follow
+                    return offered.model_dump()
                 if decision.kind != "plan":
                     from app.ad_form import plain_merchant_text
                     questions = []
@@ -2604,6 +2631,7 @@ class Gateway:
                     return AgentDecision(kind=decision.kind, message=plain_merchant_text(decision.message),
                         questions=questions, planning_brief=decision.brief,
                         skill_trace=skill_trace if choice_enabled else None).model_dump()
+            active = seen_schedule if ran_entry else stored
             selected = next(d for d in strategy.directions if d.id == strategy.selected_direction_id)
             from app.ad_form_playbook import speech_profile_for_strategy
             speech = speech_profile_for_strategy(strategy)
@@ -2615,8 +2643,16 @@ class Gateway:
                 and strategy.brief.ad_form == "brand_tvc"
                 and selected.production is not None and selected.production.speech_mode == "voiceover"
                 and selected.film_concept is not None and selected.film_concept.structure == "product_visual")
+            progressive_now = bool(choice_enabled and getattr(self.settings, "progressive_planning_enabled", False))
+            historical = ("storyboard",) if joint_authoring else ("speech", "storyboard")
+            named = creative_steps(active, historical) if progressive_now and (active.steps or active.refused) else None
+            deviate = named is not None and named != historical
+            storyboard_first = bool(deviate and named[0] == "storyboard")
+            speech_without_board = bool(deviate and "speech" in named and "storyboard" not in named and not storyboard_first)
             draft, draft_enum_issues = None, []
-            if speech_only:
+            if storyboard_first:
+                pass
+            elif speech_only:
                 if on_progress:
                     on_progress("writing_script")
                 script_input = speech_draft_context(strategy, duration, initial_brief,
@@ -2625,6 +2661,7 @@ class Gateway:
                 script_input.update(stage="ad_script", draft_format="speech_only",
                     speech_draft_version=SPEECH_DRAFT_VERSION)
                 raw_draft = await stage_call(SPEECH_DRAFT_SYSTEM, script_input, [], max_tokens=4500)
+                detach_model_schedule(raw_draft)
                 if isinstance(raw_draft, dict):
                     raw_draft = prepare_speech_draft(raw_draft, strategy, duration,
                                                      script_input["source_context"]["fixed_speech"])
@@ -2643,11 +2680,12 @@ class Gateway:
                     "merchant_request": merchant_request, "conversation": context["conversation"],
                     "fixed_speech": fixed_speech(initial_brief, context["conversation"], current_plan)}
                 raw_draft = await stage_call(CONTENT_DRAFT_SYSTEM, script_input, [], max_tokens=4500)
+                detach_model_schedule(raw_draft)
                 if isinstance(raw_draft, dict):
                     raw_draft = prepare_script_lines(raw_draft, strategy, duration, script_input["fixed_speech"])
                 draft = validate_content_draft(
                     _normalized_planner_output(ContentDraft, raw_draft), strategy).model_dump()
-            elif not joint_authoring:
+            elif not joint_authoring or (deviate and "speech" in named):
                 # The callback checks cancellation/current revision before another request.
                 if on_progress:
                     on_progress("writing_script")
@@ -2660,6 +2698,7 @@ class Gateway:
                 progressive_handoff = bool(choice_enabled and getattr(self.settings, "progressive_planning_enabled", False))
                 try:
                     raw_draft = await stage_call(AD_SCRIPT_STAGE_SYSTEM if choice_enabled else AD_SCRIPT_SYSTEM, script_input, [], max_tokens=4500)
+                    detach_model_schedule(raw_draft)
                 except (PlannerInvalidResponse, PlannerRequestError, PlannerInterruptedResponse):
                     if not progressive_handoff:
                         raise
@@ -2686,7 +2725,42 @@ class Gateway:
                             draft = None
                         else:
                             draft = copy.deepcopy(raw_draft)
-            if choice_enabled and getattr(self.settings, "progressive_planning_enabled", False):
+            attach_storyboard = True
+            if speech_without_board:
+                # Speech is written and the board is not. Ask once more.
+                # Clarify or directions on that answer are done as named.
+                # A second speech-only answer, a program step, or a blank answer
+                # continues into the storyboard. That miss is not shown.
+                follow_input = {"stage": "strategy", "task_kind": "next_step",
+                    "written": ["speech"], "schema": next_step_followup_schema()}
+                raw_follow = await stage_call(NEXT_STEP_FOLLOWUP_SYSTEM, follow_input, [], max_tokens=800)
+                follow = detach_model_schedule(raw_follow if isinstance(raw_follow, dict) else {})
+                named = None
+                if still_only_speech(follow):
+                    logger.info("Model still named only speech; continuing storyboard in the original order")
+                elif follow.step in ("clarify", "directions"):
+                    named = follow.step
+                elif "clarify" in follow.steps and "storyboard" not in follow.steps:
+                    named = "clarify"
+                elif "directions" in follow.steps and "storyboard" not in follow.steps:
+                    named = "directions"
+                elif "storyboard" in follow.steps:
+                    pass
+                else:
+                    logger.info("Follow-up named %s; continuing storyboard as if only speech was written",
+                        follow.refused or "nothing")
+                if named:
+                    logger.info("Follow-up named %s; doing that step", named)
+                    return await self.decide(
+                        project, assets, messages, gates, current_plan,
+                        force_plan=force_plan, on_progress=on_progress,
+                        selected_strategy=strategy_input if isinstance(strategy_input, dict) else selected_strategy,
+                        inherited_skill_trace=tuple(skill_trace), on_skill_trace=on_skill_trace,
+                        planning_checkpoint=planning_checkpoint, on_checkpoint=on_checkpoint,
+                        stage_result_cache=stage_result_cache, stage_cache_sink=stage_cache_sink,
+                        abandon_check=abandon_check, on_planner_stream=on_planner_stream,
+                        job_id=job_id, model_next_step=named)
+            if choice_enabled and getattr(self.settings, "progressive_planning_enabled", False) and attach_storyboard:
                 self._plan_warning_holder = {
                     "project_id": project.get("id") if isinstance(project, dict) and isinstance(project.get("id"), str) else "",
                     "job_id": job_id if isinstance(job_id, str) else "",
@@ -2702,8 +2776,9 @@ class Gateway:
                     record_failure=record_progressive_failure, strategy=strategy, draft=draft,
                     draft_issues=draft_enum_issues, duration=duration, generation_strategy=generation_strategy,
                     assets=sources, conversation=context["conversation"], merchant_request=merchant_request,
-                    current_plan=current_plan, initial_brief=initial_brief, content_only=lean_enabled,
-                    speech_only=speech_only,
+                    current_plan=current_plan, initial_brief=initial_brief,
+                    content_only=False if storyboard_first else lean_enabled,
+                    speech_only=False if storyboard_first else speech_only,
                     max_refinements=getattr(self.settings, "planner_max_refinements", MAX_PLAN_REFINEMENTS),
                     refinement_format=getattr(self.settings, "planner_refinement_format", "sparse_or_full"),
                     diagnostic_settings=self.settings, cta_target=project_cta_mode(project),
