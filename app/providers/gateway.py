@@ -557,6 +557,10 @@ def save_stage_diagnostic(settings, candidate, stage_result):
     structured = candidate.get("validation_errors") if isinstance(candidate.get("validation_errors"), list) else None
     safe_structured = _safe_validation_errors(structured) if isinstance(structured, list) else []
     code = candidate.get("error_code") if isinstance(candidate.get("error_code"), str) else None
+    nonblocking = candidate.get("nonblocking") is True
+    # A warning with no check text is stored on the plan job, not as a failed model body.
+    if nonblocking and not safe_structured and not reasons:
+        return None
     if isinstance(stage_result, dict):
         if safe_structured:
             stage_result["validation_errors"] = safe_structured
@@ -566,11 +570,22 @@ def save_stage_diagnostic(settings, candidate, stage_result):
                 for text in _owned_check_reasons(reasons)]
         if isinstance(code, str) and re.fullmatch(r"[a-z0-9_]{1,40}", code):
             stage_result["validation_reasons"] = [code]
+    if nonblocking:
+        if safe_structured and isinstance(stage_result, dict) and "raw_output" in stage_result:
+            saved = save_failed_planner_output(settings, stage_result)
+            stage_result["_diagnostic_saved"] = True
+            return saved
+        if reasons:
+            saved = save_check_reasons(settings, reasons, error_code=code, stage_result=stage_result)
+            if isinstance(stage_result, dict):
+                stage_result["_diagnostic_saved"] = True
+            return saved
+        return None
     if stage_result is None:
         if reasons:
             return save_check_reasons(settings, reasons, error_code=code, stage_result=stage_result)
         return None
-    if candidate is not None and not reasons:
+    if not reasons:
         stage_result["validation_candidate"] = copy.deepcopy(candidate)
     if "raw_output" not in stage_result:
         if reasons:

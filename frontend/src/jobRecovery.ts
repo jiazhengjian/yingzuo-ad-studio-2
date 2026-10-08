@@ -115,7 +115,7 @@ export function sanitizeCardText(text?: string): string {
 }
 
 /** Run-log sentence. Internal check wording is not shown to the merchant. */
-export function merchantVisibleError(error?: string): string {
+export function merchantVisibleError(error?: string | null): string {
   const value = (error || '').trim();
   if (!value) return '';
   if (TECHNICAL_CARD.test(value) || INTERNAL_ERROR.test(value)) return SYSTEM_FAILURE_COPY;
