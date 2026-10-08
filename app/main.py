@@ -74,23 +74,87 @@ def attachment_name(asset, path: Path):
     return stem + path.suffix
 
 
-def _plan_review_blocks_regenerate(plan):
+_RELEASED_PLAN = ("passed", "repaired", "conservative_fallback")
+_HELD_PLAN_CODES = {
+    "planning_content_failed",
+    "planning_review_incomplete",
+    "planning_request_limit",
+    "planning_configuration_failed",
+}
+_HARD_GATE_TEXT = re.compile(r"方案检查没有通过|方案检查没通过|这版方案需要重新检查")
+_STORYBOARD_HELD = re.compile(
+    r"背景人物没有跟着床入画|背景人物朝向和前面不一致|剧情卖点没有高光证明镜|"
+    r"状态结果还停在半程|结果状态没有单独的结果镜|结果状态和过程写在同一镜|"
+    r"剧情末镜写成了英雄定格|剧情末镜人物对着镜头举着产品|剧情末镜把家用物品带出了门"
+)
+
+
+def _job_plan(job):
+    payload = job.get("payload") if isinstance(job, dict) and isinstance(job.get("payload"), dict) else {}
+    plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else None
+    return plan
+
+
+def _job_plan_released(job):
+    """This job's own board, including a conservative release with no auto_release record."""
+    plan = _job_plan(job)
     if not isinstance(plan, dict):
         return False
-    if plan.get("review_status") in ("passed", "repaired"):
+    if plan.get("review_status") in _RELEASED_PLAN:
         return True
     return bool(plan.get("auto_release"))
 
 
-def _with_can_regenerate(shown, original, plan):
-    """Button flag only. Review labels stay off the payload the browser receives."""
+def job_can_regenerate(job):
+    """True only when this job's hard gates left no passing version, or it never produced a plan.
+
+    The project's current plan is not this job. An older passed board must not hide
+    the button on a later attempt that did not generate.
+    """
+    if not isinstance(job, dict):
+        return False
+    if job.get("status") not in ("failed", "partial"):
+        return False
+    if job.get("kind") not in ("plan", "generate"):
+        return False
+    progress = job.get("progress") if isinstance(job.get("progress"), dict) else {}
+    code = progress.get("error_code") if isinstance(progress.get("error_code"), str) else ""
+    error = job.get("error") if isinstance(job.get("error"), str) else ""
+    not_produced = (
+        code == "planning_not_produced"
+        or error == "这次没生成出来"
+        or progress.get("structure_retries_exhausted") is True
+        or "规划结果未通过结构校验" in error
+    )
+    hard_miss = code == "release_recheck" or _HARD_GATE_TEXT.search(error) is not None
+    if not_produced or hard_miss:
+        return True
+    if _job_plan_released(job):
+        return False
+    if job.get("kind") != "plan":
+        return False
+    if code in _HELD_PLAN_CODES:
+        return False
+    issues = "".join(item for item in progress.get("issue_summary") or [] if isinstance(item, str))
+    if _STORYBOARD_HELD.search(error + issues):
+        return False
+    if any(token in error for token in ("结构不完整", "未能满足已确认要求", "容量仍未改善")):
+        return False
+    if code == "planning_invalid_response" and ("视频段镜头时轴" in error or "独立旁白方案" in error):
+        return False
+    if code in ("planning_request_failed", "planning_response_interrupted", "planning_invalid_response"):
+        if progress.get("retry_action") == "retry_planning" and progress.get("retryable") is not False:
+            return False
+        return True
+    return not code
+
+
+def _with_can_regenerate(shown, original):
+    """Button flag from this job. Review labels stay off the payload the browser receives."""
     if not isinstance(shown, dict):
         return shown
-    original_progress = original.get("progress") if isinstance(original, dict) and isinstance(original.get("progress"), dict) else {}
     progress = dict(shown.get("progress") or {}) if isinstance(shown.get("progress"), dict) else {}
-    if (_plan_review_blocks_regenerate(plan) or original_progress.get("review_status") in (
-            "passed", "repaired", "auto_release") or original_progress.get("auto_release")):
-        progress["can_regenerate"] = False
+    progress["can_regenerate"] = job_can_regenerate(original if isinstance(original, dict) else {})
     progress.pop("review_status", None)
     progress.pop("plan_review", None)
     progress.pop("auto_release", None)
@@ -99,21 +163,15 @@ def _with_can_regenerate(shown, original, plan):
 
 def public(value):
     if isinstance(value, dict):
-        plan = None
-        project = value.get("project")
-        if isinstance(project, dict) and isinstance(project.get("plan"), dict):
-            plan = project.get("plan")
-        elif isinstance(value.get("plan"), dict) and isinstance(value.get("jobs"), list):
-            plan = value.get("plan")
         original_jobs = value.get("jobs") if isinstance(value.get("jobs"), list) else None
         shown = {k: public(v) for k, v in value.items() if k not in PRIVATE_FIELDS}
         if original_jobs is not None and isinstance(shown.get("jobs"), list):
             shown["jobs"] = [
-                _with_can_regenerate(shown_job, original, plan)
+                _with_can_regenerate(shown_job, original)
                 for shown_job, original in zip(shown["jobs"], original_jobs)
             ]
         elif value.get("kind") in ("plan", "generate", "recompose", "cta"):
-            shown = _with_can_regenerate(shown, value, plan)
+            shown = _with_can_regenerate(shown, value)
         return shown
     if isinstance(value, list):
         return [public(v) for v in value]

@@ -40,6 +40,10 @@ def video_submission_spec(plan, segment, assets=None):
     spec = {**segment, "audio_strategy": plan["audio_strategy"],
             "generation_strategy": plan.get("generation_strategy", "legacy_10s"),
             "closes_film": _segment_closes_film(plan, segment)}
+    from .story_logic import film_scene_shots
+    shared_scene = film_scene_shots(plan, segment)
+    if shared_scene:
+        spec["scene_film_shots"] = shared_scene
     from .ad_form_playbook import LEGACY_TENTH, speech_profile_for_strategy
     strategy = plan.get("strategy") if isinstance(plan, dict) else getattr(plan, "strategy", None)
     tenth = speech_profile_for_strategy(strategy).characters_per_tenth

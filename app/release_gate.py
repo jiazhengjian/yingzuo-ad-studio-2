@@ -358,6 +358,8 @@ _PLAIN_LINE_REASONS = {
     "剧情人物看着镜头": "这句对着镜头说，改成对着戏里的人了",
     "剧情末镜在喊口号或链接": "这句像在喊口号，改得更像一句对话了",
     "声音和广告类型对不上": "声音和这条片子对不上，改成了现在这种说法",
+    "台词重复": "这句前面已经说过，换了个说法",
+    "相邻台词重复": "这句前面已经说过，换了个说法",
 }
 _PLAIN_BLOCK_REASONS = {
     "剧情对白还在说卖点": "这句在剧情里像在推销，上一版还在。",
@@ -380,6 +382,8 @@ def _plain_line_reason(summary):
     text = summary.strip()
     if text in _PLAIN_LINE_REASONS:
         return _PLAIN_LINE_REASONS[text]
+    if "台词重复" in text:
+        return "这句前面已经说过，换了个说法"
     if any(token in text for token in _BLAME_WORDS):
         return "改得更自然了"
     if "堆卖点" in text:
@@ -404,6 +408,29 @@ def _plain_block_reason(findings, *, form_known=True):
     return "这版和上一版对不上，上一版还在。"
 
 
+def _line_was_repeated(plan, line):
+    """True when this spoken line already occurred earlier in the same plan."""
+    if not isinstance(line, str) or not line.strip() or not isinstance(plan, dict):
+        return False
+    try:
+        from .line_quality import _beats, _spoken_core
+    except ImportError:
+        return False
+    core = _spoken_core(line)
+    if len(core) < 2:
+        return False
+    seen = False
+    script = plan.get("ad_script") if isinstance(plan.get("ad_script"), dict) else {}
+    for beat in _beats(script):
+        text = beat.get("narration") if isinstance(beat, dict) else None
+        if not isinstance(text, str) or _spoken_core(text) != core:
+            continue
+        if seen:
+            return True
+        seen = True
+    return False
+
+
 def spoken_repair_message(before, changes):
     """Plain chat line naming each rewritten spoken line and why it changed."""
     findings = []
@@ -413,7 +440,9 @@ def spoken_repair_message(before, changes):
         findings = []
     parts = []
     for old, new in changes:
-        reason = next((item.summary for item in findings if item.line and item.line == old), None)
+        reason = "台词重复" if _line_was_repeated(before, old) else None
+        if reason is None:
+            reason = next((item.summary for item in findings if item.line and item.line == old), None)
         if reason is None and findings:
             reason = findings[0].summary
         because = _plain_line_reason(reason)

@@ -51,17 +51,18 @@ _ASLEEP = re.compile(r"睡着|在睡|睡熟|酣睡|没醒|未醒")
 _AWAKE = re.compile(r"(?<!没)醒了|醒来|已经醒|坐起来")
 _LISTENER_WORDS = ("室友", "同事", "朋友", "旁边的人", "另一个人")
 _ALONE_NOW = re.compile(r"一个人|独自|身旁没有|旁边没有人|没有别人")
+# A named companion opposite her. Bare 坐在对面, 对坐, and 对面…人 do not name anyone.
 _OPPOSITE_COMPANY = re.compile(
     r"(?:朋友|室友|同事).{0,12}(?:坐在对面|坐在对过|对坐|对面)"
-    r"|(?:坐在对面|坐在对过|对坐|对面).{0,12}(?:朋友|室友|同事|人)"
-    r"|坐在对面|对坐"
+    r"|(?:坐在对面|坐在对过|对坐).{0,12}(?:朋友|室友|同事)"
 )
 _CLOSE_UP = re.compile(r"特写|微距|大特写|只拍")
 _HANDS_OR_CAKE = re.compile(r"手|蛋糕")
-_BODY_IN_FRAME = re.compile(r"脸|全身|走|站着|坐着|回头|推|柜子|脚步")
+# 镜头推近 is the camera, not a person pushing something. 往柜子里推 still counts.
+_BODY_IN_FRAME = re.compile(r"脸|全身|走|站着|坐着|回头|(?<!镜头)推|柜子|脚步")
 _INNER_NOTE = "这一场没有醒着的人听，台词改成她自己的内心独白，不对口型。"
 _SHOT_INNER_NOTE = "这一镜没有醒着的人听，台词改成她自己的内心独白，不对口型。"
-_INNER_ACTING = "她放轻脚步，回头看一眼，屏住一点呼吸，表情松一下。这句是她的内心独白，嘴没有动。"
+_INNER_MOUTH = "这句是她的内心独白，嘴没有动。"
 _OPENING_LINE = re.compile(r"开口说(?:第\s*[0-9一二两三四五六七八九十]+\s*句)?")
 _BED = re.compile(r"床|床铺|被窝|枕头")
 _POSE_CARRY = re.compile(
@@ -1479,6 +1480,37 @@ def scene_groups(shots):
     return groups
 
 
+def film_scene_shots(plan, segment):
+    """Shots from the whole film, in order, when this segment is only part of a scene.
+
+    Video generation compiles one segment at a time. Listener checks still need
+    the same scene split as the plan, including a companion who appears in an
+    earlier segment of the same scene. Empty when this segment already is the
+    whole film shot list.
+    """
+    if not isinstance(segment, dict):
+        return []
+    own = [shot for shot in segment.get("shots") or [] if isinstance(shot, dict)]
+    film = iter_plan_shots(plan)
+    own_ids = [shot.get("id") for shot in own]
+    film_ids = [shot.get("id") for shot in film]
+    if not film or film_ids == own_ids:
+        return []
+    copies = []
+    for shot in film:
+        continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else {}
+        entry = continuity.get("entry_transition")
+        copied = {
+            "id": shot.get("id"),
+            "description": shot.get("description") if isinstance(shot.get("description"), str) else "",
+            "character_ids": list(shot.get("character_ids") or []),
+        }
+        if isinstance(entry, str) and entry:
+            copied["continuity"] = {"entry_transition": entry}
+        copies.append(copied)
+    return copies
+
+
 def _hands_or_cake_macro(description):
     """A close-up that only shows hands or cake cannot take a full-body acting cue."""
     text = description if isinstance(description, str) else ""
@@ -1488,11 +1520,16 @@ def _hands_or_cake_macro(description):
 
 
 def _listener_in_shot(production, shot):
-    """True when this shot's own text or cast has someone awake besides the speaker."""
+    """True when this shot's own text or cast has someone awake besides the speaker.
+
+    「一个人」 is read first. A later 「对面没有人」 or 「坐在对面的沙发」 cannot invent a listener.
+    """
     if not isinstance(production, dict) or not isinstance(shot, dict):
         return False
     speaker = production.get("speaker_id")
     text = shot.get("description") if isinstance(shot.get("description"), str) else ""
+    if _ALONE_NOW.search(text):
+        return False
     ids = shot.get("character_ids") if isinstance(shot.get("character_ids"), list) else []
     blobs = []
     named = set()
@@ -1550,16 +1587,17 @@ def awake_listener(production, shots):
 def rewrite_inner_shot(description, speaking):
     """Turn an on-screen speaking cue into private thought. Idempotent.
 
-    A macro that only shows hands or cake does not gain footsteps, a look back,
-    or a held breath. Those actions are not in the frame.
+    Footsteps, a look back, and a held breath are not written in. A close-up
+    of hands or cake, and a wider shot where she is alone, only note that her
+    mouth does not move.
     """
     if not isinstance(description, str):
         return description
     updated = _OPENING_LINE.sub("没有开口", description)
-    if speaking and "放轻脚步" not in updated and not _hands_or_cake_macro(description):
+    if speaking and "嘴没有动" not in updated and "放轻脚步" not in updated:
         if updated and not updated.endswith("。"):
             updated = updated.rstrip() + "。"
-        updated += _INNER_ACTING
+        updated += _INNER_MOUTH
     return updated
 
 
@@ -1591,7 +1629,7 @@ def settle_inner_monologue(plan):
     The whole film still flips when nobody awake is listening. A line said in
     one shot where she is alone does too, even if another shot has someone awake.
     The stored speech mode stays character_dialogue: this is the lead's own voice,
-    not a product-film voiceover. A second call does not stack the acting cue.
+    not a product-film voiceover. A second call does not stack the mouth note.
     """
     if not isinstance(plan, dict) or _form(plan.get("strategy")) != "scene_story":
         return []

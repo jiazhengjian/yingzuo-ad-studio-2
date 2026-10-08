@@ -467,6 +467,28 @@ def test_a_repeated_spoken_line_is_repaired_and_not_handed_to_the_merchant():
     assert "台词重复" not in _focus(replacement["ad_script"], "scene_story", plan=replacement)
 
 
+def test_locked_and_insisted_repeats_are_not_review_failures():
+    from app.plan_review import lower_failed_plan_verdicts
+
+    line = "这块给你。樱桃我留着。"
+    review = {"ready": True, "checks": [{"criterion": "natural_speech", "passed": True}]}
+    base = {"ad_script": _lines(line, line), "segments": [{"speech_spans": [
+        {"beat_id": "b0", "text": line}, {"beat_id": "b1", "text": line}]}]}
+    locked = lower_failed_plan_verdicts(review, {**base, "merchant_locked_lines": [line]})
+    assert locked["ready"] is True
+    assert locked["checks"][0]["passed"] is True
+    insisted = lower_failed_plan_verdicts(review, {**base, "merchant_insisted_lines": [line], "segments": [{
+        "speech_spans": [
+            {"beat_id": "b0", "text": line, "merchant_insisted": True},
+            {"beat_id": "b1", "text": line},
+        ]}]})
+    assert insisted["ready"] is True
+    assert insisted["checks"][0]["passed"] is True
+    open_repeat = lower_failed_plan_verdicts(review, base)
+    assert open_repeat["ready"] is False
+    assert open_repeat["checks"][0]["passed"] is False
+
+
 def test_scene_dialogue_does_not_restate_the_shot():
     """A line that only retells the sleeper already on screen is rewritten once.
 

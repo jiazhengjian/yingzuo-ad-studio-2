@@ -288,9 +288,16 @@ def lower_failed_plan_verdicts(raw, plan):
 
 
 def _plan_repeats_a_spoken_line(plan):
+    """A later copy of the same line. Locked and merchant-insisted lines are not duplicates."""
     try:
         from .line_quality import repeated_spoken_line
-        return repeated_spoken_line(plan)
+        from .release_gate import insisted_lines
+        locked = []
+        if isinstance(plan, dict):
+            for line in list(plan.get("merchant_locked_lines") or []) + list(insisted_lines(plan)):
+                if isinstance(line, str) and line.strip() and line.strip() not in locked:
+                    locked.append(line.strip())
+        return repeated_spoken_line(plan, locked)
     except (TypeError, ValueError, KeyError, ImportError):
         return False
 

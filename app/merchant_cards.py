@@ -36,6 +36,8 @@ _TECHNICAL = re.compile(
     r"\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\b",
     re.IGNORECASE,
 )
+# Model and check wording stays in diagnostics. The merchant does not see it.
+_INTERNAL_BLAME = re.compile(r"没通过|没有通过|方案检查|内容检查|硬门|分镜校验")
 
 # Class 2 sentences. The button label is the action named in the sentence.
 _MERCHANT_RULES = (
@@ -81,7 +83,7 @@ def present_text(text: str, error_code: str | None = None) -> str:
     for pattern, sentence in _MERCHANT_RULES:
         if pattern.search(raw):
             return sentence
-    if _TECHNICAL.search(raw) or not raw.strip():
+    if _TECHNICAL.search(raw) or _INTERNAL_BLAME.search(raw) or not raw.strip():
         return SYSTEM_CARD
     return raw
 

@@ -206,3 +206,23 @@ def test_storyboard_check_writes_the_reason_into_the_diagnostics_file(tmp_path, 
         "stage": "storyboard", "raw_output": {"shots": []},
         "validation_errors": quoted["validation_errors"]})
     assert "missing" in json.loads(kept.read_text())["validation_errors"][0]["msg"]
+
+
+def test_storyboard_diagnostic_keeps_the_error_code_once(tmp_path, settings):
+    from app.progressive_planning import storyboard_check_note
+    from app.providers.gateway import save_stage_diagnostic
+
+    settings.data_root = tmp_path / "data"
+    stage = {"stage": "storyboard", "raw_output": {"shots": [{"id": "s3"}]}}
+    note = storyboard_check_note(ValueError("镜头只能引用已确认的出镜角色"))
+    first = save_stage_diagnostic(settings, note, stage)
+    assert first is not None
+    again = save_stage_diagnostic(settings, {**note, "nonblocking": True}, stage)
+    assert again is None
+    files = list((settings.data_root / "diagnostics").glob("*.json"))
+    assert len(files) == 1
+    saved = json.loads(files[0].read_text())
+    assert saved["validation_reasons"] == ["storyboard_check"]
+    assert saved["validation_errors"][0]["msg"] == "镜头只能引用已确认的出镜角色"
+    assert saved["raw_output"] == {"shots": [{"id": "s3"}]}
+    assert files[0].read_text().count('"s3"') == 1

@@ -14,8 +14,7 @@ export type JobRecovery =
   | { kind: 'retry_failed_segments'; label: '重试失败片段' };
 
 const STORYBOARD_CONTENT = /背景人物没有跟着床入画|背景人物朝向和前面不一致|剧情卖点没有高光证明镜|状态结果还停在半程|结果状态没有单独的结果镜|结果状态和过程写在同一镜|剧情末镜写成了英雄定格|剧情末镜人物对着镜头举着产品|剧情末镜把家用物品带出了门/;
-const HARD_GATE_MISS = /方案检查没有通过|方案检查没通过|这版方案需要重新检查/;
-const STRUCTURE_CHECK = /规划结果未通过结构校验/;
+const INTERNAL_ERROR = /没通过|没有通过|方案检查|内容检查|硬门|分镜校验/;
 
 export function storyboardContentFailure(job?: Job): boolean {
   if (!job) return false;
@@ -23,16 +22,9 @@ export function storyboardContentFailure(job?: Job): boolean {
   return STORYBOARD_CONTENT.test(`${job.error || ''}${issues}`);
 }
 
-/** Hard gates failed and no passing board was left, or the plan was never produced. */
+/** The server already decided this job. Error codes are not a second guess. */
 export function canRegenerate(job: Job): boolean {
-  if (job.progress?.can_regenerate === false) return false;
-  const code = job.progress?.error_code;
-  const error = job.error || '';
-  // Hard gates never cleared, or the plan was never produced. A content failure
-  // stays on the system sentence and does not get this button.
-  if (code === 'planning_not_produced' || code === 'release_recheck' || error === '这次没生成出来' || HARD_GATE_MISS.test(error)) return true;
-  if (job.progress?.structure_retries_exhausted || STRUCTURE_CHECK.test(error)) return true;
-  return false;
+  return job.progress?.can_regenerate === true;
 }
 
 /** A failed request alone is not permission to repeat a provider submission. */
@@ -79,12 +71,7 @@ export function recoveryForJob(job?: Job): JobRecovery | null {
       && job.progress.retry_action === 'retry_planning' && job.progress.retryable !== false) {
       return { kind: 'retry_planning', label: '继续处理' };
     }
-    // A passed board is not a missing plan. The server sends this flag instead of the review label.
-    if (job.progress.can_regenerate === false) {
-      return { kind: 'unavailable' };
-    }
-    // The planning job failed before a board existed.
-    return { kind: 'retry_existing', label: '重新生成' };
+    return { kind: 'unavailable' };
   }
   // A 401 or 402 never accepted a task. After the account is fixed, the same
   // plan and pictures can be submitted again. A rejected request stays blocked.
@@ -120,10 +107,18 @@ export const SYSTEM_FAILURE_COPY = '这是系统问题，已记录；你的方�
 
 const TECHNICAL_CARD = /pydantic|validation|请重新策划|请先重新策划|\b[a-z][a-z0-9]*_[a-z0-9_]+\b/i;
 
-/** Card text only. Field names and validator output stay in the execution log. */
+/** Card text only. Field names, check results, and validator output stay in the log. */
 export function sanitizeCardText(text?: string): string {
   const value = (text || '').trim();
-  if (!value || TECHNICAL_CARD.test(value)) return SYSTEM_FAILURE_COPY;
+  if (!value || TECHNICAL_CARD.test(value) || INTERNAL_ERROR.test(value)) return SYSTEM_FAILURE_COPY;
+  return value;
+}
+
+/** Run-log sentence. Internal check wording is not shown to the merchant. */
+export function merchantVisibleError(error?: string): string {
+  const value = (error || '').trim();
+  if (!value) return '';
+  if (TECHNICAL_CARD.test(value) || INTERNAL_ERROR.test(value)) return SYSTEM_FAILURE_COPY;
   return value;
 }
 
@@ -170,7 +165,7 @@ export function cardMessage(job: Job, recovery: JobRecovery): string {
     return '这次没生成出来';
   }
   if (recovery.kind === 'retry_planning' && storyboardContentFailure(job)) {
-    return '这次分镜没有通过内容检查。继续处理会重新生成分镜，已保存的需求和方向仍保留。';
+    return '分镜这一步已记下。已保存的需求和方向仍保留。';
   }
   if (recovery.kind === 'retry_planning' || recovery.kind === 'unavailable') return SYSTEM_FAILURE_COPY;
   if (/独立旁白方案的声音策略|视频段镜头时轴或素材结构无效/.test(job.error || '')) return SYSTEM_FAILURE_COPY;

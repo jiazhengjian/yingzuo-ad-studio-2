@@ -41,6 +41,12 @@ def test_technical_and_unknown_errors_use_the_system_sentence():
     assert present_exception(RuntimeError("traceback")) == SYSTEM_CARD
 
 
+def test_internal_check_wording_is_not_shown_to_the_merchant():
+    for text in ("方案检查没通过", "这次分镜没有通过内容检查", "分镜校验没有通过", "硬门没有通过"):
+        assert present_text(text) == SYSTEM_CARD
+        assert present_exception(ValueError(text)) == SYSTEM_CARD
+
+
 def test_plain_chinese_provider_text_is_not_replaced():
     text = "部分视频片段生成失败；已保留其他任务与素材，可重试失败片段。"
     assert failure_class(text) == 2

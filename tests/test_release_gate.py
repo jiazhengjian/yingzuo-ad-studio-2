@@ -170,6 +170,19 @@ def test_spoken_line_repair_names_a_plain_reason():
     assert _plain_line_reason("") == "改得更自然了"
 
 
+def test_a_repeated_line_is_explained_as_already_said():
+    from app.release_gate import _plain_line_reason, spoken_repair_message
+
+    story = _strategy("scene_story")
+    line = "这风不吵。"
+    before = _board(story, [line, line], ["她看着桌上的瓶子。", "瓶子还在桌上。"], mode="character_dialogue")
+    note = spoken_repair_message(before, [(line, "你先坐。")])
+    assert "这句前面已经说过，换了个说法" in note
+    assert "像在推销" not in note
+    assert _plain_line_reason("台词重复") == "这句前面已经说过，换了个说法"
+    assert _plain_line_reason("相邻台词重复") == "这句前面已经说过，换了个说法"
+
+
 def test_insisted_line_is_the_only_exemption_and_other_content_still_fails():
     strategy = _strategy("brand_tvc")
     locked_line = "它带负离子，吹完是顺的。这风不吵。"
