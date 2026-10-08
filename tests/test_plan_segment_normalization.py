@@ -206,7 +206,6 @@ def _saved_presenter_job(tmp_path, sheet_metadata):
                 shot["character_ids"] = ["char_host"]
         for span in segment.get("speech_spans") or []:
             span["speaker_id"] = "char_host"
-    plan["review_status"] = "passed"
     project = store.update_plan(project["id"], plan)
     job = store.create_job(project["id"], "generate", project["revision"], {"pause_for_creative": True})
     scene_path = store.media_root / "scene.png"

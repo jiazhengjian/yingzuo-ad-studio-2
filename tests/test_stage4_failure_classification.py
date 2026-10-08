@@ -58,8 +58,9 @@ def test_incomplete_review_is_not_reported_as_content_rejection_or_replayed(run_
     monkeypatch.setattr(Gateway, '_planner_json', malformed)
     before = store.project_detail(pid)
     result = execute()
-    assert result['status'] == 'ready'
-    assert result['payload']['decision']['kind'] == 'plan'
+    assert result['status'] == 'failed'
+    assert result.get('error') == '这次没生成出来'
+    assert result.get('progress', {}).get('error_code') == 'planning_not_produced'
     assert calls == ['ad_script', 'storyboard', 'plan_review', 'plan_review']
     assert 'plan_refinement' not in calls
     after = store.project_detail(pid)

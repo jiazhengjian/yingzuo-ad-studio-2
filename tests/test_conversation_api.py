@@ -57,9 +57,60 @@ def clarify(env):
     return store.pending_gate(env[2]), job
 
 
+def bind_offline_review(plan):
+    """Attach one finished offline review of the plan as it stands now."""
+    from ad_script_fixtures import CRITERIA, execution_check
+    from app.plan_review import validate_plan_review
+    for index, segment in enumerate(plan.get("segments") or []):
+        for shot_index, shot in enumerate(segment.get("shots") or []):
+            shot.setdefault("id", f"shot_{index + 1}_{shot_index + 1}")
+    review = {"policy_version": 1, "suggestions": [], "ready": True, "checks": [
+        {"criterion": item, "passed": True, "note": "明确的离线审核夹具，检查实际画面与台词。"} for item in CRITERIA],
+        "execution_check": execution_check(), "alignment": {"ready": True, "ad_expression_passed": True,
+            "summary": "离线审核夹具，全部实际镜头与时段均已逐项覆盖。", "spans": [],
+            "shots": [{"segment_id": segment["id"], "shot_id": shot["id"], "passed": True,
+                "visual_execution": {"verdict": "clear", "source": "description",
+                    "quote": shot["description"][:240], "explanation": "离线夹具明确审查当前镜头，实际画面与摄影变化相容。"},
+                "temporal_omission": "no_omission", "note": "同一商品保持静置。",
+                "pacing": {"action_seconds_required": min(1, shot["end"] - shot["start"]),
+                    "action_timing_passed": True, "cut_necessity_passed": True, "note": "辨认时间足够，连续观察。"}}
+                for segment in plan["segments"] for shot in segment["shots"]]}}
+    plan["plan_review"] = validate_plan_review(review, plan).model_dump(mode="json")
+    return plan
+
+
 def plan_for(asset_id):
-    return {"title": "商品广告", "script": "透明瓶身，光影之间看见细节。了解这款商品。", "cta": "了解详情", "language": "zh-CN", "aspect_ratio": "9:16", "facts": {"name": "玻璃瓶", "claims": []}, "audio_strategy": "voiceover", "segments": [
-        {"id": f"seg_0{i + 1}", "duration_seconds": 10, "purpose": "展示商品", "prompt": "保持商品真实外观，自然柔光，稳定慢推。", "shots": [{"start": 0, "end": 10, "description": f"缓慢展示第{i + 1}处"}], "reference_asset_ids": [asset_id]} for i in range(2)]}
+    plan = {"title": "商品广告", "script": "透明瓶身，光影之间看见细节。了解这款商品。", "cta": "了解详情", "language": "zh-CN", "aspect_ratio": "9:16", "facts": {"name": "玻璃瓶", "claims": []}, "audio_strategy": "voiceover",
+        "segments": [
+        {"id": f"seg_0{i + 1}", "duration_seconds": 10, "purpose": "展示商品", "prompt": "保持商品真实外观，自然柔光，稳定慢推。",
+         "shots": [{"id": f"shot_{i + 1}", "start": 0, "end": 10, "description": f"缓慢展示第{i + 1}处"}],
+         "reference_asset_ids": [asset_id]} for i in range(2)]}
+    return bind_offline_review(plan)
+
+
+def test_unreviewed_plan_is_not_left_waiting_for_confirmation(env):
+    """A board with no finished plan review is not handed over and cannot be saved as ready."""
+    _, app, pid, asset = env
+    job = post_turn(env).json()["job"]
+    store = app.state.store
+    if store.get_project(pid).get("ad_form") not in ("brand_tvc", "scene_story", "presenter_pitch"):
+        with store._connection(True) as connection:
+            connection.execute("UPDATE projects SET ad_form='brand_tvc' WHERE id=?", (pid,))
+    assert store.claim_job(job["id"])
+    plan = plan_for(asset["id"])
+    plan.pop("plan_review")
+    plan["review_status"] = "conservative_fallback"
+    plan["review_status_note"] = "没有完整的综合检查，硬门已通过"
+    options = [{"id": f"choice_{i}", "label": f"开场{i}", "description": f"以第{i}种构图开场", "segment": copy.deepcopy(plan["segments"][0])} for i in (1, 2)]
+    with pytest.raises(ValueError, match="这次没生成出来"):
+        store.finish_decision(job["id"], {"kind": "plan", "message": "方案已准备好。", "plan": plan, "creative_options": options})
+    project = store.get_project(pid)
+    assert project["status"] != "awaiting_generate"
+    assert project.get("plan") in (None, {})
+    from app.release_gate import images_blocked_reason, settle_before_spend
+    assert images_blocked_reason(plan, project=project)
+    with pytest.raises(ValueError, match="这次没生成出来"):
+        settle_before_spend(plan, project=project, project_id=pid)
 
 
 def ready_plan(env):
@@ -508,7 +559,8 @@ def duration_plan(asset_id, total):
                        shots=[{"start": 0, "end": seconds, "description": f"展示真实商品第{len(plan['segments']) + 1}处"}])
         plan["segments"].append(segment)
         remaining -= seconds
-    return plan
+    plan.pop("plan_review", None)
+    return bind_offline_review(plan)
 
 
 def duration_project(tmp_path, seconds):

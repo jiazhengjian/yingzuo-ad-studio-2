@@ -134,10 +134,10 @@ def test_joint_incomplete_review_stops_without_turning_it_into_content_repair(jo
         review["alignment"]["shots"][0].pop("temporal_omission")
 
     state.first_review_mutation = state.second_review_mutation = incomplete
-    plan = state.run()
-    assert plan["segments"]
-    assert plan.get("plan_review", {}).get("ready") is not True
+    with pytest.raises(ProviderError, match="这次没生成出来"):
+        state.run()
     assert state.calls == ["storyboard", "plan_review", "plan_review"]
+    assert "plan_refinement" not in state.calls
 
 
 @pytest.mark.parametrize("before", [False, True])

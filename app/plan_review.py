@@ -266,6 +266,9 @@ def lower_failed_plan_verdicts(raw, plan):
                         for item in details if isinstance(details, list))) if isinstance(details, list) else False
                 if (isinstance(check, dict) and check.get("passed") is True
                         and (check.get("speaker_visibility") in negative or unclear_shot)):
+                    if (check.get("speaker_visibility") == "off_screen" and not unclear_shot
+                            and _span_is_private_thought(plan, check)):
+                        continue
                     check["passed"] = False
         if (result["alignment"].get("ad_expression_passed") is True
                 and all_speech_explicitly_off_screen(result["alignment"], plan)):
@@ -285,6 +288,15 @@ def lower_failed_plan_verdicts(raw, plan):
     if result.get("ready") is True and failed:
         result["ready"] = False
     return result
+
+
+def _span_is_private_thought(plan, check):
+    """Inner voice may be marked off_screen. Other visibility failures stay."""
+    try:
+        from .story_logic import line_is_private_thought
+        return line_is_private_thought(plan, check.get("segment_id"), check.get("span_id"))
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return False
 
 
 def _plan_repeats_a_spoken_line(plan):

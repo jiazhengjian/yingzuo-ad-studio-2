@@ -142,7 +142,7 @@ def test_fixed_speech_remains_guarded_after_new_handoff(speech_gateway):
     plan = state.run()
     spoken = "".join(beat.get("narration") or "" for beat in plan["ad_script"]["beats"])
     assert line in spoken
-    assert state.calls == ["ad_script", "storyboard"]
+    assert state.calls == ["ad_script", "storyboard", "plan_review"]
     assert line in state.contexts[0]["task"]
     assert state.contexts[1]["fixed_speech"] == [line]
 
@@ -164,7 +164,7 @@ def test_speech_route_does_not_allow_director_to_drop_selected_evidence(speech_g
     state.first_director_mutation = drop
     plan = state.run()
     assert state.calls[0:2] == ["ad_script", "storyboard"]
-    assert "plan_review" not in state.calls
+    assert "plan_review" in state.calls
     assert all(beat.get("evidence_ids") for beat in plan["ad_script"]["beats"])
     assert any("appearance" in beat["evidence_ids"] for beat in plan["ad_script"]["beats"])
 

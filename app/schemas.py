@@ -247,7 +247,7 @@ class Plan(BaseModel):
         description="最终方案的综合审核及服务端内容绑定，历史方案可缺省")
     review_status: Literal["passed", "repaired", "not_ready", "conservative_fallback"] | None = Field(
         default=None, exclude_if=lambda value: value is None,
-        description="终审落点。passed 是一次通过；repaired 是调整后再审通过；not_ready 是硬门没过，不能确认、不能出图；conservative_fallback 是硬门已经通过的保守放行，备注写明综合检查没通过的项，或检查没有做完。没有这个字段的方案不能出图。")
+        description="终审落点。passed 是一次通过；repaired 是调整后再审通过；not_ready 是还不能确认、也不能出图，包括硬门没过，或综合检查没有做完；conservative_fallback 是综合检查已经做完但仍有未通过项，硬门已经通过，只记在后台。没有完整审核结果的方案不能确认，也不能出图。")
     merchant_locked_lines: list[str] = Field(default_factory=list, max_length=12, exclude_if=lambda value: not value,
         description="商家指定后必须原样保留的台词。系统可以重排时间和其余句子，不能改写这些句子。")
     merchant_insisted_lines: list[str] = Field(default_factory=list, max_length=12, exclude_if=lambda value: not value,

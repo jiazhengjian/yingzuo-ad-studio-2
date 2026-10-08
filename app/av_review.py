@@ -387,16 +387,18 @@ def lower_failed_av_verdicts(raw, plan):
         identity = (check.get("segment_id"), check.get("shot_id"))
         window = windows.get(identity) if all(isinstance(part, str) for part in identity) else None
         action_limit = action_limits.get(identity) if window is not None else None
-        if action_limit is not None:
-            window = min(window, action_limit)
+        # The intersection can be a sliver of the shot when a speech reservation
+        # and the cut do not line up. That tighter number must not overturn a
+        # pass once the shot itself is long enough. Only the shot's own length
+        # does. This is not one of the eight hard gates.
         if (pacing.get("action_timing_passed") is True and window is not None
                 and _finite_number(seconds) and seconds >= 0 and seconds > window + 1e-7):
             pacing["action_timing_passed"] = False
             if action_limit is not None:
-                # This is a reproducible numeric contradiction, not an invented
-                # model judgment. Do not fill reasons for other failed opinions.
+                # Reproducible shot length, not an invented model judgment.
+                # Do not fill reasons for other failed opinions.
                 note = (f"程序计算：{identity[1]}动作估计{seconds:g}秒，"
-                        f"实际相交动作窗口并集仅{window:g}秒，超过上限。")
+                        f"镜头实际只有{window:g}秒，超过镜头时长。")
                 if pacing.get("cut_necessity_passed") is True and pacing.get("note") is None:
                     pacing["note"] = note
                 if (check.get("passed") is True and check.get("note") is None
@@ -436,8 +438,21 @@ def validate_av_review(raw: AVReview | dict, plan: Plan | dict, *, require_pacin
     if require_speaker_visibility and any(check.speaker_visibility is None for check in review.spans):
         raise ValueError("新综合审核须逐个语音时段填写说话人画面可见性")
     if plan.production is not None and plan.production.speech_mode == "character_dialogue":
-        if any(check.passed and check.speaker_visibility in negative_speaker_visibility(plan)
-               for check in review.spans):
+        from .story_logic import line_is_private_thought
+        negative = negative_speaker_visibility(plan)
+
+        def visibility_blocks(check):
+            if not check.passed or check.speaker_visibility not in negative:
+                return False
+            # A story line with nobody awake listening is inner voice. The
+            # review may mark that window off_screen after the mouth cue is
+            # rewritten. unclear, mixed and not_applicable still fail.
+            if check.speaker_visibility == "off_screen" and line_is_private_thought(
+                    plan, check.segment_id, check.span_id):
+                return False
+            return True
+
+        if any(visibility_blocks(check) for check in review.spans):
             raise ValueError("人物对白的说话人不可见或可见性不明确时，对应语音时段不能通过")
     if review_speech_requirements(plan)["allows_off_screen"]:
         spans = {(segment.id, span.id): (segment, span)
@@ -470,8 +485,9 @@ def validate_av_review(raw: AVReview | dict, plan: Plan | dict, *, require_pacin
         if actual_shots != expected_shots:
             raise ValueError("音画审稿须恰好覆盖全部实际镜头，包括静音镜头，不得遗漏或引用其他镜头")
         shots = {(segment.id, shot.id): shot for segment in plan.segments for shot in segment.shots}
-        check_action_windows = require_pacing if require_action_windows is None else require_action_windows
-        action_limits = _planned_action_limits(plan.model_dump()) if check_action_windows else {}
+        # Callers still pass require_action_windows. A reservation clipped
+        # inside the shot no longer overturns a pass; the shot length does.
+        _ = require_action_windows
         ordered_shots = list(shots.values())
         positions = {identity: index for index, identity in enumerate(shots)}
         for check in review.shots or []:
@@ -512,10 +528,6 @@ def validate_av_review(raw: AVReview | dict, plan: Plan | dict, *, require_pacin
             if (check.pacing.action_seconds_required > shot.end - shot.start + 1e-7
                     and check.pacing.action_timing_passed):
                 raise ValueError("动作所需时间超过镜头时长，节奏审核不能标为通过")
-            action_limit = action_limits.get((check.segment_id, check.shot_id))
-            if (action_limit is not None and check.pacing.action_seconds_required > action_limit + 1e-7
-                    and check.pacing.action_timing_passed):
-                raise ValueError("动作所需时间超过实际相交动作窗口并集上限，节奏审核不能标为通过")
     return review
 
 

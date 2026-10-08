@@ -171,11 +171,12 @@ def test_presenter_contract_failure_records_the_concrete_check(source):
             return context["draft_storyboard"]
         raise AssertionError(context["stage"])
 
-    asyncio.run(progressive_plan(
-        stage_call=stage_call, on_progress=None, record_failure=recorded.append,
-        strategy=strategy, draft=board["ad_script"], draft_issues=[], duration=15,
-        generation_strategy="continuity_v1", assets=[source], conversation=[],
-        merchant_request="口播", current_plan=None))
+    with pytest.raises(ProgressivePlanningError, match="这次没生成出来"):
+        asyncio.run(progressive_plan(
+            stage_call=stage_call, on_progress=None, record_failure=recorded.append,
+            strategy=strategy, draft=board["ad_script"], draft_issues=[], duration=15,
+            generation_strategy="continuity_v1", assets=[source], conversation=[],
+            merchant_request="口播", current_plan=None))
     reasons = [item for record in recorded if isinstance(record, dict) for item in record.get("failed_reasons") or []]
     assert any("出镜角色" in item for item in reasons)
     errors = [item for record in recorded if isinstance(record, dict) for item in record.get("validation_errors") or []]
