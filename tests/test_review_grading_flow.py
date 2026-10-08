@@ -61,8 +61,8 @@ def test_format_repair_cannot_relabel_a_failure_as_advice(progressive_gateway):
         raw['alignment']['shots'][0].pop('visual_execution')
     state.first_review_mutation = malformed_failure
     state.second_review_mutation = advice  # Supplier attempts to return all true plus an advisory.
-    plan = state.run()
-    assert plan.get('plan_review', {}).get('ready') is not True
+    with pytest.raises(ProviderError, match="这次没生成出来"):
+        state.run()
     assert state.calls == ['ad_script', 'storyboard', 'plan_review', 'plan_review']
     assert state.contexts[-1]['task_kind'] == 'plan_review_response_repair'
 
@@ -85,8 +85,8 @@ def test_live_provider_cannot_reuse_legacy_binding_to_omit_grading(progressive_g
         assert plan['plan_review']['policy_version'] == REVIEW_POLICY_VERSION
     else:
         state.second_review_mutation = legacy
-        plan = state.run()
-        assert plan.get('plan_review', {}).get('ready') is not True
+        with pytest.raises(ProviderError, match="这次没生成出来"):
+            state.run()
     assert state.calls == ['ad_script', 'storyboard', 'plan_review', 'plan_review']
     assert state.contexts[-1]['final_plan'] == state.contexts[-2]['final_plan']
     assert state.contexts[-1]['previous_review'] == old_records[0]

@@ -647,15 +647,12 @@ def _plan_duration(plan):
     return total or None
 
 
-def images_blocked_reason(plan, *, strategy=None, project=None):
-    """The only decision before image or video spend. None means it may start.
+def _gates_block_spend(plan, *, strategy=None, project=None):
+    """Eight hard gates and a known ad type. None means those gates are clear.
 
-    The stored label is ignored. Planning wrote passed, repaired, or
-    conservative_fallback earlier; a later edit or an older saved board can
-    change the words while leaving that label. This check runs the eight hard
-    gates and the placeholder check again. Merchant-insisted lines, already
-    recorded on the plan, are the only exemption. The ad type is the plan's
-    own type, then the project's. auto does not count. No concrete type blocks.
+    This does not ask whether plan_review finished. Callers that only need a
+    board to review use this. Spending and merchant confirmation use
+    images_blocked_reason, which also requires a finished review.
     """
     if not isinstance(plan, dict):
         return SPEND_RECHECK
@@ -664,6 +661,75 @@ def images_blocked_reason(plan, *, strategy=None, project=None):
     findings = evaluate_release_table(
         plan, strategy, exempt_lines=insisted_lines(plan), project=project)
     if findings:
+        return SPEND_RECHECK
+    return None
+
+
+def review_is_complete(plan):
+    """True when plan_review finished, whether it passed or failed.
+
+    A missing, cut-off, or errored record is not a finished review. Hard gates
+    passing do not fill that in. The shape matches the record the plan schema
+    keeps: check list, execution check, and alignment.
+
+    Older boards finished script_review and alignment_review instead. A ready
+    alignment still counts for those boards. It does not stand in for a
+    plan_review that is present but unfinished.
+    """
+    review = _review_record(plan)
+    if isinstance(review, dict):
+        from .plan_review import review_record_incomplete
+        if review_record_incomplete(review):
+            return False
+        if review.get("ready") is True and review.get("checks"):
+            return True
+        return _review_ran_and_failed(review)
+    if not isinstance(plan, dict):
+        return False
+    alignment = plan.get("alignment_review")
+    script = plan.get("script_review")
+    if isinstance(alignment, dict) and alignment.get("ready") is True:
+        if script is None or (isinstance(script, dict) and script.get("ready") is True):
+            return True
+    return False
+
+
+def _unreviewed_release_claim(plan):
+    """A new-flow label or a broken plan_review, with no finished review behind it.
+
+    A board that never carried a review label is an older saved plan. Hard
+    gates still decide that one. Passed, repaired, or conservative_fallback
+    without a finished review is the case that was handed to the merchant.
+    """
+    if not isinstance(plan, dict) or review_is_complete(plan):
+        return False
+    if plan.get("plan_review") is not None:
+        return True
+    status = plan.get("review_status")
+    if status in ("passed", "repaired", "conservative_fallback"):
+        return True
+    note = plan.get("review_status_note")
+    return status == "not_ready" and isinstance(note, str) and "没有完整的综合检查" in note
+
+
+def images_blocked_reason(plan, *, strategy=None, project=None):
+    """The only decision before image or video spend. None means it may start.
+
+    The stored label is ignored for the eight hard gates. Planning wrote
+    passed, repaired, or conservative_fallback earlier; a later edit or an
+    older saved board can change the words while leaving that label. This
+    check runs the eight hard gates and the placeholder check again.
+    Merchant-insisted lines, already recorded on the plan, are the only
+    exemption. The ad type is the plan's own type, then the project's. auto
+    does not count. No concrete type blocks.
+
+    A hard-gate pass does not finish plan_review. A release label or a
+    review record with no finished result does not spend.
+    """
+    blocked = _gates_block_spend(plan, strategy=strategy, project=project)
+    if blocked:
+        return blocked
+    if _unreviewed_release_claim(plan):
         return SPEND_RECHECK
     return None
 
@@ -777,7 +843,7 @@ def choose_hard_gate_release(candidates, *, strategy=None, project=None):
     for plan in candidates or ():
         if not isinstance(plan, dict):
             continue
-        if images_blocked_reason(plan, strategy=strategy or plan.get("strategy"), project=project):
+        if _gates_block_spend(plan, strategy=strategy or plan.get("strategy"), project=project):
             continue
         rank = review_issue_rank(plan)
         if best is None or rank <= best_rank:
@@ -905,6 +971,12 @@ def settle_before_spend(plan, *, strategy=None, project=None, project_id=None, d
     form = _form_of(strategy, plan, project)
     if form is None:
         raise ValueError(SYSTEM_CARD)
+    if _gates_block_spend(plan, strategy=strategy, project=project) is None:
+        # Gates are clear. A release label or a broken review is not replaced
+        # with another board the review never saw.
+        if _unreviewed_release_claim(plan):
+            raise NotProduced(NOT_PRODUCED_CARD)
+        return plan
     if images_blocked_reason(plan, strategy=strategy, project=project) is None:
         return plan
     repaired = local_hard_gate_repair(plan, strategy, project)
@@ -972,12 +1044,22 @@ def stamp_honest_label(plan, strategy=None, *, repairs=0, project=None):
         plan.pop("review_status_note", None)
         return plan["review_status"]
     kept = plan.get("review_status_note") if plan.get("review_status") == "conservative_fallback" else None
-    plan["review_status"] = "conservative_fallback"
-    if isinstance(kept, str) and kept not in _OLD_INCOMPLETE_NOTES:
-        plan["review_status_note"] = kept
-    else:
-        plan["review_status_note"] = conservative_fallback_note(plan)
-    return "conservative_fallback"
+    if _review_ran_and_failed(review):
+        plan["review_status"] = "conservative_fallback"
+        if isinstance(kept, str) and kept not in _OLD_INCOMPLETE_NOTES:
+            plan["review_status_note"] = kept
+        else:
+            plan["review_status_note"] = conservative_fallback_note(plan)
+        return "conservative_fallback"
+    # A review record that did not finish, or a label that already claimed a
+    # release, is not a merchant release. An older board with neither stays
+    # unlabeled; the hard gates are what decide it.
+    if plan.get("plan_review") is not None or plan.get("review_status") in (
+            "passed", "repaired", "conservative_fallback"):
+        plan["review_status"] = "not_ready"
+        plan["review_status_note"] = _INCOMPLETE_REVIEW_NOTE
+        return "not_ready"
+    return None
 
 
 def classify_release(plan, strategy=None, *, locked_lines=(), insisted_lines_=(), project=None):
@@ -1168,6 +1250,25 @@ def changed_lines(previous, submitted):
     return [line for line in gather(submitted) if line not in before]
 
 
+def _keep_review_that_still_matches(plan, previous):
+    """Keep the stored review when this edit did not change the reviewed film.
+
+    A review typed in by the client is already gone. Only the review saved on
+    the previous plan can come back, and only when it still names this film.
+    """
+    if not isinstance(plan, dict) or not isinstance(previous, dict):
+        return
+    review = previous.get("plan_review")
+    if not review_is_complete({"plan_review": review}):
+        return
+    try:
+        from .plan_review import validate_plan_review
+        bound = validate_plan_review(review, plan)
+    except (ValueError, KeyError, TypeError):
+        return
+    plan["plan_review"] = bound.model_dump(mode="json")
+
+
 def _strip_client_review(plan):
     """Drop review labels and insist markers the client is not allowed to set."""
     plan.pop("review_status", None)
@@ -1227,7 +1328,13 @@ def settle_manual_edit(previous, submitted, duration, strategy=None, project=Non
                 why = why.replace("，上一版还在。", "").replace("上一版还在。", "")
             parts.append(f"「{item.line}」{why}")
         return None, ("；".join(parts) + "。可以让系统改写，你自己改一句，或在对话里说就按这句来。")[:500]
+    had_review = isinstance(previous, dict) and review_is_complete(previous)
+    _keep_review_that_still_matches(plan, previous)
     status = stamp_honest_label(plan, strategy, project=project)
+    if had_review and not review_is_complete(plan) and not findings:
+        return None, "这版还没检查完，先不给你确认。"
+    if _unreviewed_release_claim(plan) and not findings:
+        return None, "这版还没检查完，先不给你确认。"
     if status == "not_ready" or images_blocked_reason(plan, strategy=strategy, project=project):
         known = _form_of(_strategy_of(plan, strategy), plan, project) is not None
         return None, _plain_block_reason(findings, form_known=known)
@@ -1425,16 +1532,16 @@ def conservative_usable_plan(strategy, duration, generation_strategy, asset_ids,
         _ask_to_keep(missing, "这句放不进现在的保守方案")
     plan["merchant_locked_lines"] = list(locked)
     mark_insisted_lines(plan, [line for line in insisted if line in spoken])
-    plan["review_status_note"] = "硬门没有通过，已换成一份能通过检查的保守方案。这条已记下。"
     plan.pop("review_status", None)
+    plan.pop("review_status_note", None)
     plan.pop("plan_review", None)
+    plan.pop("auto_release", None)
     kind, findings = classify_release(plan, aligned, locked_lines=locked, insisted_lines_=insisted)
     if kind == "ask":
         choice = line_gate_questions(findings)
         if choice is not None:
             raise choice
-    status = stamp_honest_label(plan, aligned)
-    if status != "conservative_fallback" or images_blocked_reason(plan, strategy=aligned):
+    if _gates_block_spend(plan, strategy=aligned):
         return None
     return plan
 
@@ -1489,6 +1596,9 @@ def finalize_unlabeled_plan(plan, strategy=None, *, repairs=0, conservative=None
         plan = None
     if plan is not None:
         return plan
-    if conservative is None:
+    if conservative is None or images_blocked_reason(conservative, strategy=strategy, project=project):
         return None
-    return conservative if images_blocked_reason(conservative, strategy=strategy, project=project) is None else None
+    # A substitute the review never finished is not handed to the merchant.
+    if not review_is_complete(conservative):
+        return None
+    return conservative

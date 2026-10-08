@@ -3039,7 +3039,8 @@ class Gateway:
                     note="策划回复没有收完，硬门已经核对过上一稿。这条已记下。")
             except MerchantLineChoice as choice:
                 return _line_choice_decision(choice)
-            if shown is None:
+            from app.release_gate import review_is_complete
+            if shown is None or not review_is_complete(shown):
                 raise
             brief = shown.get("strategy", {}).get("brief") if isinstance(shown.get("strategy"), dict) else None
             decision = {
@@ -3063,7 +3064,8 @@ class Gateway:
                         note="上一稿的检查对不上这一稿，已按硬门重新核对。这条已记下。")
                 except MerchantLineChoice as choice:
                     return _line_choice_decision(choice)
-                if rebound is None:
+                from app.release_gate import review_is_complete
+                if rebound is None or not review_is_complete(rebound):
                     raise
                 decision["plan"] = rebound
                 return AgentDecision.model_validate(decision, context={"require_shot_narration": True}).model_dump()
@@ -3083,7 +3085,8 @@ class Gateway:
                         asset_ids=[item["id"] for item in sources], cta_target=project_cta_mode(project),
                         project=project,
                         note="综合检查没有完成，已按硬门核对留下可用分镜。这条已记下。")
-                    if shown is None:
+                    from app.release_gate import review_is_complete
+                    if shown is None or not review_is_complete(shown):
                         raise ValueError("no usable plan")
                     brief = shown.get("strategy", {}).get("brief") if isinstance(shown.get("strategy"), dict) else None
                     return AgentDecision.model_validate({

@@ -680,10 +680,10 @@ def test_incomplete_independent_reviews_never_release_or_invent_passes(progressi
         elif missing == "shot": value["alignment"]["shots"].pop()
         elif missing == "span": value["alignment"]["spans"].pop()
         else: value["alignment"]["shots"][0].pop("pacing")
-    state.first_review_mutation = state.second_review_mutation = mutate
-    plan = state.run()
-    assert plan.get("plan_review", {}).get("ready") is not True
-    assert state.calls == ["ad_script", "storyboard", "plan_review", "plan_review"]
+    state.first_review_mutation = state.second_review_mutation = state.third_review_mutation = mutate
+    with pytest.raises(ProviderError, match="这次没生成出来"):
+        state.run()
+    assert "plan_review" in state.calls
 
 
 def test_unknown_fact_stops_before_review_or_refinement(progressive_gateway):
@@ -969,7 +969,8 @@ def test_voice_identity_mixup_is_not_marked_ready(progressive_gateway):
     from app.release_gate import images_blocked_reason
     assert images_blocked_reason(plan, strategy=plan.get("strategy")) is None
     assert plan["production"]["speech_mode"] != "character_dialogue"
-    assert "plan_review" not in state.calls
+    assert "plan_review" in state.calls
+    assert plan["plan_review"]["ready"] is True
 
 
 def test_presenter_voiceover_is_not_marked_ready(progressive_gateway):
@@ -981,7 +982,8 @@ def test_presenter_voiceover_is_not_marked_ready(progressive_gateway):
     from app.release_gate import images_blocked_reason
     assert images_blocked_reason(plan, strategy=plan.get("strategy")) is None
     assert plan["production"]["speech_mode"] != "voiceover"
-    assert "plan_review" not in state.calls
+    assert "plan_review" in state.calls
+    assert plan["plan_review"]["ready"] is True
 
 
 def test_story_voiceover_is_planned_as_the_leads_own_voice(progressive_gateway):
@@ -1173,10 +1175,10 @@ def test_stacked_brand_voiceover_is_not_marked_ready_when_it_cannot_be_rewritten
     plan = state.run()
     from app.release_gate import images_blocked_reason
     assert images_blocked_reason(plan, strategy=plan.get("strategy")) is None
-    assert plan["review_status"] == "conservative_fallback"
+    assert plan["plan_review"]["ready"] is True
     spoken = "".join(beat.get("narration") or "" for beat in (plan.get("ad_script") or {}).get("beats") or [])
     assert "负离子" not in spoken and "不吵" not in spoken
-    assert "plan_review" not in state.calls
+    assert "plan_review" in state.calls
 
 
 def test_planner_jargon_is_rewritten_once_before_review(progressive_gateway):
@@ -1282,10 +1284,9 @@ def test_incomplete_review_record_returns_the_compiled_plan(progressive_gateway)
         value["ready"] = True
 
     state.first_review_mutation = state.second_review_mutation = state.third_review_mutation = incomplete
-    plan = state.run()
-    assert plan["segments"]
-    assert plan.get("plan_review", {}).get("ready") is not True
-    assert "看这里" not in "".join(beat.get("narration") or "" for beat in plan["ad_script"]["beats"])
+    with pytest.raises(ProviderError, match="这次没生成出来"):
+        state.run()
+    assert "plan_review" in state.calls
 
 
 def test_inner_voice_is_already_rewritten_when_the_plan_is_reviewed(progressive_gateway):
@@ -1323,8 +1324,6 @@ def test_review_with_no_content_keeps_the_compiled_plan(progressive_gateway):
     state.empty_stage = "plan_review"
     state.empty_finish = "length"
     state.empty_forever = True
-    plan = state.run()
-    assert [item["stage"] for item in state.contexts].count("plan_review") == 2
-    assert plan["segments"]
-    assert plan.get("plan_review", {}).get("ready") is not True
-    assert "看这里" not in "".join(beat.get("narration") or "" for beat in plan["ad_script"]["beats"])
+    with pytest.raises(ProviderError, match="这次没生成出来"):
+        state.run()
+    assert [item["stage"] for item in state.contexts].count("plan_review") >= 1

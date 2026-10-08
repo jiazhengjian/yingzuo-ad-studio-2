@@ -1195,7 +1195,8 @@ def _shrink_overlong_narration(draft, strategy, locked=()):
 
 def _reraise_terminal(error):
     """Credentials, cancellation and a changed revision still leave the job."""
-    if error.__class__.__name__ in ("StaleRevision", "PlanningSessionError", "PlannerConfigurationError"):
+    if error.__class__.__name__ in (
+            "StaleRevision", "PlanningSessionError", "PlannerConfigurationError", "MediaCanceled"):
         raise error
 
 
@@ -1530,7 +1531,98 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             locked if keep_locked else (), cta_target,
             insisted_lines_=insisted if keep_locked else ())
 
-    def release(plan):
+    async def _ensure_review(plan):
+        """Run plan_review once when this board has no finished review.
+
+        Content repair stays at the existing cap. This call does not spend a
+        repair round. A still-missing result leaves the plan unlabeled.
+        """
+        nonlocal review_response_repair_used
+        from .release_gate import review_is_complete
+        # The main loop already ran plan_review and its one record repair.
+        # This catch-up is only for a release that never reached that stage.
+        if not isinstance(plan, dict) or review_is_complete(plan) or review_attempted:
+            return
+        try:
+            review_input = saved_plan_review_request(plan)
+        except (ValueError, KeyError, TypeError, ValidationError):
+            record_failure({"nonblocking": True, "message": "综合检查没有补上",
+                            "issues": ["plan_review"], "error_code": "planning_review_incomplete"})
+            return
+        review_input["merchant_request"] = merchant_request
+        review_input["conversation"] = conversation
+        review_input["fixed_speech"] = locked
+        progress("reviewing_plan")
+        try:
+            raw_review = await stage_call(PLAN_REVIEW_SYSTEM, review_input, [])
+        except Exception as error:
+            _reraise_terminal(error)
+            record_failure({"nonblocking": True, "message": type(error).__name__, "issues": ["plan_review"]})
+            return
+        review_rounds = 0
+        while True:
+            review_rounds += 1
+            if review_rounds > 3:
+                record_failure({"nonblocking": True, "message": "综合检查记录不完整或无效",
+                                "issues": ["plan_review"], "error_code": "planning_review_incomplete"})
+                return
+            try:
+                from .plan_review import PlanReview, normalize_plan_review_wire
+                from .planner_recovery import drop_extra_forbidden, unwrap_planner_object
+                if isinstance(raw_review, dict):
+                    raw_review = normalize_plan_review_wire(unwrap_planner_object(raw_review))
+                    raw_review = drop_extra_forbidden(PlanReview, raw_review)
+                lowered_review = lower_failed_plan_verdicts(raw_review, plan)
+                review = validate_plan_review(lowered_review, plan,
+                                              require_speaker_visibility=True, require_temporal_omission=True,
+                                              require_temporal_omission_evidence=True, require_visual_execution=True,
+                                              require_review_policy=True)
+                break
+            except (ValueError, KeyError, TypeError) as error:
+                from .plan_review import diagnostic_sentence
+                sentence = diagnostic_sentence(error)
+                record_failure({"message": "综合检查记录无效",
+                                "failed_reasons": [sentence] if sentence else ["综合检查记录无效"],
+                                "error_code": "plan_review"})
+                if review_response_repair_used:
+                    return
+                review_response_repair_used = True
+                correction = {**deepcopy(review_input), "task_kind": "plan_review_response_repair",
+                    "previous_review": deepcopy(raw_review),
+                    "validation_feedback": review_validation_feedback(error),
+                    "repair_instruction": "修正上一份审核记录的结构、缺项或覆盖范围，返回完整审核JSON。审核对象final_plan保持原样，不生成改稿。所有已有明确失败项必须保留，不得为了修正格式把失败改成通过；补全漏审项，并使汇总结论与逐项结论一致。"}
+                progress("reviewing_plan")
+                try:
+                    corrected_review = await stage_call(PLAN_REVIEW_SYSTEM, correction, [])
+                except Exception as error:
+                    _reraise_terminal(error)
+                    record_failure({"nonblocking": True, "message": type(error).__name__, "issues": ["plan_review"]})
+                    return
+                try:
+                    preserve_review_rejections(raw_review, corrected_review, plan)
+                except (ValueError, KeyError, TypeError) as error:
+                    from .plan_review import diagnostic_sentence
+                    sentence = diagnostic_sentence(error) or "综合检查记录无效"
+                    record_failure({"message": "综合检查记录无效", "failed_reasons": [sentence],
+                                    "error_code": "plan_review"})
+                    return
+                raw_review = corrected_review
+        plan["plan_review"] = review.model_dump()
+        remember(plan, review)
+
+    async def _with_review(plan):
+        from .release_gate import review_is_complete
+        if not skip_review:
+            await _ensure_review(plan)
+            if not review_is_complete(plan):
+                from .merchant_cards import NOT_PRODUCED_CARD
+                raise ProgressivePlanningError(
+                    NOT_PRODUCED_CARD, issue_summary=[NOT_PRODUCED_CARD],
+                    repair_attempts=repairs, error_code="planning_not_produced")
+        _label_for_release(plan)
+        return _hand(plan)
+
+    async def release(plan):
         from .release_gate import classify_release
         from .story_logic import settle_inner_monologue
         if not isinstance(plan, dict):
@@ -1542,9 +1634,8 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             if is_degenerate_plan(plan):
                 chosen = _release_best()
                 if chosen is not None:
-                    return _hand(chosen)
-            _label_for_release(plan)
-            return _hand(plan)
+                    return await _with_review(chosen)
+            return await _with_review(plan)
         # The mouth rewrite already happened before review. Running it again
         # is idempotent, and the hard gates then see the same wording. A
         # rewrite that no longer validates is put back, so release does not
@@ -1576,15 +1667,8 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             chosen = _release_best()
             if chosen is None:
                 unfinished_board()
-            return _hand(chosen)
-        _label_for_release(plan)
-        from .release_gate import images_blocked_reason as decide
-        if decide(plan, strategy=strategy):
-            chosen = _release_best()
-            if chosen is None:
-                unfinished_board()
-            return _hand(chosen)
-        return _hand(plan)
+            return await _with_review(chosen)
+        return await _with_review(plan)
 
     if raw is None:
         record_failure({"nonblocking": True,
@@ -1641,6 +1725,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     evidence_mapping_repair_used = False
     dialogue_polish_used = False
     review_response_repair_used = False
+    review_attempted = False
     jargon_rewrite_used = False
     purpose_scrub_used = False
     background_stamp_used = False
@@ -2222,7 +2307,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             elif craft_request is not None and craft_refine_used and not craft_accepted:
                 craft_accepted = _accept_craft_issue(diagnostic_settings, craft_request) or craft_accepted
             if skip_review:
-                return release(plan)
+                return await release(plan)
             from .story_logic import (
                 align_declared_continuity, repair_prop_handoff, state_change_warnings, wardrobe_warnings,
             )
@@ -2270,6 +2355,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                                     "issues": product_notes[:8],
                                     "error_code": "character_sheet_product"})
             progress("reviewing_plan")
+            review_attempted = True
             review_input = {"stage": "plan_review", "schema": compact_review_schema(plan_review_schema(plan)),
                 "review_output_version": REVIEW_OUTPUT_VERSION, "review_policy_version": REVIEW_POLICY_VERSION,
                 "final_plan": review_projection(plan), "fixed_speech": locked,
@@ -2353,10 +2439,10 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 if is_degenerate_plan(plan):
                     chosen = best_real()
                     if usable(chosen):
-                        return release(chosen)
+                        return await release(chosen)
                     await stop("分镜没有完成，占位稿不是完成的方案",
                                {("contract",): "占位稿不是完成的方案"})
-                return release(plan)
+                return await release(plan)
             from .plan_review import program_downgrade_reasons, structured_review_reasons
             review_reasons = []
             for item in [*structured_review_reasons(review, plan), *program_downgrade_reasons(raw_review, plan)]:
@@ -2390,7 +2476,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 plan["review_status"] = "conservative_fallback"
                 plan["review_status_note"] = "状态承接没有对上，本地对过一次道具交接，没有再送回模型。综合检查已留下。这条已记下。"
                 remember(plan, review)
-                return release(plan)
+                return await release(plan)
             feedback_for_scope = deepcopy(feedback)
             execution = feedback_for_scope.get("execution_check")
             if isinstance(execution, dict):
@@ -2436,9 +2522,9 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             except RevisionKept:
                 chosen = last_reviewed_plan if usable(last_reviewed_plan) else best_real()
                 if chosen is not None:
-                    return release(chosen)
+                    return await release(chosen)
                 if await enforce_gates(plan, coordinated) == "continue":
                     continue
-                return release(plan)
+                return await release(plan)
     except _PlanAccepted as accepted:
-        return release(accepted.plan)
+        return await release(accepted.plan)

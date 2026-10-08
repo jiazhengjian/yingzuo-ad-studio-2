@@ -42,8 +42,8 @@ def test_provider_bound_legacy_review_must_complete_visual_checks_before_deliver
         assert plan["plan_review"]["reviewed_plan_sha256"] == returned_records[0]["reviewed_plan_sha256"]
     else:
         state.second_review_mutation = copied_legacy_record
-        plan = state.run()
-        assert plan.get("plan_review", {}).get("ready") is not True
+        with pytest.raises(ProviderError, match="这次没生成出来"):
+            state.run()
         assert len(returned_records) == 2
 
     # Never deliver the first apparently ready review and never regenerate

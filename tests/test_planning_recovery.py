@@ -158,8 +158,10 @@ def test_schema_failure_can_be_retried_and_configuration_failure_cannot(run_case
     control["failure"] = failure
     result = execute()
     if failure == "invalid":
-        assert result["status"] == "ready"
-        # Unreadable review JSON is repaired once, then the compiled plan is kept.
+        assert result["status"] == "failed"
+        assert result.get("error") == "这次没生成出来"
+        assert result.get("progress", {}).get("error_code") == "planning_not_produced"
+        # Unreadable review JSON is repaired once. Still no finished review, so the plan is not kept.
         assert calls == ["ad_script", "storyboard", "plan_review", "plan_review"]
         assert result["submission_count"] == 0
     else:

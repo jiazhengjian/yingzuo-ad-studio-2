@@ -6,7 +6,7 @@ import pytest
 
 from app.plan_review import validate_plan_review
 from app.planner_recovery import RECOVERY_PATHS
-from app.progressive_planning import compile_director, progressive_plan
+from app.progressive_planning import ProgressivePlanningError, compile_director, progressive_plan
 from app.providers.gateway import _decode_planner_json
 from app.strategy import StrategyRecord
 from test_progressive_planning import accepted_review, chosen_strategy, director_output
@@ -53,14 +53,12 @@ def test_each_system_fault_still_returns_a_plan(source):
         value["shots"][0]["continuity"]["sound_extra"] = "另加一句"
         return value
 
-    plan = asyncio.run(progressive_plan(
-        stage_call=stage_call, on_progress=lambda _phase: None, record_failure=lambda _item: None,
-        strategy=strategy, draft=None, draft_issues=[], duration=20, generation_strategy="continuity_v1",
-        assets=[source], conversation=[], merchant_request="看清瓶子", current_plan=None))
-    assert plan["segments"]
-    assert plan["segments"][0]["shots"]
-    ends = [shot["continuity"].get("end_state", "") for shot in plan["segments"][0]["shots"]]
-    assert all("关掉" not in end for end in ends)
+    with pytest.raises(ProgressivePlanningError, match="这次没生成出来") as failure:
+        asyncio.run(progressive_plan(
+            stage_call=stage_call, on_progress=lambda _phase: None, record_failure=lambda _item: None,
+            strategy=strategy, draft=None, draft_issues=[], duration=20, generation_strategy="continuity_v1",
+            assets=[source], conversation=[], merchant_request="看清瓶子", current_plan=None))
+    assert failure.value.error_code == "planning_not_produced"
 
 
 def test_bad_citation_does_not_void_a_passed_review(source):
@@ -197,6 +195,8 @@ def test_rewrite_rejection_keeps_the_original_line_and_reaches_creative(source, 
     # The offline review was bound to the fixture image. Picture confirmation
     # checks the saved product asset, not that fixture id.
     plan.pop("plan_review", None)
+    plan.pop("review_status", None)
+    plan.pop("review_status_note", None)
     project = store.update_plan(project["id"], plan)
     job = store.create_job(project["id"], "generate", project["revision"], {"pause_for_creative": True})
 

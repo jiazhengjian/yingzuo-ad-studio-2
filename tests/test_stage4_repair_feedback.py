@@ -28,8 +28,12 @@ def test_incomplete_review_keeps_its_own_error_class_and_request_bound(progressi
     else:
         state.second_review_mutation = reject_first_shot
         state.third_review_mutation = incomplete_review
-    plan = state.run()
-    assert plan.get("plan_review", {}).get("ready") is not True
+    if failure == "already_used":
+        plan = state.run()
+        assert plan.get("plan_review", {}).get("ready") is not True
+    else:
+        with pytest.raises(ProviderError, match="这次没生成出来"):
+            state.run()
     assert state.calls.count("plan_refinement") == int(failure == "already_used")
     assert state.calls.count("plan_review") == (3 if failure == "already_used" else 2)
     assert sum(context.get("task_kind") == "plan_review_response_repair"

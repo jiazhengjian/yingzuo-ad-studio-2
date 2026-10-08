@@ -168,7 +168,7 @@ def test_ending_shots_keep_one_main_action_for_brand_and_presenter():
     assert images_blocked_reason({"review_status": "passed"})
     assert images_blocked_reason({"review_status": "conservative_fallback"})
     assert images_blocked_reason(
-        {"review_status": "conservative_fallback"}, project={"ad_form": "brand_tvc"}) is None
+        {"review_status": "conservative_fallback"}, project={"ad_form": "brand_tvc"})
     # A board with no review record used to be released. It is blocked now.
     assert images_blocked_reason({"plan_review": {"ready": True}})
     placeholder = {"review_status": "conservative_fallback",

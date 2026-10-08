@@ -66,7 +66,7 @@ def test_missing_review_record_is_not_released_and_fallback_must_pass_the_table(
     assert images_blocked_reason({"review_status": "passed"})
     clean = {"review_status": "conservative_fallback", "segments": [
         {"shots": [{"description": "瓶身在左侧。"}, {"description": "瓶身靠近一些。"}]}]}
-    assert images_blocked_reason(clean, project={"ad_form": "brand_tvc"}) is None
+    assert images_blocked_reason(clean, project={"ad_form": "brand_tvc"})
     assert images_blocked_reason(clean)
     placeholder = {"review_status": "conservative_fallback",
                    "ad_script": {"beats": [{"narration": "看这里。"}, {"narration": "就是这个。"}]},
@@ -82,7 +82,7 @@ def test_unlabeled_passing_board_gets_an_honest_label_and_a_failing_one_does_not
     assert stamp_honest_label(missing) == "not_ready"
     assert images_blocked_reason(missing)
     labelled = stamp_honest_label(plain, project={"ad_form": "brand_tvc"})
-    assert labelled == "conservative_fallback"
+    assert labelled is None
     assert images_blocked_reason(plain, project={"ad_form": "brand_tvc"}) is None
 
     strategy = chosen_strategy({"id": "original-product"})
@@ -94,11 +94,7 @@ def test_unlabeled_passing_board_gets_an_honest_label_and_a_failing_one_does_not
     shown = present_checked_plan(
         failing, strategy, duration=15, generation_strategy="continuity_v1",
         asset_ids=["original-product"], note="策划回复没有收完，硬门已经核对过上一稿。这条已记下。")
-    assert shown is not None
-    assert shown.get("review_status") == "conservative_fallback"
-    assert images_blocked_reason(shown, strategy=shown.get("strategy")) is None
-    spoken = "".join(beat.get("narration") or "" for beat in shown["ad_script"]["beats"])
-    assert "负离子" not in spoken
+    assert shown is None
 
 
 def test_manual_edit_locks_the_new_line_and_refuses_a_board_that_fails_elsewhere():
@@ -108,7 +104,7 @@ def test_manual_edit_locks_the_new_line_and_refuses_a_board_that_fails_elsewhere
         {"description": "瓶身在左侧。"}, {"description": "瓶身靠近一些。"}]}]}
     saved, error = settle_manual_edit(previous, submitted, 15, project={"ad_form": "brand_tvc"})
     assert error is None
-    assert saved["review_status"] == "conservative_fallback"
+    assert saved.get("review_status") is None
     assert "商家要的这句。" in saved["merchant_locked_lines"]
 
     strategy = _strategy("brand_tvc")
@@ -287,6 +283,8 @@ def test_conservative_plan_keeps_every_locked_line_or_asks():
         locked_lines=[selling, "先放这儿。"], insisted_lines_=[selling])
     assert kept is not None
     assert _spoken(kept)[:2] == [selling, "先放这儿。"]
+    from app.release_gate import _gates_block_spend
+    assert _gates_block_spend(kept, strategy=kept.get("strategy")) is None
     assert images_blocked_reason(kept, strategy=kept.get("strategy")) is None
 
     brand = _brand()
@@ -340,7 +338,7 @@ def test_manual_edit_ignores_client_review_and_insist_markers():
     clean["segments"][0]["speech_spans"][0]["merchant_insisted"] = True
     saved, error = settle_manual_edit(previous, clean, 15, strategy)
     assert error is None
-    assert saved["review_status"] == "conservative_fallback"
+    assert saved.get("review_status") is None
     assert not saved.get("merchant_insisted_lines")
     assert all(not span.get("merchant_insisted") for span in saved["segments"][0]["speech_spans"])
 
@@ -351,7 +349,7 @@ def test_manual_edit_ignores_client_review_and_insist_markers():
     same["review_status"] = "not_ready"
     saved, error = settle_manual_edit(recorded, same, 15, strategy)
     assert error is None
-    assert saved["review_status"] == "conservative_fallback"
+    assert saved.get("review_status") is None
     assert stacked in saved["merchant_insisted_lines"]
 
 
@@ -384,17 +382,24 @@ def test_unknown_ad_form_blocks_release_until_the_project_supplies_one():
     assert images_blocked_reason(bare, project={"ad_form": "scene_story"})
     quiet = {"review_status": "conservative_fallback", "segments": [
         {"shots": [{"description": "瓶身在左侧。"}, {"description": "瓶身靠近一些。"}]}]}
-    assert images_blocked_reason(quiet, project={"ad_form": "brand_tvc"}) is None
+    assert images_blocked_reason(quiet, project={"ad_form": "brand_tvc"})
 
 
 def test_continuity_only_fallback_is_released_only_when_hard_gates_pass():
     """Bypass 1: a continuity-only miss used to ship as conservative_fallback."""
     note = "状态承接没有对上，本地对过一次道具交接，没有再送回模型。综合检查已留下。这条已记下。"
-    board = {
+    unfinished = {
         "review_status": "conservative_fallback", "review_status_note": note,
         "plan_review": {"ready": False, "checks": [{"criterion": "状态衔接", "passed": False}]},
         "segments": [{"shots": [{"description": "瓶身在左侧。"}, {"description": "瓶身靠近一些。"}]}],
     }
+    assert images_blocked_reason(unfinished, project={"ad_form": "brand_tvc"})
+    board = {
+        "review_status": "conservative_fallback", "review_status_note": note,
+        "plan_review": _failed_review(),
+        "segments": [{"shots": [{"description": "瓶身在左侧。"}, {"description": "瓶身靠近一些。"}]}],
+    }
+    board["plan_review"]["execution_check"]["state_continuity"] = False
     assert images_blocked_reason(board, project={"ad_form": "brand_tvc"}) is None
     failing = _board(_strategy("brand_tvc"), ["它带负离子，吹完是顺的。这风不吵。"], ["瓶身留在桌角。", "瓶身仍在原处。"])
     failing["review_status"] = "conservative_fallback"
@@ -409,25 +414,24 @@ def test_incomplete_review_salvage_is_labelled_or_blocked():
     shown = present_checked_plan(
         passing, strategy, duration=15, generation_strategy="continuity_v1", asset_ids=["original-product"],
         note="综合检查没有完成，已按硬门核对留下可用分镜。这条已记下。")
-    assert shown["review_status"] == "conservative_fallback"
-    assert "综合检查没有完成" in shown["review_status_note"]
-    assert images_blocked_reason(shown, strategy=shown.get("strategy")) is None
+    assert shown is None
     failing = _board(strategy, ["它带负离子，吹完是顺的。这风不吵。"], ["瓶身留在桌角。", "瓶身仍在原处。"])
     shown = present_checked_plan(
         failing, strategy, duration=15, generation_strategy="continuity_v1", asset_ids=["original-product"],
         note="综合检查没有完成，已按硬门核对留下可用分镜。这条已记下。")
-    assert shown is not None
-    assert "负离子" not in "".join(_spoken(shown))
-    assert images_blocked_reason(shown, strategy=shown.get("strategy")) is None
+    assert shown is None
 
 
 def test_earlier_draft_without_a_passing_review_is_not_a_false_pass():
     """Bypass 3: accepting an earlier draft no longer pretends the review passed."""
     strategy = _strategy("brand_tvc")
     earlier = _board(strategy, ["看清这件。"], ["瓶身在左侧。", "瓶身靠近一些。"])
-    assert stamp_honest_label(earlier, strategy) == "conservative_fallback"
-    assert earlier["review_status"] != "passed"
-    assert images_blocked_reason(earlier, strategy=strategy) is None
+    assert stamp_honest_label(earlier, strategy) is None
+    assert earlier.get("review_status") != "passed"
+    claimed = deepcopy(earlier)
+    claimed["review_status"] = "conservative_fallback"
+    assert stamp_honest_label(claimed, strategy) == "not_ready"
+    assert images_blocked_reason(claimed, strategy=strategy)
     stacked = _board(strategy, ["它带负离子，吹完是顺的。这风不吵。"], ["瓶身留在桌角。", "瓶身仍在原处。"])
     stacked["review_status"] = "conservative_fallback"
     assert images_blocked_reason(stacked, strategy=strategy)
@@ -440,15 +444,12 @@ def test_truncated_planner_reply_does_not_release_an_unchecked_board():
     shown = present_checked_plan(
         earlier, strategy, duration=15, generation_strategy="continuity_v1", asset_ids=["original-product"],
         note="策划回复没有收完，硬门已经核对过上一稿。这条已记下。")
-    assert shown["review_status"] == "conservative_fallback"
-    assert "没有收完" in shown["review_status_note"]
-    assert images_blocked_reason(shown, strategy=strategy) is None
+    assert shown is None
     failing = _board(strategy, ["它带负离子，吹完是顺的。这风不吵。"], ["瓶身留在桌角。", "瓶身仍在原处。"])
     shown = present_checked_plan(
         failing, strategy, duration=15, generation_strategy="continuity_v1", asset_ids=["original-product"],
         note="策划回复没有收完，硬门已经核对过上一稿。这条已记下。")
-    assert "负离子" not in "".join(_spoken(shown))
-    assert images_blocked_reason(shown, strategy=shown.get("strategy")) is None
+    assert shown is None
 
 
 def _failed_review(**overrides):
@@ -475,26 +476,51 @@ def test_a_finished_failed_review_names_the_failed_items_on_the_fallback_note():
     assert "没有完整的综合检查" not in board["review_status_note"]
 
 
+def test_a_plan_without_a_finished_review_cannot_be_confirmed_or_spend():
+    """Hard gates can be clear and the plan still must not be confirmed or submitted."""
+    strategy = _strategy("brand_tvc")
+    board = _board(strategy, ["看清这件。"], ["瓶身在左侧。", "瓶身靠近一些。"])
+    board["review_status"] = "conservative_fallback"
+    board["review_status_note"] = "没有完整的综合检查，硬门已通过"
+    assert evaluate_release_table(board, strategy) == []
+    assert images_blocked_reason(board, strategy=strategy)
+    with pytest.raises(ValueError, match="这次没生成出来"):
+        settle_before_spend(board, strategy=strategy, project_id="proj", duration=15,
+                            generation_strategy="legacy_10s", asset_ids=["original-product"])
+    truncated = deepcopy(board)
+    truncated["plan_review"] = {"ready": False, "checks": [{"criterion": "product_relevance", "passed": False}]}
+    assert images_blocked_reason(truncated, strategy=strategy)
+    with pytest.raises(ValueError, match="这次没生成出来"):
+        settle_before_spend(truncated, strategy=strategy, project_id="proj", duration=15,
+                            generation_strategy="legacy_10s", asset_ids=["original-product"])
+    finished = deepcopy(board)
+    finished["plan_review"] = _failed_review()
+    assert images_blocked_reason(finished, strategy=strategy) is None
+
+
 def test_a_missing_truncated_or_errored_review_says_the_check_did_not_finish():
     strategy = _strategy("brand_tvc")
     missing = _board(strategy, ["看清这件。"], ["瓶身在左侧。", "瓶身靠近一些。"])
-    assert stamp_honest_label(missing, strategy) == "conservative_fallback"
-    assert missing["review_status_note"] == "没有完整的综合检查，硬门已通过"
+    assert stamp_honest_label(missing, strategy) is None
+    assert "review_status" not in missing
+    assert images_blocked_reason(missing, strategy=strategy) is None
     truncated = _board(strategy, ["看清这件。"], ["瓶身在左侧。", "瓶身靠近一些。"])
     truncated["plan_review"] = {"ready": False, "checks": [{"criterion": "product_relevance", "passed": False}]}
-    assert stamp_honest_label(truncated, strategy) == "conservative_fallback"
+    assert stamp_honest_label(truncated, strategy) == "not_ready"
     assert truncated["review_status_note"] == "没有完整的综合检查，硬门已通过"
+    assert images_blocked_reason(truncated, strategy=strategy)
     errored = _board(strategy, ["看清这件。"], ["瓶身在左侧。", "瓶身靠近一些。"])
     errored["plan_review"] = {"error": "综合检查没有返回"}
-    assert stamp_honest_label(errored, strategy) == "conservative_fallback"
+    assert stamp_honest_label(errored, strategy) == "not_ready"
     assert errored["review_status_note"] == "没有完整的综合检查，硬门已通过"
+    assert images_blocked_reason(errored, strategy=strategy)
 
 
 def test_legacy_unlabeled_plan_is_labelled_and_unknown_form_is_blocked():
     """Bypass 5: the old picture-and-speech path no longer ships with a missing label."""
     plain = {"segments": [{"shots": [{"description": "瓶身在左侧。"}, {"description": "瓶身靠近一些。"}]}]}
     labelled_board = deepcopy(plain)
-    assert stamp_honest_label(labelled_board, project={"ad_form": "brand_tvc"}) == "conservative_fallback"
+    assert stamp_honest_label(labelled_board, project={"ad_form": "brand_tvc"}) is None
     assert images_blocked_reason(labelled_board, project={"ad_form": "brand_tvc"}) is None
     blocked = deepcopy(plain)
     assert stamp_honest_label(blocked) == "not_ready"
@@ -532,6 +558,7 @@ def test_a_normal_passed_plan_still_goes_through():
     strategy = _strategy("brand_tvc")
     board = _board(strategy, ["看清这件。"], ["瓶身在左侧。", "瓶身靠近一些。"])
     board["review_status"] = "passed"
+    board["plan_review"] = _failed_review(ready=True)
     assert images_blocked_reason(board, strategy=board["strategy"]) is None
 
 
@@ -540,6 +567,7 @@ def test_merchant_insisted_line_still_goes_through():
     stacked = "它带负离子，吹完是顺的。这风不吵。"
     board = _board(strategy, [stacked], ["瓶身留在桌角。", "瓶身仍在原处。"])
     board["review_status"] = "passed"
+    board["plan_review"] = _failed_review(ready=True)
     board["merchant_insisted_lines"] = [stacked]
     board["segments"][0]["speech_spans"][0]["merchant_insisted"] = True
     assert images_blocked_reason(board, strategy=board["strategy"]) is None
@@ -595,7 +623,6 @@ def test_changed_passed_plan_is_repaired_before_image_spend_without_asking_the_m
     spent = gateway.plans[0]
     assert images_blocked_reason(spent, strategy=spent.get("strategy"), project=project) is None
     assert stacked not in json.dumps(spent, ensure_ascii=False)
-    # The local rewrite drops the review, so this is not an auto_release.
     assert "auto_release" not in spent
     current = store.get_project(project["id"])
     assert current["revision"] == project["revision"] + 1
@@ -650,7 +677,7 @@ def _pipeline(store, tmp_path):
 
 
 def test_conservative_replacement_waits_for_another_confirm_before_any_spend(tmp_path, monkeypatch):
-    """A whole-board replacement is shown again. Images wait for the next 确认."""
+    """An unreviewed substitute is not shown for confirmation and does not spend."""
     monkeypatch.setattr("app.release_gate.local_hard_gate_repair", lambda *args, **kwargs: None)
     store = Store(tmp_path / "db.sqlite", tmp_path / "media")
     project = store.create_project("蓝瓶", "product", duration_seconds=10, ad_form="brand_tvc")
@@ -943,6 +970,7 @@ def test_merchant_insisted_line_is_not_replaced_before_spend():
     stacked = "它带负离子，吹完是顺的。这风不吵。"
     board = _board(strategy, [stacked], ["瓶身留在桌角。", "瓶身仍在原处。"])
     board["review_status"] = "passed"
+    board["plan_review"] = _failed_review(ready=True)
     board["merchant_insisted_lines"] = [stacked]
     board["segments"][0]["speech_spans"][0]["merchant_insisted"] = True
     settled = settle_before_spend(board, strategy=strategy, project_id="proj")

@@ -1510,6 +1510,9 @@ class Store:
                             prompt = choice.questions[0]["prompt"] if choice.questions else str(choice)
                             raise ValueError(prompt) from choice
                         decision["plan"] = plan
+                    if images_blocked_reason(plan, strategy=plan.get("strategy"), project=p):
+                        from .merchant_cards import NotProduced
+                        raise NotProduced()
                     self._validate_plan_duration(p, plan)
                     for option in decision["creative_options"]:
                         self._validate_plan_duration(p, {"generation_strategy": plan.get("generation_strategy", "legacy_10s"), "segments": [option["segment"], *plan["segments"][1:]]})
