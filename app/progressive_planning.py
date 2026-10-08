@@ -1645,7 +1645,12 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
         return choose_hard_gate_release(pool, strategy=strategy)
 
     def _hand(plan):
-        from .release_gate import record_auto_release, should_record_auto_release
+        from .release_gate import evaluate_release_table, record_auto_release, should_record_auto_release
+        if isinstance(plan, dict) and evaluate_release_table(plan, strategy, exempt_lines=insisted):
+            from .merchant_cards import NOT_PRODUCED_CARD
+            raise ProgressivePlanningError(
+                NOT_PRODUCED_CARD, issue_summary=["硬门没有通过"], repair_attempts=repairs,
+                error_code="planning_not_produced")
         if should_record_auto_release(plan):
             record_auto_release(plan, project_id=project_id, repair_rounds=repairs)
         return plan
@@ -1670,15 +1675,23 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
         # merchant to retry. Their own locked line still raises MerchantLineChoice.
         chosen = _release_best()
         if chosen is None:
-            # No board cleared the hard gates. Keep the last usable compilation
-            # so the loop can finish. Image spend still refuses it until the
-            # gates pass, and does that repair without asking the merchant.
+            # No hard-gate passer, including the conservative board. A leftover
+            # compilation may still be returned only when it does not fail any
+            # of the eight gates (for example the ad type is not known yet).
+            # Spend stays blocked until the gates can pass.
             fallback = last_reviewed_plan if usable(last_reviewed_plan) else best_real()
             if not usable(fallback) and usable(last_valid_plan):
                 fallback = last_valid_plan
-            # A board that dropped the merchant's own line is not a release.
             if usable(fallback) and _locked_kept(fallback):
-                chosen = deepcopy(fallback)
+                from .release_gate import evaluate_release_table
+                findings = evaluate_release_table(
+                    fallback, strategy, exempt_lines=insisted)
+                if not findings:
+                    chosen = deepcopy(fallback)
+        if chosen is not None:
+            from .release_gate import evaluate_release_table
+            if evaluate_release_table(chosen, strategy, exempt_lines=insisted):
+                chosen = None
         if chosen is not None:
             raise _PlanAccepted(chosen)
         summary = list(issues.values()) or ["占位稿不是完成的方案"]
@@ -1686,9 +1699,10 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             raise ProgressivePlanningError(
                 message + "。已有方案和素材已保留，尚未开始新的图片或视频生成",
                 issue_summary=summary, repair_attempts=repairs, error_code=error_code)
+        from .merchant_cards import NOT_PRODUCED_CARD
         raise ProgressivePlanningError(
-            message + "。已有方案和素材已保留，尚未开始新的图片或视频生成",
-            issue_summary=summary, repair_attempts=repairs, error_code=error_code)
+            NOT_PRODUCED_CARD, issue_summary=summary, repair_attempts=repairs,
+            error_code="planning_not_produced")
 
     async def refine(before, scope, feedback, issues, *, plan=None, schedule=None, bound_review=None):
         nonlocal repairs
@@ -1879,9 +1893,10 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
         chosen = _conservative()
         if chosen is not None:
             raise _PlanAccepted(chosen)
+        from .merchant_cards import NOT_PRODUCED_CARD
         raise ProgressivePlanningError(
-            "这次没能留下能通过检查的方案。已有方案和素材已保留，尚未开始新的图片或视频生成",
-            issue_summary=["没能留下能通过检查的方案"], repair_attempts=repairs)
+            NOT_PRODUCED_CARD, issue_summary=["硬门没有通过"], repair_attempts=repairs,
+            error_code="planning_not_produced")
 
     from .release_gate import duration_hold
     duration_choice = duration_hold(locked, duration, strategy)

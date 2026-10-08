@@ -451,15 +451,16 @@ def choose_hard_gate_release(candidates, *, strategy=None, project=None):
 
 
 def should_record_auto_release(plan):
-    """A clean pass is not an auto-release. A hard-gate release with a weak review is."""
+    """Only a hard-gate pass whose overall review actually failed.
+
+    A clean pass, a missing review, and any board that still fails a hard gate
+    are not this record. The log line itself is unchanged.
+    """
     if not isinstance(plan, dict) or isinstance(plan.get("auto_release"), dict):
         return False
-    if plan.get("review_status") in ("passed", "repaired", "not_ready"):
+    if images_blocked_reason(plan, strategy=plan.get("strategy")):
         return False
-    review = _review_record(plan)
-    if isinstance(review, dict) and review.get("ready") is True and review.get("checks"):
-        return False
-    return True
+    return _review_ran_and_failed(_review_record(plan))
 
 
 def record_auto_release(plan, *, project_id=None, ad_form=None, repair_rounds=0, failed_checks=None):
@@ -561,7 +562,7 @@ def settle_before_spend(plan, *, strategy=None, project=None, project_id=None, d
     board passes. The merchant is not asked to rewrite a model failure.
     MerchantLineChoice still propagates when the blocked words are theirs.
     """
-    from .merchant_cards import SYSTEM_CARD
+    from .merchant_cards import NOT_PRODUCED_CARD, SYSTEM_CARD, NotProduced
     if not isinstance(plan, dict):
         raise ValueError(SYSTEM_CARD)
     strategy = _strategy_of(plan, strategy)
@@ -602,8 +603,10 @@ def settle_before_spend(plan, *, strategy=None, project=None, project_id=None, d
     chosen = choose_hard_gate_release(
         [item for item in (repaired, conservative) if item is not None],
         strategy=strategy, project=project)
-    if chosen is None:
-        raise ValueError(SYSTEM_CARD)
+    if chosen is None or images_blocked_reason(chosen, strategy=strategy, project=project):
+        # Repair and the conservative board both miss a hard gate. Nothing is
+        # released and nothing is submitted.
+        raise NotProduced(NOT_PRODUCED_CARD)
     if should_record_auto_release(chosen):
         record_auto_release(chosen, project_id=project_id, ad_form=form, repair_rounds=1)
     return chosen

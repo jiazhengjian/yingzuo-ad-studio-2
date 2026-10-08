@@ -540,7 +540,18 @@ def test_changed_passed_plan_is_repaired_before_image_spend_without_asking_the_m
     spent = gateway.plans[0]
     assert images_blocked_reason(spent, strategy=spent.get("strategy"), project=project) is None
     assert stacked not in json.dumps(spent, ensure_ascii=False)
-    assert spent.get("auto_release", {}).get("repair_rounds") == 1
+    # The local rewrite drops the review, so this is not an auto_release.
+    assert "auto_release" not in spent
+    current = store.get_project(project["id"])
+    assert current["revision"] == project["revision"] + 1
+    previous = store.revision_plan(project["id"], project["revision"])
+    assert stacked in json.dumps(previous, ensure_ascii=False)
+    saved = store.revision_plan(project["id"], current["revision"])
+    assert stacked not in json.dumps(saved, ensure_ascii=False)
+    finished = store.get_job(job["id"])
+    assert finished["revision"] == current["revision"]
+    assert finished["payload"]["merchant_confirmed_revision"] == current["revision"]
+    assert finished["payload"]["repaired_from_revision"] == project["revision"]
     assert "这版方案需要重新检查" not in (result.get("error") or "")
     assert "回到对话修改" not in (result.get("error") or "")
     assert result["progress"].get("error_code") != "release_recheck"
@@ -602,6 +613,153 @@ def test_auto_release_records_a_failed_review_and_an_unfinished_one(caplog):
     record_auto_release(missing, project_id="proj-2", ad_form="scene_story", repair_rounds=1)
     assert missing["auto_release"]["note"] == "没有完整的综合检查，硬门已通过"
     assert missing["auto_release"]["failed_checks"] == []
+
+
+def test_hard_gate_miss_uses_the_conservative_board_when_local_repair_cannot():
+    """(a) A voice mismatch is not a claim the local rewrite can collapse."""
+    strategy = _strategy("brand_tvc")
+    board = _board(strategy, ["看清这件。"], ["瓶身在左侧。", "瓶身靠近一些。"], mode="character_dialogue")
+    board["segments"][0]["duration_seconds"] = 10
+    board["generation_strategy"] = "legacy_10s"
+    assert any(item.gate_id == "voice_identity" for item in evaluate_release_table(board, strategy))
+    settled = settle_before_spend(
+        board, strategy=strategy, project_id="proj", duration=10,
+        generation_strategy="legacy_10s", asset_ids=["original-product"])
+    assert settled is not board
+    assert board["production"]["speech_mode"] == "character_dialogue"
+    assert images_blocked_reason(settled, strategy=settled.get("strategy")) is None
+    assert not any(item.gate_id == "voice_identity" for item in evaluate_release_table(settled, settled.get("strategy")))
+    assert "auto_release" not in settled
+
+
+def test_hard_gate_miss_stops_when_the_conservative_board_also_fails(monkeypatch):
+    """(b) Nothing is released when repair and the conservative board both miss a gate."""
+    strategy = _strategy("brand_tvc")
+    board = _board(strategy, ["看清这件。"], ["瓶身在左侧。", "瓶身靠近一些。"], mode="character_dialogue")
+    monkeypatch.setattr("app.release_gate.conservative_usable_plan", lambda *args, **kwargs: None)
+    with pytest.raises(ValueError, match="这次没生成出来"):
+        settle_before_spend(board, strategy=strategy, project_id="proj", duration=15,
+                            generation_strategy="legacy_10s", asset_ids=["original-product"])
+
+
+def test_auto_release_only_when_every_hard_gate_passes_and_the_review_failed():
+    """(c) A clean pass, a missing review, and a hard-gate failure are not this record."""
+    from app.release_gate import should_record_auto_release
+    strategy = _strategy("brand_tvc")
+    failed = _board(strategy, ["看清这件。"], ["瓶身在左侧。", "瓶身靠近一些。"])
+    failed["plan_review"] = _failed_review()
+    failed["plan_review"]["checks"][0]["passed"] = False
+    assert images_blocked_reason(failed, strategy=strategy) is None
+    assert should_record_auto_release(failed) is True
+    clean = deepcopy(failed)
+    clean["plan_review"]["ready"] = True
+    assert should_record_auto_release(clean) is False
+    missing = _board(strategy, ["看清这件。"], ["瓶身在左侧。", "瓶身靠近一些。"])
+    assert should_record_auto_release(missing) is False
+    stacked = _board(strategy, ["它带负离子，吹完是顺的。这风不吵。"], ["瓶身留在桌角。", "瓶身仍在原处。"])
+    stacked["plan_review"] = deepcopy(failed["plan_review"])
+    assert images_blocked_reason(stacked, strategy=strategy)
+    assert should_record_auto_release(stacked) is False
+
+
+def test_both_repairs_missing_a_hard_gate_spend_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.release_gate.local_hard_gate_repair", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.release_gate.conservative_usable_plan", lambda *args, **kwargs: None)
+    store = Store(tmp_path / "db.sqlite", tmp_path / "media")
+    project = store.create_project("蓝瓶", "product", duration_seconds=10, ad_form="brand_tvc")
+    path = store.media_root / "product.png"
+    path.write_bytes(PNG)
+    asset = store.add_asset(project["id"], "product", "原图", path, "image/png")
+    strategy = _strategy("brand_tvc")
+    stacked = "它带负离子，吹完是顺的。这风不吵。"
+    plan = {
+        "title": "方案", "script": stacked, "language": "zh-CN", "aspect_ratio": "9:16",
+        "audio_strategy": "voiceover", "review_status": "passed", "strategy": strategy.model_dump(),
+        "facts": {"name": "蓝瓶", "claims": []},
+        "ad_script": {"core_message": "看清商品", "beats": [{
+            "id": "b0", "narration": stacked, "purpose": "看清商品", "message": "看清外观",
+            "visual_role": "商品留在画面里"}]},
+        "segments": [{"id": "s0", "duration_seconds": 10, "purpose": "展示", "prompt": "真实商品展示",
+                      "shots": [{"start": 0, "end": 5, "description": "瓶身在左侧。"},
+                                {"start": 5, "end": 10, "description": "瓶身靠近一些。"}],
+                      "reference_asset_ids": [asset["id"]]}],
+    }
+    project = store.update_plan(project["id"], plan)
+    job = store.create_job(project["id"], "generate", project["revision"])
+
+    class _Gateway:
+        def __init__(self):
+            self.designs = 0
+            self.videos = 0
+
+        async def create_designs(self, *args, **kwargs):
+            self.designs += 1
+            return []
+
+        async def submit_video(self, *args, **kwargs):
+            self.videos += 1
+            return {}
+
+    gateway = _Gateway()
+    settings = Settings(data_root=tmp_path, deepseek_api_key="TEST_ONLY", tudou_api_key="TEST_ONLY",
+                        ffmpeg_path="TEST_ONLY", max_video_submissions=1, max_active_runs=1,
+                        poll_seconds=0.01, provider_timeout_seconds=1, tts_voice="TEST_ONLY",
+                        video_model="TEST_ONLY")
+    result = asyncio.run(Pipeline(store, gateway, settings).execute(job["id"]))
+    assert gateway.designs == 0 and gateway.videos == 0
+    assert result["submission_count"] == 0
+    assert result["error"] == "这次没生成出来"
+    assert result["progress"]["error_code"] == "planning_not_produced"
+    assert result["progress"]["retryable"] is True
+    assert result["progress"]["retry_action"] == "retry_planning"
+    assert store.get_project(project["id"])["revision"] == project["revision"]
+    assert store.revision_plan(project["id"], project["revision"])["script"] == stacked
+
+
+def test_regenerate_after_not_produced_starts_text_planning(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from app.db import StaleRevision
+    from app.main import create_app
+
+    settings = Settings(data_root=tmp_path, deepseek_api_key="TEST_ONLY", tudou_api_key="TEST_ONLY",
+                        ffmpeg_path="TEST_ONLY", max_video_submissions=1, max_active_runs=1,
+                        poll_seconds=0.01, provider_timeout_seconds=1, tts_voice="TEST_ONLY",
+                        video_model="TEST_ONLY")
+    store = Store(settings.database_path, settings.media_root)
+    project = store.create_project("蓝瓶", "product", duration_seconds=10, ad_form="brand_tvc")
+    path = store.media_root / "product.png"
+    path.write_bytes(PNG)
+    asset = store.add_asset(project["id"], "product", "原图", path, "image/png")
+    plan = {
+        "title": "方案", "script": "看清这件。", "language": "zh-CN", "aspect_ratio": "9:16",
+        "audio_strategy": "voiceover",
+        "segments": [{"id": "s0", "duration_seconds": 10, "purpose": "展示", "prompt": "真实商品展示",
+                      "shots": [{"start": 0, "end": 10, "description": "瓶身在左侧。"}],
+                      "reference_asset_ids": [asset["id"]]}],
+    }
+    project = store.update_plan(project["id"], plan)
+    job = store.create_job(project["id"], "generate", project["revision"])
+    store.update_job(job["id"], status="failed", error="这次没生成出来", progress={
+        "error_code": "planning_not_produced", "retryable": True, "retry_action": "retry_planning"})
+    with pytest.raises(StaleRevision, match="不会提交图片或视频"):
+        store.retry_generate_job(project["id"], job["id"])
+    assert store.get_job(job["id"])["status"] == "failed"
+    assert store.get_job(job["id"])["submission_count"] == 0
+    chatted = store.create_turn(project["id"], {
+        "client_turn_id": "chat-redo",
+        "expected_context_version": store.get_project(project["id"])["context_version"],
+        "content": "重新生成",
+    })
+    assert chatted["id"] == job["id"] and chatted["kind"] == "generate" and chatted["status"] == "failed"
+    assert store.get_job(job["id"])["submission_count"] == 0
+    client = TestClient(create_app(settings, run_worker=False))
+    response = client.post(f"/api/projects/{project['id']}/retry", json={"job_id": job["id"]})
+    assert response.status_code == 200, response.text
+    body = response.json()["job"]
+    assert body["kind"] == "plan" and body["id"] != job["id"]
+    assert store.get_job(job["id"])["status"] == "failed"
+    assert store.get_job(job["id"])["submission_count"] == 0
 
 
 def test_merchant_insisted_line_is_not_replaced_before_spend():

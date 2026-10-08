@@ -379,6 +379,13 @@ def create_app(settings=None, gateway=None, run_worker=True):
             require_planner()
             return {"job": public(store.retry_planning_job(project_id, job["id"]))}
         if job["kind"] == "generate":
+            code = (job.get("progress") or {}).get("error_code")
+            # This generate never cleared the hard gates. Regenerating starts a
+            # text plan from the saved brief. It does not post image or video work.
+            if code in ("planning_not_produced", "release_recheck") or (job.get("error") or "") == "这次没生成出来":
+                require_planner()
+                idle(project_id)
+                return {"job": public(store.resume_saved_planning(project_id))}
             require_video()
             return {"job": public(store.retry_generate_job(project_id, job["id"]))}
         idle(project_id)

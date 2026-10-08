@@ -238,6 +238,65 @@ class Store:
                       (encoded(plan), revision, now, project_id))
         return self.get_project(project_id)
 
+    def _plan_form_unchanged(self, row, plan):
+        brief = (plan.get("strategy") or {}).get("brief") if isinstance(plan, dict) else None
+        if isinstance(brief, dict) and brief.get("ad_form") != row["ad_form"]:
+            raise ValueError("方案须沿用当前广告倾向，请先按新偏好更新方案")
+
+    def save_repaired_plan(self, project_id, expected_revision, plan):
+        """Insert an automatic repair as the next revision. The previous row stays.
+
+        Status is left as it is so an in-flight confirmed generation can continue
+        on the repaired board. This is not a merchant edit.
+        """
+        with self._connection(True) as c:
+            row = self._dict(c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+            if row is None:
+                raise KeyError("项目不存在")
+            if row["revision"] != expected_revision:
+                raise StaleRevision("方案已修改，旧任务结果不会覆盖新版")
+            self._plan_form_unchanged(row, plan)
+            self._validate_plan_duration(row, plan)
+            revision, now = row["revision"] + 1, time.time()
+            c.execute("INSERT INTO revisions VALUES(?,?,?,?)", (project_id, revision, encoded(plan), now))
+            c.execute("UPDATE projects SET plan=?,revision=?,updated_at=? WHERE id=?",
+                      (encoded(plan), revision, now, project_id))
+        return self.get_project(project_id)
+
+    def save_released_plans(self, project_id, plans, expected_revision=None, expected_context_version=None):
+        """Save each board as its own revision. The last one is current.
+
+        Used when planning replaces a model board with a repaired one. The
+        pre-repair text stays readable at the earlier revision.
+        """
+        if not plans:
+            raise ValueError("没有可保存的方案")
+        with self._connection(True) as c:
+            row = self._dict(c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+            if row is None:
+                raise KeyError("项目不存在")
+            if expected_revision is not None and row["revision"] != expected_revision:
+                raise StaleRevision("方案已修改，旧任务结果不会覆盖新版")
+            if expected_context_version is not None and row["context_version"] != expected_context_version:
+                raise StaleRevision("需求已更新，旧规划结果不会覆盖当前需求")
+            revision, now = row["revision"], time.time()
+            for plan in plans:
+                self._plan_form_unchanged(row, plan)
+                self._validate_plan_duration(row, plan)
+                revision += 1
+                c.execute("INSERT INTO revisions VALUES(?,?,?,?)", (project_id, revision, encoded(plan), now))
+            c.execute("UPDATE projects SET plan=?,revision=?,plan_context_version=context_version,status='awaiting_generate',updated_at=? WHERE id=?",
+                      (encoded(plans[-1]), revision, now, project_id))
+        return self.get_project(project_id)
+
+    def revision_plan(self, project_id, revision):
+        with self._connection() as c:
+            row = c.execute("SELECT plan FROM revisions WHERE project_id=? AND revision=?",
+                            (project_id, revision)).fetchone()
+        if row is None or not row["plan"]:
+            raise KeyError("方案版本不存在")
+        return json.loads(row["plan"])
+
     def create_job(self, project_id, kind, revision, payload=None):
         if kind not in ("plan", "generate", "recompose"):
             raise ValueError("不支持的任务类型")
@@ -623,6 +682,8 @@ class Store:
             code = (job.get("progress") or {}).get("error_code")
             if code == "voice_too_long":
                 raise StaleRevision("配音文案过长，请先精简文案后重新确认；直接恢复同样文案不能解决时长问题，已保存的图片会保留")
+            if code in ("planning_not_produced", "release_recheck") or (job.get("error") or "") == "这次没生成出来":
+                raise StaleRevision("这次没生成出来，重新生成会按已保存的需求再策划，不会提交图片或视频")
             project = self._project(c, project_id)
             if project["revision"] != job["revision"]:
                 raise StaleRevision("这是旧版本任务，请使用当前方案")
@@ -1433,7 +1494,8 @@ class Store:
             else:
                 revision = p["revision"]
                 if kind == "plan":
-                    plan = decision["plan"]
+                    source = decision["plan"]
+                    plan = source
                     from .release_gate import images_blocked_reason, stamp_honest_label
                     if not plan.get("review_status"):
                         stamp_honest_label(plan, plan.get("strategy"), project=p)
@@ -1453,6 +1515,12 @@ class Store:
                     segments = plan["segments"] + [o["segment"] for o in decision["creative_options"]]
                     if any(not s["reference_asset_ids"] or not set(s["reference_asset_ids"]).issubset(originals) for s in segments):
                         raise ValueError("方案与创意必须引用本轮真实商品图")
+                    # A repair is a new version. The board that failed the gates stays
+                    # on the previous revision and can still be read.
+                    if plan is not source:
+                        self._validate_plan_duration(p, source)
+                        revision += 1
+                        c.execute("INSERT INTO revisions VALUES(?,?,?,?)", (p["id"], revision, encoded(source), now))
                     revision += 1
                     c.execute("INSERT INTO revisions VALUES(?,?,?,?)", (p["id"], revision, encoded(plan), now))
                     c.execute("UPDATE projects SET plan=?,revision=?,plan_context_version=context_version,status='awaiting_generate',updated_at=? WHERE id=?", (encoded(plan), revision, now, p["id"]))

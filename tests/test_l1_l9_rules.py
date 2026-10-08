@@ -306,8 +306,9 @@ def test_l4_review_salvage_does_not_ship_a_stacked_fifteen_second_brand_line(sou
     assert images_blocked_reason(plan, strategy=plan.get("strategy")) is None
     spoken = "".join(beat.get("narration") or "" for beat in plan["ad_script"]["beats"])
     assert "负离子" not in spoken and "不吵" not in spoken
-    assert plan["auto_release"]["repair_rounds"] >= 1
-    assert "硬门已通过" in plan["auto_release"]["note"]
+    # The conservative board has no finished failed review, so it is not auto_release.
+    assert "auto_release" not in plan
+    assert "硬门已通过" in plan["review_status_note"]
 
     async def stacked_board(system, data, assets, max_tokens=7000):
         value = director_output(strategy)

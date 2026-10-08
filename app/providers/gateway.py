@@ -3064,15 +3064,20 @@ class Gateway:
                     and "validation_candidate" not in last_stage_result):
                 save_failed_planner_output(self.settings, last_stage_result)
                 last_stage_result["_diagnostic_saved"] = True
-            from app.merchant_cards import SYSTEM_CARD
+            from app.merchant_cards import NOT_PRODUCED_CARD, SYSTEM_CARD
             from app.planner_recovery import needs_merchant
             merchant = needs_merchant(str(exc), getattr(exc, "issue_summary", ()))
-            # A model check that still has no releasable board is a system record.
-            # The merchant is not asked to press 继续处理 or rewrite the plan.
-            # Their own locked line keeps the original sentence.
-            error = ProviderError(str(exc) if merchant else SYSTEM_CARD)
-            error.error_code, error.retryable = exc.error_code, False
-            error.retry_action = "edit_plan" if merchant else None
+            # A hard-gate miss with no passing board is not a content rewrite
+            # request. The merchant can start a new text plan. Their own locked
+            # line keeps the original sentence. Other model failures stay a record.
+            if exc.error_code == "planning_not_produced":
+                error = ProviderError(NOT_PRODUCED_CARD)
+                error.error_code, error.retryable = "planning_not_produced", True
+                error.retry_action = "retry_planning"
+            else:
+                error = ProviderError(str(exc) if merchant else SYSTEM_CARD)
+                error.error_code, error.retryable = exc.error_code, False
+                error.retry_action = "edit_plan" if merchant else None
             error.issue_summary = getattr(exc, "issue_summary", [])
             error.repair_attempts = getattr(exc, "repair_attempts", 0)
             raise error from None

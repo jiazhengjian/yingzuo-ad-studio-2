@@ -72,58 +72,62 @@ test('only exhausted planning request failures expose a last-resort resume', () 
   assert.doesNotMatch(html, /重新尝试|请重试|恢复任务|输入修改要求|检查素材|请重新策划/);
   for (const progress of [{ error_code: 'planning_request_failed' },
     { ...job.progress, retryable: false }, { error_code: 'planning_content_failed', retry_action: 'retry_planning' }]) {
-    assert.equal(retryRequest({ ...job, progress }), null);
+    const next = { ...job, progress };
+    assert.notEqual(recoveryForJob(next).kind, 'retry_planning');
+    assert.equal(recoveryForJob(next).label, '重新生成');
   }
 });
 
-test('a capacity planning failure is repaired by the system and does not ask the merchant', () => {
+test('a capacity planning failure offers a new text generation', () => {
   const job = fixture({
     kind: 'plan',
     error: '本次方案未能满足已确认要求，暂未采用。已有方案和素材已保留',
     progress: { error_code: 'planning_content_failed', retryable: false, retry_action: 'edit_plan' },
   });
-  assert.equal(recoveryForJob(job).kind, 'unavailable');
-  assert.equal(retryRequest(job), null);
+  assert.deepEqual(recoveryForJob(job), { kind: 'retry_existing', label: '重新生成' });
+  assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
   const html = renderCard(job);
-  assert.match(html, /这是系统问题，已记录/);
-  assert.doesNotMatch(html, /继续处理|输入修改要求|回到对话修改|<button/);
+  assert.match(html, /这次没生成出来/);
+  assert.match(html, /重新生成/);
+  assert.doesNotMatch(html, /继续处理|请修改|输入修改要求|回到对话修改/);
 });
 
-test('a storyboard content failure does not ask the merchant to regenerate', () => {
+test('a storyboard content failure offers a new text generation', () => {
   const job = fixture({
     kind: 'plan',
     error: '背景人物没有跟着床入画，这次不采用。已有方案和素材已保留',
     progress: { error_code: 'planning_content_failed', retryable: true, retry_action: 'retry_planning',
       issue_summary: ['背景人物没有跟着床入画'] },
   });
-  assert.equal(recoveryForJob(job).kind, 'unavailable');
-  assert.equal(retryRequest(job), null);
+  assert.deepEqual(recoveryForJob(job), { kind: 'retry_existing', label: '重新生成' });
   const html = renderCard(job);
-  assert.match(html, /这是系统问题，已记录/);
-  assert.doesNotMatch(html, /继续处理|重新生成分镜|输入修改要求|<button/);
+  assert.match(html, /这次没生成出来/);
+  assert.match(html, /重新生成/);
+  assert.doesNotMatch(html, /继续处理|重新生成分镜|请修改|输入修改要求/);
 });
 
-test('a structure failure does not ask the merchant to continue', () => {
+test('a structure failure offers a new text generation', () => {
   const job = fixture({
     kind: 'plan',
     error: '本次方案结构不完整，暂未采用。已有方案和素材已保留',
     progress: { error_code: 'planning_content_failed', retryable: false, retry_action: 'edit_plan' },
   });
-  assert.equal(recoveryForJob(job).kind, 'unavailable');
-  assert.equal(retryRequest(job), null);
-  assert.doesNotMatch(renderCard(job), /继续处理|输入修改要求|<button/);
+  assert.deepEqual(recoveryForJob(job), { kind: 'retry_existing', label: '重新生成' });
+  const html = renderCard(job);
+  assert.match(html, /这次没生成出来/);
+  assert.doesNotMatch(html, /继续处理|请修改|输入修改要求/);
 });
 
-test('a model planning failure is a system record and does not open the composer', () => {
+test('a model planning failure offers a new text generation and does not open the composer', () => {
   for (const progress of [{}, terminalFailure, { error_code: 'planning_content_failed', retryable: false, retry_action: 'edit_plan' }]) {
     const job = fixture({ kind: 'plan', progress });
-    assert.equal(recoveryForJob(job).kind, 'unavailable');
-    assert.equal(retryRequest(job), null);
+    assert.deepEqual(recoveryForJob(job), { kind: 'retry_existing', label: '重新生成' });
     const html = renderCard(job, { hasExistingResult: true });
     assert.match(html, /本次修改未完成/);
     assert.match(html, /已有成片仍可播放、下载/);
-    assert.match(html, /这是系统问题，已记录/);
-    assert.doesNotMatch(html, /输入修改要求|继续处理|恢复任务|重新尝试|检查素材|<button/);
+    assert.match(html, /这次没生成出来/);
+    assert.match(html, /重新生成/);
+    assert.doesNotMatch(html, /输入修改要求|继续处理|恢复任务|重新尝试|检查素材/);
   }
 });
 
@@ -217,20 +221,24 @@ test('current failure is presented once while historical timeline errors stay av
   assert.match(historical, /测试专用失败原因/);
 });
 
-test('unclassified non-retryable failures do not claim the user supplied bad materials', () => {
+test('unclassified non-retryable failures offer another generation and do not claim bad materials', () => {
   const job = fixture({ progress: { retryable: false, error_code: 'unknown' } });
-  assert.equal(recoveryForJob(job).kind, 'unavailable');
-  assert.equal(retryRequest(job), null);
-  assert.doesNotMatch(renderCard(job), /请检查素材|恢复任务/);
+  assert.deepEqual(recoveryForJob(job), { kind: 'retry_existing', label: '重新生成' });
+  const html = renderCard(job);
+  assert.match(html, /这次没生成出来/);
+  assert.match(html, /重新生成/);
+  assert.doesNotMatch(html, /请检查素材|恢复任务|继续制作/);
 });
 
-test('planning content failure is a system record and never adds a second form', () => {
+test('planning content failure offers one regenerate and never adds a second form', () => {
   const job = fixture({ kind: 'plan', progress: { error_code: 'planning_content_failed', retryable: false,
     issue_summary: ['第 3 镜：动作时长不足', '第 2 镜：物品状态不连贯'] } });
   const html = renderCard(job);
-  assert.match(html, /这是系统问题，已记录/);
-  assert.doesNotMatch(html, /第 3 镜：动作时长不足|继续处理|输入修改要求/);
-  assert.doesNotMatch(html, /<input|<textarea|<form|role="dialog"|<button/);
+  assert.match(html, /这次没生成出来/);
+  assert.match(html, /重新生成/);
+  assert.doesNotMatch(html, /第 3 镜：动作时长不足|继续处理|请修改|输入修改要求/);
+  assert.doesNotMatch(html, /<input|<textarea|<form|role="dialog"/);
+  assert.equal((html.match(/<button/g) || []).length, 1);
 });
 
 
@@ -249,15 +257,15 @@ test('an interrupted planner reply keeps the request and one last resume', () =>
 });
 
 
-test('an unfinished review is a system record and a request limit can still continue', () => {
+test('an unfinished review can be generated again and a request limit can still continue', () => {
   const incomplete = fixture({ kind: 'plan', progress: { error_code: 'planning_review_incomplete', retryable: false,
     retry_action: 'continue_conversation', issue_summary: ['OLD_CONTENT_ISSUE'] } });
-  assert.equal(recoveryForJob(incomplete).kind, 'unavailable');
-  assert.equal(retryRequest(incomplete), null);
+  assert.deepEqual(recoveryForJob(incomplete), { kind: 'retry_existing', label: '重新生成' });
   const incompleteHtml = renderCard(incomplete, { hasExistingResult: true });
-  assert.match(incompleteHtml, /这是系统问题，已记录/);
+  assert.match(incompleteHtml, /这次没生成出来/);
+  assert.match(incompleteHtml, /重新生成/);
   assert.match(incompleteHtml, /已有成片仍可播放、下载/);
-  assert.doesNotMatch(incompleteHtml, /按已保存的需求继续|输入修改要求|OLD_CONTENT_ISSUE|<button/);
+  assert.doesNotMatch(incompleteHtml, /按已保存的需求继续|输入修改要求|OLD_CONTENT_ISSUE/);
   const limited = fixture({ kind: 'plan', progress: { error_code: 'planning_request_limit', retryable: false,
     retry_action: 'continue_conversation', issue_summary: ['OLD_CONTENT_ISSUE'] } });
   assert.equal(recoveryForJob(limited).kind, 'continue_conversation');
@@ -270,17 +278,17 @@ test('an unfinished review is a system record and a request limit can still cont
   assert.equal((html.match(/<button/g) || []).length, 1);
 });
 
-test('a saved storyboard rejected for segment structure does not ask the merchant to resume', () => {
+test('a saved storyboard rejected for segment structure can be generated again', () => {
   const job = fixture({ kind: 'plan', phase: 'reviewing_plan',
     error: '视频段镜头时轴或素材结构无效',
     progress: { error_code: 'planning_invalid_response', retryable: false, retry_action: 'edit_plan' } });
-  assert.equal(recoveryForJob(job).kind, 'unavailable');
-  assert.equal(retryRequest(job), null);
+  assert.deepEqual(recoveryForJob(job), { kind: 'retry_existing', label: '重新生成' });
   const html = renderCard(job);
-  assert.match(html, /这是系统问题，已记录/);
-  assert.doesNotMatch(html, /继续处理|按已保存的需求继续|输入修改要求|请重新策划|<button/);
+  assert.match(html, /这次没生成出来/);
+  assert.match(html, /重新生成/);
+  assert.doesNotMatch(html, /继续处理|按已保存的需求继续|请修改|输入修改要求|请重新策划/);
   const exhausted = { ...job, progress: { ...job.progress, retry_action: 'continue_conversation' } };
-  assert.equal(recoveryForJob(exhausted).kind, 'unavailable');
+  assert.equal(recoveryForJob(exhausted).label, '重新生成');
 });
 
 test('a structurally invalid planning reply regenerates after automatic recovery is exhausted', () => {
@@ -361,7 +369,7 @@ test('failure cards never show field names, pydantic, or validation wording', ()
     assert.doesNotMatch(html, /pydantic|validation|speech_characters_per_tenth|speech_spans|CreativeOption|reference_asset_ids|请重新策划/i);
   }
   const kept = renderCard(samples[5]);
-  assert.match(kept, /这是系统问题，已记录/);
+  assert.match(kept, /这次没生成出来/);
   assert.doesNotMatch(kept, /speech_characters_per_tenth|validation|第 1 镜/i);
 });
 
@@ -399,18 +407,19 @@ test('an exhausted or permanent video refusal uses the system sentence', () => {
   assert.doesNotMatch(html, /重试失败片段|视频片段未生成|继续制作|<button/);
 });
 
-test('a spend-time hard-gate miss is a system record and does not send the merchant back to edit', () => {
+test('a spend-time hard-gate miss can be generated again and does not send the merchant back to edit', () => {
   const job = fixture({
     error: '这版方案需要重新检查。请在对话里改完再制作，这次不会生成图片或视频。',
     progress: { error_code: 'release_recheck', retryable: false, retry_action: 'edit_plan' },
   });
-  assert.equal(recoveryForJob(job).kind, 'unavailable');
-  assert.equal(retryRequest(job), null);
+  assert.deepEqual(recoveryForJob(job), { kind: 'retry_existing', label: '重新生成' });
+  assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
   const element = RecoveryCard({ job, busy: '', canEditVoice: true, canShorten: true, hasExistingResult: false,
     onRetry() {}, onEditVoice() {}, onShorten() {}, onChangePlan() {}, onRestart() {}, onSettings() {} });
   const html = renderToStaticMarkup(element);
-  assert.match(html, /这是系统问题，已记录/);
-  assert.doesNotMatch(html, /这版方案需要重新检查|回到对话修改|继续处理|修改方案|<button/);
+  assert.match(html, /这次没生成出来/);
+  assert.match(html, /重新生成/);
+  assert.doesNotMatch(html, /这版方案需要重新检查|回到对话修改|继续处理|修改方案/);
 });
 
 test('the last-resort card button requests a restart from the saved brief', () => {
