@@ -2595,6 +2595,9 @@ class Gateway:
 
                 def record_progressive_failure(candidate):
                     reasons = candidate.get("failed_reasons") if isinstance(candidate, dict) else None
+                    if not reasons and isinstance(candidate, dict) and isinstance(candidate.get("plan_review"), dict):
+                        from app.plan_review import structured_review_reasons
+                        reasons = structured_review_reasons(candidate.get("plan_review"), candidate)
                     if isinstance(candidate, dict) and candidate.get("nonblocking") is True:
                         remember_plan_warning(self.settings, self._plan_warning_holder, candidate)
                         if reasons:
@@ -2633,7 +2636,7 @@ class Gateway:
                 if is_degenerate_plan(plan):
                     raise ProgressivePlanningError(
                         "分镜没有完成，占位稿不是完成的方案。已有方案和素材已保留，尚未开始新的图片或视频生成",
-                        issue_summary=["占位稿不是完成的方案"])
+                        issue_summary=["占位稿不是完成的方案"], error_code="planning_not_produced")
                 ready_message = "广告方案已准备好，创意摘要和分镜见下方。需要修改，直接告诉我；确认后再准备图片。"
                 return AgentDecision.model_validate({"kind": "plan",
                     "message": ready_message,

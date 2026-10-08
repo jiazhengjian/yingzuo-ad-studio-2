@@ -1459,9 +1459,12 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             {"beats": spoken}, strategy, locked, plan, duration)
 
     def unfinished_board():
+        # No hard-gate passer, or the board never became a plan. The merchant
+        # can start text planning again. This is not a content card with no button.
         raise ProgressivePlanningError(
             "分镜没有完成，占位稿不是完成的方案。已有方案和素材已保留，尚未开始新的图片或视频生成",
-            issue_summary=["占位稿不是完成的方案"], repair_attempts=repairs)
+            issue_summary=["占位稿不是完成的方案"], repair_attempts=repairs,
+            error_code="planning_not_produced")
 
     def usable(plan):
         return isinstance(plan, dict) and bool(plan.get("segments")) and not is_degenerate_plan(plan)
@@ -1531,7 +1534,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                         "issues": ["fallback_skeleton"], "error_code": "fallback_skeleton"})
         raise ProgressivePlanningError(
             "分镜没有完成，占位稿不是完成的方案。已有方案和素材已保留，尚未开始新的图片或视频生成",
-            issue_summary=["占位稿不是完成的方案"])
+            issue_summary=["占位稿不是完成的方案"], error_code="planning_not_produced")
     repairs = 0
     last_valid_plan = None
     real_candidates = []
@@ -1649,7 +1652,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
         if isinstance(plan, dict) and evaluate_release_table(plan, strategy, exempt_lines=insisted):
             from .merchant_cards import NOT_PRODUCED_CARD
             raise ProgressivePlanningError(
-                NOT_PRODUCED_CARD, issue_summary=["硬门没有通过"], repair_attempts=repairs,
+                NOT_PRODUCED_CARD, issue_summary=[NOT_PRODUCED_CARD], repair_attempts=repairs,
                 error_code="planning_not_produced")
         if should_record_auto_release(plan):
             record_auto_release(plan, project_id=project_id, repair_rounds=repairs)
@@ -1895,7 +1898,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             raise _PlanAccepted(chosen)
         from .merchant_cards import NOT_PRODUCED_CARD
         raise ProgressivePlanningError(
-            NOT_PRODUCED_CARD, issue_summary=["硬门没有通过"], repair_attempts=repairs,
+            NOT_PRODUCED_CARD, issue_summary=[NOT_PRODUCED_CARD], repair_attempts=repairs,
             error_code="planning_not_produced")
 
     from .release_gate import duration_hold
@@ -2229,13 +2232,18 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                     if isinstance(raw_review, dict):
                         raw_review = normalize_plan_review_wire(unwrap_planner_object(raw_review))
                         raw_review = drop_extra_forbidden(PlanReview, raw_review)
-                    review = validate_plan_review(lower_failed_plan_verdicts(raw_review, plan), plan,
+                    lowered_review = lower_failed_plan_verdicts(raw_review, plan)
+                    review = validate_plan_review(lowered_review, plan,
                                                   require_speaker_visibility=True, require_temporal_omission=True,
                                                   require_temporal_omission_evidence=True, require_visual_execution=True,
                                                   require_review_policy=True)
                     break
                 except (ValueError, KeyError, TypeError) as error:
-                    record_failure(plan)
+                    from .plan_review import diagnostic_sentence
+                    sentence = diagnostic_sentence(error)
+                    record_failure({"message": "综合检查记录无效",
+                                    "failed_reasons": [sentence] if sentence else ["综合检查记录无效"],
+                                    "error_code": "plan_review"})
                     if review_response_repair_used:
                         await stop("本次方案的完整检查尚未完成，暂未采用", {("review",): "综合检查记录不完整或无效"},
                              error_code="planning_review_incomplete")
@@ -2257,8 +2265,11 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                              error_code="planning_review_incomplete")
                     try:
                         preserve_review_rejections(raw_review, corrected_review, plan)
-                    except (ValueError, KeyError, TypeError):
-                        record_failure(plan)
+                    except (ValueError, KeyError, TypeError) as error:
+                        from .plan_review import diagnostic_sentence
+                        sentence = diagnostic_sentence(error) or "综合检查记录无效"
+                        record_failure({"message": "综合检查记录无效", "failed_reasons": [sentence],
+                                        "error_code": "plan_review"})
                         await stop("本次方案的完整检查尚未完成，暂未采用", {("review",): "综合检查记录不完整或无效"},
                              error_code="planning_review_incomplete")
                     raw_review = corrected_review
@@ -2281,7 +2292,15 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                     await stop("分镜没有完成，占位稿不是完成的方案",
                                {("contract",): "占位稿不是完成的方案"})
                 return release(plan)
-            record_failure(plan)
+            from .plan_review import program_downgrade_reasons, structured_review_reasons
+            review_reasons = []
+            for item in [*structured_review_reasons(review, plan), *program_downgrade_reasons(raw_review, plan)]:
+                if item and item not in review_reasons:
+                    review_reasons.append(item)
+            if not review_reasons:
+                review_reasons = ["综合检查未通过"]
+            record_failure({"message": "综合检查没有通过", "issues": review_reasons[:8],
+                            "failed_reasons": review_reasons[:8], "error_code": "plan_review"})
             feedback = review.model_dump(exclude={"reviewed_plan_sha256", "reviewed_reference_asset_ids"})
             issues = _review_issues(feedback, plan)
             # A prop count or presence jump is repaired and compiled again

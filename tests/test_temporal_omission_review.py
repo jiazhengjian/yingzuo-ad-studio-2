@@ -1,4 +1,5 @@
 """Explicit model omission verdicts are required, conservative and historical."""
+import json
 from copy import deepcopy
 
 import pytest
@@ -22,6 +23,38 @@ def cut_before_continuous_after(source):
         allowed_changes="入口后省略咀嚼吞咽，结束按已咽下记录。", end_state="人物已咽下。")
     draft["shots"][2]["continuity"].update(entry_transition="continuous", start_state="人物已咽下。")
     return compile_director(draft, strategy, 20, "continuity_v1", [source["id"]])[0]
+
+
+def test_ready_true_downgrade_is_recorded_beside_the_model_body(cut_before_continuous_after, tmp_path):
+    from app.config import Settings
+    from app.plan_review import lower_failed_plan_verdicts, program_downgrade_reasons, structured_review_reasons
+    from app.providers.gateway import _owned_check_reasons, save_failed_planner_output
+    subject = cut_before_continuous_after
+    checks = accepted_review(subject)
+    shot = checks["alignment"]["shots"][1]
+    shot["temporal_omission"] = "unsupported"
+    shot_id = shot["shot_id"]
+    before = deepcopy(checks)
+    reasons = program_downgrade_reasons(checks, subject)
+    assert checks == before and checks["ready"] is True
+    assert any(item == "程序把审核总评从通过改成未通过" for item in reasons)
+    assert any(shot_id in item and "unsupported" in item for item in reasons)
+    lowered = lower_failed_plan_verdicts(checks, subject)
+    combined = []
+    for item in [*structured_review_reasons(lowered, subject), *reasons]:
+        if item not in combined:
+            combined.append(item)
+    settings = Settings(data_root=tmp_path)
+    save_failed_planner_output(settings, {
+        "stage": "plan_review", "raw_output": checks,
+        "validation_errors": [{"loc": ["check"], "type": "content_check", "msg": text}
+                              for text in _owned_check_reasons(combined)],
+    })
+    saved = json.loads(next((tmp_path / "diagnostics").glob("*.json")).read_text())
+    assert saved["raw_output"]["ready"] is True
+    messages = [item.get("msg", "") for item in saved["validation_errors"]]
+    assert any("程序把审核总评从通过改成未通过" in item for item in messages)
+    assert any(shot_id in item and "时间省略" in item for item in messages)
 
 
 @pytest.mark.parametrize("verdict", ["unsupported", "unclear"])

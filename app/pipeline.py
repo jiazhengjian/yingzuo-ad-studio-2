@@ -644,7 +644,7 @@ class Pipeline:
             # stays on the revision the merchant confirmed, so 确认 can start
             # a new one. Nothing was submitted.
             self.store.update_job(job_id, status="canceled",
-                                  error="方案已换成能通过检查的一版，请再确认后再制作。", lease_until=0)
+                                  error="方案做了一些调整，请再确认后再制作。", lease_until=0)
             current = self.store.get_project(job["project_id"])
             self.store.set_project_status(job["project_id"], current["revision"], "awaiting_generate")
         except StaleRevision as exc:
@@ -1001,7 +1001,8 @@ class Pipeline:
         and waits for another 确认. It does not submit images or video.
         """
         from .release_gate import (
-            MerchantLineChoice, settle_before_spend, spoken_line_changes, spoken_repair_message,
+            MerchantLineChoice, adjustment_notice, settle_before_spend, spoken_line_changes,
+            spoken_repair_message,
         )
         project = self.store.get_project(job["project_id"])
         try:
@@ -1016,9 +1017,7 @@ class Pipeline:
         if changes is None:
             project = self.store.save_repaired_plan(job["project_id"], previous, settled)
             self.store.add_message(
-                job["project_id"], "assistant",
-                "硬门没有通过，已换成一份能通过检查的方案。请再按确认，确认之后才会出图。",
-                job["id"])
+                job["project_id"], "assistant", adjustment_notice(plan, settled), job["id"])
             raise NeedsReconfirm()
         project = self.store.save_repaired_plan(job["project_id"], previous, settled)
         current = self.store.get_job(job["id"])

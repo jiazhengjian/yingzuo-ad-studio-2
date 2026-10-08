@@ -22,6 +22,24 @@ from dataclasses import dataclass
 
 logger = logging.getLogger("yingzuo.auto_release")
 
+
+def configure_auto_release_log():
+    """Print the auto_release line on stderr under the standard uvicorn command.
+
+    That logger is not on the uvicorn tree. Uvicorn's default setup leaves it
+    without a level or a handler, so an INFO record never reaches the terminal.
+    """
+    logger.setLevel(logging.INFO)
+    if any(getattr(handler, "yingzuo_auto_release", False) for handler in logger.handlers):
+        return
+    handler = logging.StreamHandler()
+    handler.yingzuo_auto_release = True
+    handler.setLevel(logging.INFO)
+    logger.addHandler(handler)
+
+
+configure_auto_release_log()
+
 from .line_quality import (
     brand_stack_remaining, brand_visual_claim_overflow,
     script_form, script_line_offenses, voice_identity_issues,
@@ -334,8 +352,18 @@ def spoken_line_changes(before, after):
     return []
 
 
+def _merchant_line_reason(reason):
+    """A plain label for a rewritten line. Blame about a failed check stays out."""
+    if not isinstance(reason, str):
+        return ""
+    text = reason.strip()
+    if not text or any(token in text for token in ("硬门", "检查没", "没有通过", "没通过", "不是最好", "过不了")):
+        return ""
+    return text
+
+
 def spoken_repair_message(before, changes):
-    """Plain chat line naming each rewritten spoken line and the hard-gate reason."""
+    """Plain chat line naming each rewritten spoken line. No failed-check blame."""
     findings = []
     try:
         findings = evaluate_release_table(before, exempt_lines=insisted_lines(before))
@@ -346,18 +374,90 @@ def spoken_repair_message(before, changes):
         reason = next((item.summary for item in findings if item.line and item.line == old), None)
         if reason is None and findings:
             reason = findings[0].summary
-        if not reason:
-            reason = "这句过不了出图前的检查"
+        reason = _merchant_line_reason(reason)
+        because = f"，因为{reason}" if reason else ""
         if old and new:
-            parts.append(f"「{old}」改成了「{new}」，因为{reason}")
+            parts.append(f"「{old}」改成了「{new}」{because}")
         elif old:
-            parts.append(f"收掉了「{old}」，因为{reason}")
+            parts.append(f"收掉了「{old}」{because}")
         elif new:
-            parts.append(f"补上了「{new}」，因为{reason}")
+            parts.append(f"补上了「{new}」{because}")
     if not parts:
         return ""
     lead = "出图前改了这句台词：" if len(parts) == 1 else "出图前改了这几句台词："
     return lead + "；".join(parts) + "。"
+
+
+def _clip_merchant(text, limit=36):
+    value = " ".join(str(text or "").split())
+    if len(value) <= limit:
+        return value
+    return value[:limit] + "…"
+
+
+def _shot_descriptions(plan):
+    found = []
+    if not isinstance(plan, dict):
+        return found
+    for segment in plan.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        for shot in segment.get("shots") or []:
+            if isinstance(shot, dict):
+                found.append(shot.get("description") if isinstance(shot.get("description"), str) else "")
+    return found
+
+
+def adjustment_notice(before, after):
+    """Tell the merchant the board changed, and what, without saying why.
+
+    The previous version is not described as failed, unchecked, or second best.
+    """
+    items = []
+
+    def add(text):
+        if text and text not in items and len(items) < 6:
+            items.append(text)
+
+    old_lines = _spoken_lines(before)
+    new_lines = _spoken_lines(after)
+    for index in range(max(len(old_lines), len(new_lines))):
+        old = old_lines[index] if index < len(old_lines) else ""
+        new = new_lines[index] if index < len(new_lines) else ""
+        if old == new:
+            continue
+        if old and new:
+            add(f"台词从「{_clip_merchant(old)}」改成「{_clip_merchant(new)}」")
+        elif old:
+            add(f"收掉了台词「{_clip_merchant(old)}」")
+        else:
+            add(f"台词改成「{_clip_merchant(new)}」")
+    old_shots = _shot_descriptions(before)
+    new_shots = _shot_descriptions(after)
+    for index in range(max(len(old_shots), len(new_shots))):
+        old = old_shots[index] if index < len(old_shots) else ""
+        new = new_shots[index] if index < len(new_shots) else ""
+        if old.strip() == new.strip():
+            continue
+        if old.strip() and new.strip():
+            add(f"镜头从「{_clip_merchant(old)}」改成「{_clip_merchant(new)}」")
+        elif old.strip():
+            add(f"收掉了镜头「{_clip_merchant(old)}」")
+        else:
+            add(f"镜头改成「{_clip_merchant(new)}」")
+    labels = {"character_dialogue": "出镜说话", "voiceover": "画外旁白", "none": "无人声"}
+
+    def mode(plan):
+        production = plan.get("production") if isinstance(plan, dict) and isinstance(plan.get("production"), dict) else {}
+        return production.get("speech_mode") if isinstance(production.get("speech_mode"), str) else ""
+
+    old_mode, new_mode = mode(before), mode(after)
+    if old_mode != new_mode and (old_mode or new_mode):
+        add(f"声音从{labels.get(old_mode, '原来的方式')}改成{labels.get(new_mode, '现在的方式')}")
+    lead = "方案做了一些调整，确认后开始出图。"
+    if not items:
+        return lead
+    return lead + "".join(f"{item}。" for item in items)
 
 
 def _with_form(strategy, form):
@@ -1023,7 +1123,7 @@ def settle_manual_edit(previous, submitted, duration, strategy=None, project=Non
     plan already stored for this project.
     """
     if not isinstance(submitted, dict):
-        return None, "这版方案没能通过检查，上一版还在。"
+        return None, "这版没有换成你改的内容，上一版还在。"
     plan = _strip_client_review(deepcopy(submitted))
     strategy = strategy or plan.get("strategy")
     spoken = set(_spoken_lines(plan))
@@ -1048,7 +1148,7 @@ def settle_manual_edit(previous, submitted, duration, strategy=None, project=Non
         return None, ("；".join(parts) + "。可以让系统改写，你自己改一句，或在对话里说就按这句来。")[:500]
     status = stamp_honest_label(plan, strategy, project=project)
     if status == "not_ready" or images_blocked_reason(plan, strategy=strategy, project=project):
-        return None, "这版方案没能通过检查，上一版还在。"
+        return None, "这版没有换成你改的内容，上一版还在。"
     return plan, None
 
 

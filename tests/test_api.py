@@ -145,6 +145,34 @@ def test_public_detail_strips_internal_paths_and_urls(tmp_path):
     assert str(tmp_path) not in response.text
 
 
+def test_public_detail_strips_review_note_and_auto_release(tmp_path):
+    c, app = client(tmp_path)
+    pid = create(c)
+    note = "综合检查没通过（台词自然度），硬门已通过"
+    plan = {
+        "title": "方案", "script": "看清瓶子。", "language": "zh-CN", "aspect_ratio": "9:16",
+        "audio_strategy": "voiceover", "review_status": "conservative_fallback",
+        "review_status_note": note,
+        "auto_release": {"note": note, "failed_checks": ["台词自然度"], "repair_rounds": 1,
+                         "project_id": pid, "ad_form": "brand_tvc"},
+        "segments": [
+            {"id": "s0", "duration_seconds": 10, "purpose": "展示", "prompt": "展示商品真实外观",
+             "shots": [{"start": 0, "end": 10, "description": "瓶身在桌上。"}]},
+            {"id": "s1", "duration_seconds": 10, "purpose": "展示", "prompt": "展示商品真实外观",
+             "shots": [{"start": 0, "end": 10, "description": "瓶身靠近一些。"}]},
+        ],
+    }
+    app.state.store.update_plan(pid, plan)
+    response = c.get(f"/api/projects/{pid}")
+    assert response.status_code == 200
+    assert "review_status_note" not in response.text
+    assert "auto_release" not in response.text
+    assert "硬门已通过" not in response.text
+    stored = app.state.store.get_project(pid)["plan"]
+    assert stored["review_status_note"] == note
+    assert stored["auto_release"]["failed_checks"] == ["台词自然度"]
+
+
 def test_upload_limit_and_project_asset_ownership(tmp_path):
     c, app = client(tmp_path)
     first, second = create(c), create(c)

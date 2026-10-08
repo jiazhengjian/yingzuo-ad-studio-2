@@ -29,7 +29,11 @@ from app.planner_transport import planner_api_key, planner_label, planner_provid
 from app.schemas import ContinuityInput, CredentialsInput, CreativeConfirmInput, DirectionSelectInput, GenerateInput, MessageInput, NewProject, PlanInput, ProjectTitleInput, RetryInput, TurnInput
 
 
-PRIVATE_FIELDS = {"path", "source_path", "payload", "snapshot", "raw", "provider_url", "download_url", "lease_until"}
+PRIVATE_FIELDS = {
+    "path", "source_path", "payload", "snapshot", "raw", "provider_url", "download_url", "lease_until",
+    # Kept in storage and backend logs. The merchant API does not return them.
+    "review_status_note", "auto_release",
+}
 _WORKBENCH_ORIGINS = {
     "http://127.0.0.1:8787", "http://localhost:8787",
     "http://127.0.0.1:5173", "http://localhost:5173",
@@ -79,6 +83,8 @@ def public(value):
 
 
 def create_app(settings=None, gateway=None, run_worker=True):
+    from app.release_gate import configure_auto_release_log
+    configure_auto_release_log()
     settings = settings or Settings.from_env()
     store = Store(settings.database_path, settings.media_root)
     gateway = gateway or Gateway(settings)

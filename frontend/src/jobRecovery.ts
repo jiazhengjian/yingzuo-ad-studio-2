@@ -29,6 +29,8 @@ export function canRegenerate(job: Job): boolean {
   if (review === 'passed' || review === 'repaired' || review === 'auto_release' || job.progress?.auto_release) return false;
   const code = job.progress?.error_code;
   const error = job.error || '';
+  // Hard gates never cleared, or the plan was never produced. A content failure
+  // stays on the system sentence and does not get this button.
   if (code === 'planning_not_produced' || code === 'release_recheck' || error === '这次没生成出来' || HARD_GATE_MISS.test(error)) return true;
   if (job.progress?.structure_retries_exhausted || STRUCTURE_CHECK.test(error)) return true;
   return false;

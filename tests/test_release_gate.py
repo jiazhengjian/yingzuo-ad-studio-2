@@ -125,7 +125,8 @@ def test_manual_edit_locks_the_new_line_and_refuses_a_board_that_fails_elsewhere
     ]}
     blocked, reason = settle_manual_edit(None, same_shots, 15)
     assert blocked is None
-    assert "没能通过检查" in reason
+    assert reason == "这版没有换成你改的内容，上一版还在。"
+    assert "检查" not in reason
 
 
 def test_insisted_line_is_the_only_exemption_and_other_content_still_fails():
@@ -632,8 +633,12 @@ def test_conservative_replacement_waits_for_another_confirm_before_any_spend(tmp
     assert saved["segments"] != plan["segments"]
     assert images_blocked_reason(saved, strategy=saved.get("strategy"), project=current) is None
     notes = [item["content"] for item in store.project_detail(project["id"])["messages"] if item["role"] == "assistant"]
-    assert notes == ["硬门没有通过，已换成一份能通过检查的方案。请再按确认，确认之后才会出图。"]
+    assert notes[0].startswith("方案做了一些调整，确认后开始出图。")
+    assert "硬门" not in notes[0] and "检查没" not in notes[0] and "不是最好" not in notes[0]
+    assert stacked in notes[0]
     assert "重新生成" not in notes[0]
+    assert "能通过检查" not in (stopped.get("error") or "")
+    assert "硬门" not in (stopped.get("error") or "")
     again = store.create_job(project["id"], "generate", current["revision"])
     assert again["id"] != job["id"]
     assert again["payload"]["merchant_confirmed_revision"] == current["revision"]
@@ -723,6 +728,32 @@ def test_hard_gate_miss_stops_when_the_conservative_board_also_fails(monkeypatch
     with pytest.raises(ValueError, match="这次没生成出来"):
         settle_before_spend(board, strategy=strategy, project_id="proj", duration=15,
                             generation_strategy="legacy_10s", asset_ids=["original-product"])
+
+
+def test_auto_release_reaches_the_startup_handler_without_raising_the_level():
+    """The line must hit the handler configured at startup, not a test-only level bump."""
+    import io
+    import logging
+
+    from app.release_gate import configure_auto_release_log
+    configure_auto_release_log()
+    log = logging.getLogger("yingzuo.auto_release")
+    assert log.isEnabledFor(logging.INFO)
+    handler = next(item for item in log.handlers if getattr(item, "yingzuo_auto_release", False))
+    buffer = io.StringIO()
+    previous = handler.stream
+    handler.stream = buffer
+    try:
+        strategy = _strategy("scene_story")
+        failed = _board(strategy, ["先放这儿。"], ["她把瓶子放在桌角。", "瓶子留在原处。"], mode="character_dialogue")
+        failed["plan_review"] = _failed_review()
+        failed["plan_review"]["alignment"]["ad_expression_passed"] = False
+        record_auto_release(failed, project_id="proj-live", ad_form="scene_story", repair_rounds=1)
+    finally:
+        handler.stream = previous
+    text = buffer.getvalue()
+    assert text.startswith("auto_release ")
+    assert "proj-live" in text and "scene_story" in text and "广告表达" in text
 
 
 def test_auto_release_only_when_every_hard_gate_passes_and_the_review_failed():
