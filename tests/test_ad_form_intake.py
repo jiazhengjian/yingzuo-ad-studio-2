@@ -399,10 +399,15 @@ def test_gateway_intake_requests_only_reply_or_clarify_until_form_is_chosen(env,
     monkeypatch.setattr(Gateway, "_planner_json", fake)
     result = asyncio.run(Gateway(app.state.settings).decide(p, [app.state.store.get_asset(original["id"])], [], [], None))
     assert result["kind"] == "clarify" and [q["id"] for q in result["questions"]] == ["ad_form", "highlight", "audience", "cta_target"]
-    assert len(contexts) == 1
+    # The reply asked one other question, not the four that are still missing, so it is retried once.
+    # The direction is not shown. The card is those four questions.
+    assert [item["stage"] for item in contexts] == ["strategy", "strategy"]
+    assert contexts[1]["task_kind"] == "strategy_response_repair"
     assert contexts[0]["allowed_decisions"] == ["reply", "clarify"]
+    assert contexts[1]["allowed_decisions"] == ["reply", "clarify"]
     assert contexts[0]["ad_form_question"] == ad_form_question()
     assert contexts[0]["ad_form"] is None
+    assert result.get("direction_candidates") is None
 
 
 def test_changing_form_releases_old_selected_direction(env, monkeypatch, isolated_skill_loader):

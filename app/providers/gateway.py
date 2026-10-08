@@ -24,7 +24,10 @@ from pydantic import ValidationError
 from app.schemas import AgentDecision, Plan, Segment, segment_durations, script_character_limit, shot_character_limit
 from app.media import run, MediaCanceled
 from app.db import StaleRevision
-from app.ad_form import ad_form_confirmation, ad_form_question, intake_strategy_response, needs_ad_form_choice
+from app.ad_form import (ClarificationIncomplete, ad_form_confirmation, ad_form_question,
+                         clarification_questions_cover, intake_strategy_response,
+                         missing_clarification_ids, needs_ad_form_choice, response_carries_direction,
+                         salvage_clarification_card)
 from app.planning import StrategyDecision, STRATEGY_SYSTEM, STRATEGY_SELECTION_SYSTEM, STORYBOARD_SYSTEM, STORYBOARD_STAGE_SYSTEM, COPY_REVIEW_SYSTEM, advertising_copy_brief, compact_schema, evidence_sources, expression_schedule, validate_expression_schedule, requests_new_directions, strategy_decision_schema, concept_revision_permissions, validate_concept_revision
 from app.strategy import BriefEvidenceError, CreativeDirection, StrategyRecord, build_direction_candidates, build_strategy, select_rules, validate_brief, require_direction_stories, require_direction_value, require_direction_concepts
 from app.direction_review import (DIRECTION_REVIEW_SYSTEM, direction_review_schema,
@@ -2453,6 +2456,20 @@ class Gateway:
                 request_context = context
                 strategy_started = time.monotonic()
                 strategy_budget = _planner_budget_seconds(self.settings, stage_route(self.settings, "strategy"))
+                # Clarification and directions stay one call. A reply that already
+                # asked every missing question keeps that card and drops any
+                # direction mixed into it. A reply that skipped some of those
+                # questions is retried once; the direction is still not shown.
+                clarification_work = bool(current_plan) or existing_direction is not None
+
+                def question_card():
+                    return salvage_clarification_card(
+                        project, messages, gates, planning_requested=force_plan)
+
+                def accept_question_card():
+                    logger.info("Clarification questions stayed incomplete; direction withheld")
+                    return checked_strategy_response(question_card())
+
                 for attempt in range(2 if choice_enabled else 1):
                     try:
                         raw = await stage_call(STRATEGY_SELECTION_SYSTEM if choice_enabled else STRATEGY_SYSTEM,
@@ -2462,9 +2479,31 @@ class Gateway:
                         recovery_override["wall"] = None
                         recovery_override["kind"] = None
                     try:
+                        if choice_enabled and isinstance(raw, dict):
+                            required_ids = missing_clarification_ids(
+                                project, messages, gates, planning_requested=force_plan,
+                                existing_work=clarification_work)
+                            # A plain reply stays a reply. Only a clarification, or a
+                            # reply that already attached a direction, is checked here.
+                            checking = bool(required_ids) and (
+                                raw.get("kind") in ("clarify", "directions", "plan")
+                                or response_carries_direction(raw))
+                            if checking and clarification_questions_cover(raw, required_ids):
+                                if response_carries_direction(raw):
+                                    logger.info("Clarification dropped a mixed direction")
+                                    raw = question_card()
+                            elif checking and not clarification_questions_cover(raw, required_ids):
+                                if attempt == 0:
+                                    raise ClarificationIncomplete()
+                                decision, candidates, strategy = accept_question_card()
+                                break
                         decision, candidates, strategy = checked_strategy_response(raw)
                         break
                     except ValueError as exc:
+                        incomplete = isinstance(exc, ClarificationIncomplete)
+                        if incomplete and attempt:
+                            decision, candidates, strategy = accept_question_card()
+                            break
                         if not choice_enabled or attempt:
                             raise
                         remaining = strategy_budget - (time.monotonic() - strategy_started)
@@ -2475,6 +2514,9 @@ class Gateway:
                             alternate = self._text_fallback(
                                 stage_route(self.settings, "strategy"), status_code=None, timed_out=True)
                             if alternate is None or remaining < 1:
+                                if incomplete:
+                                    decision, candidates, strategy = accept_question_card()
+                                    break
                                 raise
                             recovery_override["route"] = alternate
                             recovery_override["kind"] = "fallback"
@@ -2497,7 +2539,9 @@ class Gateway:
                         else:
                             feedback = [{"type": "strategy_contract", "message": str(exc)[:500]}]
                         repair_instruction = "上一份入口回复未通过程序校验，尚未向用户展示。根据原始需求重新判断 reply/clarify/directions/plan 路由，只返回修正后的完整 schema JSON。信息不足且用户未授权代定时先澄清；不要为凑三个方向选用不适用品类或缺少事实前提的规则。同一规则可用于实质不同的故事。concept_pool只写id、rule_id、hook_type、brand_world、evidence_ids，不写句子；hook_type只能使用allowed_hook_types。无效短概念会被丢弃，至少保留三个有效短概念。展开的三个方向必须来自这些有效短概念，彼此在机制、钩子和品牌世界路径上至少有两种；不必改成程序记录的那一组。方向上的机制、钩子、品牌世界和事实编号以对应短概念为准。核心创意不超过60字，洞察、0–3秒、中段、结尾和为什么吸引人各不超过40字。不要写big_idea，不要补写受众价值、创意展开、记忆点或声音任务。不得修改用户要求、伪造商品事实或绕过来源校验。"
-                        if product_supplement:
+                        if incomplete:
+                            repair_instruction = "上一份回复没有把还缺的问题问全，商家还没看到。这一次只返回 kind=clarify，把还缺的固定题问全，不要写创意方向，不要返回 directions 或 concept_pool。不得修改用户要求，不得伪造商品事实。"
+                        elif product_supplement:
                             repair_instruction = "上一份入口回复未通过程序校验，尚未向用户展示。本轮只是补充商品图或商品信息。kind只能是plan，沿用existing_direction的id与rule_id，把新的商品事实并进brief。不要返回clarify或directions，不要要求重选方向或重新确认需求。不得修改用户要求、伪造商品事实或绕过来源校验。"
                         request_context = {**copy.deepcopy(context), "task_kind": "strategy_response_repair",
                             "previous_response": copy.deepcopy(raw), "validation_feedback": feedback,

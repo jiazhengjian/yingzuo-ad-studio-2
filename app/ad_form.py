@@ -260,6 +260,87 @@ def confirmation_message(questions):
     return f"先确认{'、'.join(parts)}，再继续准备方案。"
 
 
+class ClarificationIncomplete(ValueError):
+    """The reply did not ask every question this turn still needs.
+
+    The gateway retries once. The sentence is for that retry, not for the merchant.
+    """
+
+    def __init__(self):
+        super().__init__("还缺的问题没有问全")
+
+
+def missing_clarification_ids(project, messages=(), gates=(), *, planning_requested=False, existing_work=False):
+    """Fixed questions this fresh offer still has to ask. Empty when nothing is missing."""
+    if not isinstance(project, dict) or "ad_form" not in project:
+        return []
+    if not _fresh_proposal(project, gates, existing_work=existing_work):
+        return []
+    from .audience import should_ask_audience
+    from .cta import should_ask_cta
+    from .highlight import should_ask_highlight
+
+    ids = []
+    if project.get("ad_form") is None:
+        ids.append("ad_form")
+    if should_ask_highlight(project, messages, gates, planning_requested=planning_requested):
+        ids.append("highlight")
+    if should_ask_audience(project, messages, gates, planning_requested=planning_requested):
+        ids.append("audience")
+    if should_ask_cta(project):
+        ids.append("cta_target")
+    return ids
+
+
+def _covers_clarification_question(item, question_id):
+    if not isinstance(item, dict):
+        return False
+    if question_id == "highlight":
+        from .highlight import displaced_highlight, spec_question
+        if item.get("id") == "highlight":
+            return True
+        return bool(displaced_highlight(item) and not spec_question(item))
+    if question_id == "audience":
+        from .audience import AUDIENCE_IDS, displaced_audience
+        if item.get("id") in AUDIENCE_IDS:
+            return True
+        return bool(displaced_audience(item))
+    return item.get("id") == question_id
+
+
+def clarification_questions_cover(raw, required_ids):
+    """True when the model's own questions already include every missing one.
+
+    Program-added questions do not count. A selling-point prompt counts; a
+    count, size or packaging question does not.
+    """
+    if not required_ids:
+        return True
+    questions = raw.get("questions") if isinstance(raw, dict) else None
+    if not isinstance(questions, list):
+        return False
+    return all(any(_covers_clarification_question(item, question_id) for item in questions)
+               for question_id in required_ids)
+
+
+def response_carries_direction(raw):
+    """A creative offer was attached, whether or not the kind says so."""
+    if not isinstance(raw, dict):
+        return False
+    if raw.get("directions") or raw.get("concept_pool"):
+        return True
+    if raw.get("selected_direction_id") or raw.get("recommended_direction_id"):
+        return True
+    return raw.get("kind") in ("directions", "plan")
+
+
+def salvage_clarification_card(project, messages=(), gates=(), *, planning_requested=False):
+    """The missing questions only. Direction text from the same reply is not kept."""
+    questions = pack_clarification_questions(
+        [], project, messages, gates, planning_requested=planning_requested)
+    return {"kind": "clarify", "message": confirmation_message(questions), "questions": questions}
+
+
 def _fresh_proposal(project, gates, *, existing_work=False):
     """A first offer. An existing plan, or a direction already chosen, stays put."""
     if existing_work:
