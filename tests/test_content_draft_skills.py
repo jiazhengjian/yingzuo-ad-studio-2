@@ -2,6 +2,7 @@
 
 import hashlib
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -63,6 +64,49 @@ def test_storyboard_loads_dialogue_examples_without_the_timing_references():
     script = next(item for item in context["skills"] if item["id"] == SCRIPT)
     assert script["loaded_sections"] == ["SKILL.md", "references/ad-dialogue-examples.md"]
     assert any(item["id"] == "ads-video-storyboard-direction" for item in context["skills"])
+
+
+LIPSYNC_CLAIM = "没看没听就不能声称口型已经验证"
+BRAND_SENTENCE_COUNT = "大约 15 到 20 秒、2 到 3 句"
+
+
+def test_unseen_lipsync_claim_is_sent_only_inside_plan_review():
+    context = runtime_skills.stage_skill_context("plan_review")
+    skill = next(item for item in context["skills"] if item["id"] == "ads-video-plan-review")
+    assert skill["loaded_sections"] == ["SKILL.md", "references/plan-review.md"]
+    assert skill["content"].count(LIPSYNC_CLAIM) == 1
+    marker = "<!-- references/plan-review.md -->"
+    assert marker in skill["content"]
+    assert LIPSYNC_CLAIM in skill["content"].split(marker, 1)[1]
+    assert LIPSYNC_CLAIM not in skill["content"].split(marker, 1)[0]
+    direction = runtime_skills.stage_skill_context("direction_review")
+    direction_skill = next(item for item in direction["skills"] if item["id"] == "ads-video-plan-review")
+    assert "references/plan-review.md" not in direction_skill["loaded_sections"]
+    assert LIPSYNC_CLAIM not in direction_skill["content"]
+    for reference in context["shared_references"]:
+        assert LIPSYNC_CLAIM not in reference["content"]
+    hits = []
+    for folder in (Path("app"), Path("docs")):
+        for path in folder.rglob("*"):
+            if path.is_file() and path.suffix in {".md", ".py", ".json", ".txt"} and LIPSYNC_CLAIM in path.read_text():
+                hits.append(path.as_posix())
+    assert hits == ["app/skills/ads-video-plan-review/references/plan-review.md"]
+
+
+def test_brand_voiceover_stays_fifteen_to_twenty_seconds_in_one_place():
+    context = runtime_skills.stage_skill_context("plan_review", playbook_form="brand_tvc")
+    brand = next(item for item in context["shared_references"] if item["id"] == "ad-form-playbook-brand-tvc")
+    assert BRAND_SENTENCE_COUNT in brand["content"]
+    assert "大约 15 秒说" not in brand["content"]
+    hits = []
+    for path in Path("app/skills").rglob("*"):
+        if path.is_file() and path.suffix in {".md", ".txt"} and BRAND_SENTENCE_COUNT in path.read_text():
+            hits.append(path.as_posix())
+    assert hits == ["app/skills/shared/ad-form-playbooks/brand-tvc.md"]
+    script = runtime_skills.stage_skill_context("ad_script", playbook_form="brand_tvc")
+    examples = next(item for item in script["skills"] if item["id"] == "ads-video-script-planning")
+    assert BRAND_SENTENCE_COUNT not in examples["content"]
+    assert "大约 15 秒说" not in examples["content"]
 
 
 def test_registered_skills_match_the_consolidated_set():

@@ -96,7 +96,7 @@
     {
       "id": "ads-video-script-planning",
       "display_name": "Ads Video Script Planning",
-      "version": "1.7.0",
+      "version": "1.7.1",
       "stages": [
         "ad_script",
         "storyboard",
@@ -299,7 +299,7 @@
     {
       "id": "ads-video-plan-review",
       "display_name": "Ads Video Plan Review",
-      "version": "1.19.0",
+      "version": "1.19.1",
       "stages": [
         "direction_review",
         "plan_review"
@@ -425,7 +425,7 @@
     {
       "id": "ad-form-playbook-brand-tvc",
       "path": "shared/ad-form-playbooks/brand-tvc.md",
-      "version": "1.4.5",
+      "version": "1.4.6",
       "stages": [
         "strategy",
         "direction_review",
