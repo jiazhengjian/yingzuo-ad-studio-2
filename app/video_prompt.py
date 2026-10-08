@@ -8,7 +8,8 @@ from .cta import strip_guidance
 from .picture_rules import prepare_prompt_shot, unlock_wet_identity
 from .production import cast_appearance_clause
 from .story_logic import (
-    _STORY_HOLD_LINE, awake_listener, rest_product_for_story_ending, rewrite_inner_shot, shot_awake_listener,
+    _STORY_HOLD_LINE, awake_listener, rest_product_for_story_ending, rewrite_inner_shot, scene_groups,
+    shot_awake_listener,
     state_prompt_lines, story_gaze_line, story_needs_lens, with_background_line,
 )
 from .runtime_skills import compiler_template
@@ -458,6 +459,10 @@ def _compile_grouped_video(segment, template):
         ])
     lines.extend(_director_lines(director, production))
     lines.extend(_product_lines(director, production))
+    shot_scene = {}
+    for group in scene_groups(shots):
+        for item in group:
+            shot_scene[id(item)] = group
     inner = (segment.get("ad_form") == "scene_story" and production
              and production.get("speech_mode") == "character_dialogue" and spans
              and not awake_listener(production, shots))
@@ -465,7 +470,8 @@ def _compile_grouped_video(segment, template):
     if (not inner and segment.get("ad_form") == "scene_story" and production
             and production.get("speech_mode") == "character_dialogue" and spans):
         partial_inner = any(
-            any(_speech_overlaps(shot, span) for span in spans) and not shot_awake_listener(production, shot)
+            any(_speech_overlaps(shot, span) for span in spans)
+            and not shot_awake_listener(production, shot, shot_scene.get(id(shot)))
             for shot in shots)
     lines.extend(_voice_lines(production, director, spans, characters,
                               ad_form=segment.get("ad_form"), inner=bool(inner)))
@@ -495,13 +501,15 @@ def _compile_grouped_video(segment, template):
                 first_speaking_shot = candidate["id"]
                 break
     people_list = list(people.values())
-    for index, shot in enumerate(shots):
-        shot = _scrub_shot(shot, people_list)
+    for index, original in enumerate(shots):
+        # Scrubbing copies the shot. The scene group is keyed by the original.
+        scene = shot_scene.get(id(original))
+        shot = _scrub_shot(original, people_list)
         last = index == last_index
         speaking_here = bool(spans) and any(_speech_overlaps(shot, span) for span in spans)
         alone_here = (segment.get("ad_form") == "scene_story" and production
                       and production.get("speech_mode") == "character_dialogue" and speaking_here
-                      and not shot_awake_listener(production, shot))
+                      and not shot_awake_listener(production, shot, scene))
         if inner:
             shot = {**shot, "description": rewrite_inner_shot(shot.get("description") or "", speaking_here)}
         elif alone_here:

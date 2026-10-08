@@ -2598,14 +2598,22 @@ class Gateway:
                     if not reasons and isinstance(candidate, dict) and isinstance(candidate.get("plan_review"), dict):
                         from app.plan_review import structured_review_reasons
                         reasons = structured_review_reasons(candidate.get("plan_review"), candidate)
+                    structured = candidate.get("validation_errors") if isinstance(candidate, dict) else None
+                    safe_structured = _safe_validation_errors(structured) if isinstance(structured, list) else []
                     if isinstance(candidate, dict) and candidate.get("nonblocking") is True:
                         remember_plan_warning(self.settings, self._plan_warning_holder, candidate)
-                        if reasons:
+                        if safe_structured and isinstance(last_stage_result, dict):
+                            saved = dict(last_stage_result)
+                            saved["validation_errors"] = safe_structured
+                            save_failed_planner_output(self.settings, saved)
+                        elif reasons:
                             save_check_reasons(self.settings, reasons,
                                                error_code=candidate.get("error_code"),
                                                stage_result=last_stage_result)
                         return
-                    if reasons and isinstance(last_stage_result, dict):
+                    if safe_structured and isinstance(last_stage_result, dict):
+                        last_stage_result["validation_errors"] = safe_structured
+                    elif reasons and isinstance(last_stage_result, dict):
                         last_stage_result["validation_errors"] = [
                             {"loc": ["check"], "type": "content_check", "msg": text}
                             for text in _owned_check_reasons(reasons)]

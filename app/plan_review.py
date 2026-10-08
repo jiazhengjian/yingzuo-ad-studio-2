@@ -272,6 +272,10 @@ def lower_failed_plan_verdicts(raw, plan):
             result["alignment"]["ad_expression_passed"] = False
         result["alignment"] = lower_failed_av_verdicts(result["alignment"], plan)
     checks = result.get("checks") if isinstance(result.get("checks"), list) else []
+    if _plan_repeats_a_spoken_line(plan):
+        for item in checks:
+            if isinstance(item, dict) and item.get("criterion") == "natural_speech" and item.get("passed") is not False:
+                item["passed"] = False
     execution = result.get("execution_check") if isinstance(result.get("execution_check"), dict) else {}
     alignment = result.get("alignment") if isinstance(result.get("alignment"), dict) else {}
     failed = (any(isinstance(check, dict) and check.get("passed") is False for check in checks)
@@ -281,6 +285,14 @@ def lower_failed_plan_verdicts(raw, plan):
     if result.get("ready") is True and failed:
         result["ready"] = False
     return result
+
+
+def _plan_repeats_a_spoken_line(plan):
+    try:
+        from .line_quality import repeated_spoken_line
+        return repeated_spoken_line(plan)
+    except (TypeError, ValueError, KeyError, ImportError):
+        return False
 
 
 def diagnostic_sentence(text):
@@ -425,6 +437,17 @@ def program_downgrade_reasons(raw, plan):
         add("程序把声画总评从通过改成未通过")
     if before.get("ready") is True and after.get("ready") is False:
         add("程序把审核总评从通过改成未通过")
+    before_checks = before.get("checks") if isinstance(before.get("checks"), list) else []
+    after_checks = after.get("checks") if isinstance(after.get("checks"), list) else []
+
+    def passed(items, name):
+        for item in items:
+            if isinstance(item, dict) and item.get("criterion") == name:
+                return item.get("passed")
+        return None
+
+    if passed(before_checks, "natural_speech") is True and passed(after_checks, "natural_speech") is False:
+        add("程序把台词自然度从通过改成未通过：同一句说了两遍")
     return reasons
 
 

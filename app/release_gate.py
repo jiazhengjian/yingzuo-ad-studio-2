@@ -352,18 +352,60 @@ def spoken_line_changes(before, after):
     return []
 
 
-def _merchant_line_reason(reason):
-    """A plain label for a rewritten line. Blame about a failed check stays out."""
-    if not isinstance(reason, str):
-        return ""
-    text = reason.strip()
-    if not text or any(token in text for token in ("硬门", "检查没", "没有通过", "没通过", "不是最好", "过不了")):
-        return ""
-    return text
+_PLAIN_LINE_REASONS = {
+    "剧情对白还在说卖点": "这句在剧情片里像在推销，改得更自然了",
+    "产品片旁白还在堆卖点": "这句像在堆卖点，改得更自然了",
+    "剧情人物看着镜头": "这句对着镜头说，改成对着戏里的人了",
+    "剧情末镜在喊口号或链接": "这句像在喊口号，改得更像一句对话了",
+    "声音和广告类型对不上": "声音和这条片子对不上，改成了现在这种说法",
+}
+_PLAIN_BLOCK_REASONS = {
+    "剧情对白还在说卖点": "这句在剧情里像在推销，上一版还在。",
+    "产品片旁白还在堆卖点": "这句把好几个卖点叠在一起了，上一版还在。",
+    "剧情人物看着镜头": "人物看着镜头，上一版还在。",
+    "剧情末镜写成了英雄定格": "结尾停成了摆拍，上一版还在。",
+    "剧情末镜人物对着镜头举着产品": "结尾对着镜头举着产品，上一版还在。",
+    "剧情末镜把商标朝向镜头": "结尾把商标朝向镜头，上一版还在。",
+    "剧情末镜在喊口号或链接": "结尾在喊口号或链接，上一版还在。",
+    "声音和广告类型对不上": "声音和这条广告对不上，上一版还在。",
+    "占位稿不是完成的方案": "这版还不是一份能拍的方案，上一版还在。",
+}
+_BLAME_WORDS = ("硬门", "检查没", "没有通过", "没通过", "不是最好", "过不了")
+
+
+def _plain_line_reason(summary):
+    """A spoken-line note the merchant can read. Never a failed-check label."""
+    if not isinstance(summary, str) or not summary.strip():
+        return "改得更自然了"
+    text = summary.strip()
+    if text in _PLAIN_LINE_REASONS:
+        return _PLAIN_LINE_REASONS[text]
+    if any(token in text for token in _BLAME_WORDS):
+        return "改得更自然了"
+    if "堆卖点" in text:
+        return "这句像在堆卖点，改得更自然了"
+    if "卖点" in text or "推销" in text:
+        return "这句在剧情片里像在推销，改得更自然了"
+    return "改得更自然了"
+
+
+def _plain_block_reason(findings, *, form_known=True):
+    """Why a hand edit stays off the confirmed board, without blaming a check."""
+    if not form_known:
+        return "还没确定这是哪种广告，上一版还在。"
+    for item in findings or []:
+        summary = item.summary if hasattr(item, "summary") else ""
+        if summary in _PLAIN_BLOCK_REASONS:
+            return _PLAIN_BLOCK_REASONS[summary]
+        if "堆卖点" in summary:
+            return "这句把好几个卖点叠在一起了，上一版还在。"
+        if "卖点" in summary or "推销" in summary:
+            return "这句在剧情里像在推销，上一版还在。"
+    return "这版和上一版对不上，上一版还在。"
 
 
 def spoken_repair_message(before, changes):
-    """Plain chat line naming each rewritten spoken line. No failed-check blame."""
+    """Plain chat line naming each rewritten spoken line and why it changed."""
     findings = []
     try:
         findings = evaluate_release_table(before, exempt_lines=insisted_lines(before))
@@ -374,14 +416,13 @@ def spoken_repair_message(before, changes):
         reason = next((item.summary for item in findings if item.line and item.line == old), None)
         if reason is None and findings:
             reason = findings[0].summary
-        reason = _merchant_line_reason(reason)
-        because = f"，因为{reason}" if reason else ""
+        because = _plain_line_reason(reason)
         if old and new:
-            parts.append(f"「{old}」改成了「{new}」{because}")
+            parts.append(f"「{old}」改成了「{new}」。{because}")
         elif old:
-            parts.append(f"收掉了「{old}」{because}")
+            parts.append(f"收掉了「{old}」。{because}")
         elif new:
-            parts.append(f"补上了「{new}」{because}")
+            parts.append(f"补上了「{new}」。{because}")
     if not parts:
         return ""
     lead = "出图前改了这句台词：" if len(parts) == 1 else "出图前改了这几句台词："
@@ -1123,7 +1164,7 @@ def settle_manual_edit(previous, submitted, duration, strategy=None, project=Non
     plan already stored for this project.
     """
     if not isinstance(submitted, dict):
-        return None, "这版没有换成你改的内容，上一版还在。"
+        return None, "这版读不出来，上一版还在。"
     plan = _strip_client_review(deepcopy(submitted))
     strategy = strategy or plan.get("strategy")
     spoken = set(_spoken_lines(plan))
@@ -1144,11 +1185,23 @@ def settle_manual_edit(previous, submitted, duration, strategy=None, project=Non
     kind, findings = classify_release(
         plan, strategy, locked_lines=locked, insisted_lines_=insisted, project=project)
     if kind == "ask":
-        parts = [f"「{item.line}」碰到了这条规则：{item.summary}" for item in findings if item.line]
+        parts = []
+        for item in findings:
+            if not item.line:
+                continue
+            if "堆卖点" in (item.summary or ""):
+                why = "像在堆卖点"
+            elif "卖点" in (item.summary or "") or "推销" in (item.summary or ""):
+                why = "在剧情里像在推销"
+            else:
+                why = _PLAIN_BLOCK_REASONS.get(item.summary, "和这条片子对不上")
+                why = why.replace("，上一版还在。", "").replace("上一版还在。", "")
+            parts.append(f"「{item.line}」{why}")
         return None, ("；".join(parts) + "。可以让系统改写，你自己改一句，或在对话里说就按这句来。")[:500]
     status = stamp_honest_label(plan, strategy, project=project)
     if status == "not_ready" or images_blocked_reason(plan, strategy=strategy, project=project):
-        return None, "这版没有换成你改的内容，上一版还在。"
+        known = _form_of(_strategy_of(plan, strategy), plan, project) is not None
+        return None, _plain_block_reason(findings, form_known=known)
     return plan, None
 
 

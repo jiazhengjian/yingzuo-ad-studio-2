@@ -445,16 +445,16 @@ test('重新生成 is only for a hard-gate miss or a plan that was never produce
     assert.equal(canRegenerate(job) || job.kind === 'plan', true);
     assert.match(renderCard(job), /重新生成/);
   }
-  for (const review of ['passed', 'repaired', 'auto_release']) {
-    const ready = fixture({ status: 'ready', kind: 'plan', progress: { review_status: review } });
-    const failed = fixture({ kind: 'plan', error: '供应商生成失败', progress: { review_status: review, retryable: false } });
-    const released = fixture({ status: 'ready', kind: 'generate', progress: { review_status: review, auto_release: { note: '硬门已通过' } } });
-    assert.equal(shows(ready), false);
-    assert.equal(shows(failed), false);
-    assert.equal(shows(released), false);
-    assert.equal(canRegenerate(failed), false);
-    assert.doesNotMatch(renderCard(failed), /重新生成/);
-  }
+  const held = { can_regenerate: false };
+  const ready = fixture({ status: 'ready', kind: 'plan', progress: held });
+  const failed = fixture({ kind: 'plan', error: '供应商生成失败', progress: { ...held, retryable: false } });
+  const released = fixture({ status: 'ready', kind: 'generate', progress: held });
+  assert.equal(shows(ready), false);
+  assert.equal(shows(failed), false);
+  assert.equal(shows(released), false);
+  assert.equal(canRegenerate(failed), false);
+  assert.doesNotMatch(renderCard(failed), /重新生成/);
+  assert.doesNotMatch(renderCard(failed), /review_status|plan_review|硬门/);
   const normal = fixture({ status: 'ready', kind: 'generate', progress: {} });
   assert.equal(recoveryForJob(normal), null);
   assert.equal(shows(normal), false);

@@ -238,6 +238,40 @@ def _is_capacity_error(error):
 _CONTRACT_FIELDS = {"evidence_ids", "character_ids", "product_anchor_ids"}
 
 
+def storyboard_check_note(error):
+    """Structured reasons for a storyboard check that did not pass.
+
+    The diagnostics file keeps loc, type, and a short msg. The rejected
+    storyboard body is not copied into the message.
+    """
+    from .plan_review import diagnostic_sentence
+    errors = []
+    if isinstance(error, ValidationError):
+        for item in error.errors(include_url=False, include_context=False, include_input=False)[:12]:
+            loc = []
+            for part in tuple(item.get("loc") or ())[:8]:
+                if type(part) is int or (isinstance(part, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,40}", part)):
+                    loc.append(part)
+                else:
+                    loc.append("field")
+            entry = {"loc": loc or ["storyboard"], "type": "validation_error"}
+            message = diagnostic_sentence(item.get("msg") or "")
+            if message:
+                entry["msg"] = message
+            errors.append(entry)
+    if not errors:
+        sentence = diagnostic_sentence(error) or "分镜校验没有通过"
+        errors = [{"loc": ["storyboard"], "type": "value_error", "msg": sentence}]
+    reasons = [item["msg"] for item in errors if item.get("msg")]
+    return {
+        "message": "分镜校验没有通过",
+        "issues": reasons[:8] or ["storyboard"],
+        "failed_reasons": reasons[:8],
+        "validation_errors": errors,
+        "error_code": "storyboard_check",
+    }
+
+
 def _is_schema_shape_error(error):
     """A storyboard the model shaped wrong, not a broken fact or cast reference."""
     if isinstance(error, (KeyError, TypeError)):
@@ -1661,15 +1695,22 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     async def stop(message, issues, *, error_code="planning_content_failed", accept=True, reasons=()):
         from .planner_recovery import needs_merchant
         concrete = []
+        errors = []
         for item in reasons:
             text = str(item).strip() if item is not None else ""
             if text and text not in concrete:
                 concrete.append(text[:200])
             if len(concrete) == 8:
                 break
+        for text in concrete:
+            from .plan_review import diagnostic_sentence
+            sentence = diagnostic_sentence(text)
+            if sentence:
+                errors.append({"loc": ["storyboard"], "type": "content_check", "msg": sentence})
         record_failure({"nonblocking": True, "message": message,
                         "issues": (concrete or list(issues.values()))[:8],
-                        "error_code": error_code, "failed_reasons": concrete})
+                        "error_code": error_code, "failed_reasons": concrete,
+                        "validation_errors": errors})
         # A failed revision stays inside refine(). The caller keeps the plan
         # it already compiled, or seals the mapping, then continues the review.
         if not accept:
@@ -1943,12 +1984,12 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                             fallback_installed = True
                             await stop("分镜没有完成，占位稿不是完成的方案",
                                        {("contract",): "占位稿不是完成的方案"})
-                    record_failure(None)
+                    record_failure(storyboard_check_note(shape_error))
                     await stop("本次方案结构不完整，暂未采用",
                                {("contract",): "方案结构、商品依据或已确认内容需要调整"},
                                reasons=[str(shape_error)])
                 except ValueError as shape_value:
-                    record_failure(None)
+                    record_failure(storyboard_check_note(shape_value))
                     await stop("本次方案结构不完整，暂未采用",
                                {("contract",): "方案结构、商品依据或已确认内容需要调整"},
                                reasons=[str(shape_value)])
@@ -1965,16 +2006,16 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                         raw = await stage_call(director_system, regen_payload, assets)
                     except Exception as regen_error:
                         _reraise_terminal(regen_error)
-                        record_failure(None)
+                        record_failure(storyboard_check_note(regen_error))
                         await stop("分镜没有完成，占位稿不是完成的方案",
                                    {("contract",): "占位稿不是完成的方案"})
                     continue
                 if "无人声" in text:
-                    record_failure(None)
+                    record_failure(storyboard_check_note(error))
                     await stop("本次方案未能满足已确认要求，暂未采用",
                          {("speech",): "已选无人声方向不能增加台词"}, reasons=check_reasons)
                 if "用户明确固定的台词" in text or "用户固定台词" in text:
-                    record_failure(None)
+                    record_failure(storyboard_check_note(error))
                     await stop("本次方案未能满足已确认要求，暂未采用",
                          {("fixed_speech",): "用户固定台词未完整保留"}, reasons=check_reasons)
                 if "选中创意的商品依据必须落实" in text and not selected_evidence_restored:
@@ -1991,7 +2032,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                         continue
                 mapping_scope = _evidence_mapping_scope(error, before, strategy)
                 if mapping_scope is not None:
-                    record_failure(None)
+                    record_failure(storyboard_check_note(error))
                     gaps = sorted(_evidence_mapping_gaps(before))
                     issues = {("evidence_mapping", beat_id): "内容段与对应镜头的商品依据需要调整"
                         for beat_id, _ in gaps}
@@ -2011,7 +2052,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                     continue
                 # Other schema/ownership errors and missing locks stop.
                 repairable = _is_capacity_error(error)
-                record_failure(None)
+                record_failure(storyboard_check_note(error))
                 issues = {("timing",): "动作与完整台词无法放入所选时长或生成分段"}
                 if not repairable:
                     if "用户明确固定的台词" in str(error) or "用户固定台词" in str(error):

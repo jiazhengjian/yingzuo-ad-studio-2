@@ -25,8 +25,7 @@ export function storyboardContentFailure(job?: Job): boolean {
 
 /** Hard gates failed and no passing board was left, or the plan was never produced. */
 export function canRegenerate(job: Job): boolean {
-  const review = job.progress?.review_status;
-  if (review === 'passed' || review === 'repaired' || review === 'auto_release' || job.progress?.auto_release) return false;
+  if (job.progress?.can_regenerate === false) return false;
   const code = job.progress?.error_code;
   const error = job.error || '';
   // Hard gates never cleared, or the plan was never produced. A content failure
@@ -80,9 +79,8 @@ export function recoveryForJob(job?: Job): JobRecovery | null {
       && job.progress.retry_action === 'retry_planning' && job.progress.retryable !== false) {
       return { kind: 'retry_planning', label: '继续处理' };
     }
-    // A passed, repaired, or auto-released board is not a missing plan.
-    const review = job.progress.review_status;
-    if (review === 'passed' || review === 'repaired' || review === 'auto_release' || job.progress.auto_release) {
+    // A passed board is not a missing plan. The server sends this flag instead of the review label.
+    if (job.progress.can_regenerate === false) {
       return { kind: 'unavailable' };
     }
     // The planning job failed before a board existed.

@@ -1342,6 +1342,95 @@ def test_character_sheet_does_not_wear_the_product():
     assert character_sheet_product_notes(worn) == []
 
 
+def test_a_friend_opposite_keeps_the_line_and_a_hands_macro_stays_in_frame():
+    production = {
+        "characters": [
+            {"id": "char_xia", "name": "小夏", "description": "二十多岁"},
+            {"id": "char_friend", "name": "朋友", "description": "二十多岁，坐在对面，醒着"},
+        ],
+        "speaker_id": "char_xia",
+        "speech_mode": "character_dialogue",
+        "voice_description": "自然的成年女性普通话",
+    }
+    cake = "特写，只有她的手和蛋糕。她开口说第二句。"
+    shots = [
+        {"id": "s1", "start": 0.0, "end": 4.0, "character_ids": ["char_xia", "char_friend"],
+         "description": "对面坐着朋友，她开口说第一句。"},
+        {"id": "s3", "start": 4.0, "end": 8.0, "character_ids": ["char_xia"],
+         "description": cake},
+    ]
+    spans = [
+        {"id": "speech_1", "start": 0.4, "end": 2.0, "shot_ids": ["s1"], "text": "这块给你。",
+         "anchors": [{"text": "这块给你。", "start": 0.4, "end": 2.0, "shot_ids": ["s1"]}]},
+        {"id": "speech_2", "start": 4.4, "end": 6.2, "shot_ids": ["s3"], "text": "樱桃我留着。",
+         "anchors": [{"text": "樱桃我留着。", "start": 4.4, "end": 6.2, "shot_ids": ["s3"]}]},
+    ]
+    plan = {"production": production, "strategy": _dryer().model_dump(),
+            "segments": [{"id": "seg_1", "duration_seconds": 8, "shots": shots, "speech_spans": spans}]}
+    assert settle_inner_monologue(plan) == []
+    assert plan["production"]["speech_mode"] == "character_dialogue"
+    assert shots[1]["description"] == cake
+    assert "内心独白" not in shots[1]["description"]
+    assert "放轻脚步" not in shots[1]["description"]
+    prompt = compile_grouped_video({
+        "duration_seconds": 8, "generation_strategy": "continuity_v1", "ad_form": "scene_story",
+        "production": production, "shots": shots, "speech_spans": spans,
+        "reference_roles": [
+            {"index": 1, "role": "product"},
+            {"index": 2, "role": "character", "character_id": "char_xia"},
+            {"index": 3, "role": "character", "character_id": "char_friend"},
+        ],
+    })
+    close = _shot_block(prompt, "镜头2 |")
+    assert "嘴型与台词同步" in close
+    assert "放轻脚步" not in close and "回头看" not in close and "屏住" not in close
+    assert "内心独白" not in close and "嘴没有动" not in close
+    later = {
+        "production": production, "strategy": _dryer().model_dump(),
+        "segments": [{"id": "seg_1", "duration_seconds": 8, "speech_spans": spans, "shots": [
+            shots[0],
+            {"id": "s3", "start": 4.0, "end": 8.0, "character_ids": ["char_xia"],
+             "continuity": {"entry_transition": "scene_change"},
+             "description": "换到厨房后，她一个人开口说第二句。"},
+        ]}],
+    }
+    notes = settle_inner_monologue(later)
+    assert notes == ["这一镜没有醒着的人听，台词改成她自己的内心独白，不对口型。"]
+    assert "开口说" in later["segments"][0]["shots"][0]["description"]
+    assert "没有开口" in later["segments"][0]["shots"][1]["description"]
+    macro = "特写，只有她的手和蛋糕。她开口说。"
+    alone = {
+        "production": {"characters": [{"id": "char_xia", "name": "小夏", "description": "二十多岁"}],
+                       "speaker_id": "char_xia", "speech_mode": "character_dialogue",
+                       "voice_description": "自然的成年女性普通话"},
+        "strategy": _dryer().model_dump(),
+        "segments": [{"id": "seg_1", "duration_seconds": 4, "shots": [
+            {"id": "s3", "start": 0.0, "end": 4.0, "character_ids": ["char_xia"], "description": macro},
+        ], "speech_spans": [
+            {"id": "speech_1", "start": 0.4, "end": 2.0, "shot_ids": ["s3"], "text": "樱桃我留着。",
+             "anchors": [{"text": "樱桃我留着。", "start": 0.4, "end": 2.0, "shot_ids": ["s3"]}]},
+        ]}],
+    }
+    assert settle_inner_monologue(alone)
+    written = alone["segments"][0]["shots"][0]["description"]
+    assert "没有开口" in written
+    assert "放轻脚步" not in written and "回头看" not in written and "屏住" not in written
+    assert "嘴没有动" not in written
+    assert alone["production"]["speech_mode"] == "character_dialogue"
+    alone_prompt = compile_grouped_video({
+        "duration_seconds": 4, "generation_strategy": "continuity_v1", "ad_form": "scene_story",
+        "production": alone["production"], "shots": alone["segments"][0]["shots"],
+        "speech_spans": alone["segments"][0]["speech_spans"],
+        "reference_roles": [
+            {"index": 1, "role": "product"},
+            {"index": 2, "role": "character", "character_id": "char_xia"},
+        ],
+    })
+    alone_block = _shot_block(alone_prompt, "镜头1 |")
+    assert "放轻脚步" not in alone_block and "回头看" not in alone_block and "屏住" not in alone_block
+    assert "没有开口" in alone_block
+
+
 def test_asleep_company_selling_point_still_fails():
     selling = story_plan_issues(_board(_shot("室友还在睡着。"), script=_lines("太安静了。")), _dryer())
     assert "剧情对白还在说卖点" in selling

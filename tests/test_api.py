@@ -153,6 +153,7 @@ def test_public_detail_strips_review_note_and_auto_release(tmp_path):
         "title": "方案", "script": "看清瓶子。", "language": "zh-CN", "aspect_ratio": "9:16",
         "audio_strategy": "voiceover", "review_status": "conservative_fallback",
         "review_status_note": note,
+        "plan_review": {"ready": True, "checks": [{"criterion": "natural_speech", "passed": True}]},
         "auto_release": {"note": note, "failed_checks": ["台词自然度"], "repair_rounds": 1,
                          "project_id": pid, "ad_form": "brand_tvc"},
         "segments": [
@@ -162,15 +163,36 @@ def test_public_detail_strips_review_note_and_auto_release(tmp_path):
              "shots": [{"start": 0, "end": 10, "description": "瓶身靠近一些。"}]},
         ],
     }
-    app.state.store.update_plan(pid, plan)
+    updated = app.state.store.update_plan(pid, plan)
+    job = app.state.store.create_job(pid, "plan", updated["revision"])
+    app.state.store.update_job(job["id"], status="failed", error="这次没生成出来", progress={
+        "error_code": "planning_not_produced", "review_status": "passed",
+        "plan_review": {"ready": True}, "auto_release": True})
     response = c.get(f"/api/projects/{pid}")
     assert response.status_code == 200
+    assert "review_status" not in response.text
+    assert "plan_review" not in response.text
     assert "review_status_note" not in response.text
     assert "auto_release" not in response.text
     assert "硬门已通过" not in response.text
+    body = response.json()
+    failed = next(item for item in body["jobs"] if item["id"] == job["id"])
+    assert failed["progress"]["can_regenerate"] is False
+    assert failed["progress"]["error_code"] == "planning_not_produced"
     stored = app.state.store.get_project(pid)["plan"]
+    assert stored["review_status"] == "conservative_fallback"
     assert stored["review_status_note"] == note
+    assert stored["plan_review"]["ready"] is True
     assert stored["auto_release"]["failed_checks"] == ["台词自然度"]
+    kept = app.state.store.get_job(job["id"])["progress"]
+    assert kept["review_status"] == "passed"
+    assert kept["plan_review"]["ready"] is True
+    open_job = main.public({
+        "project": {"plan": {"title": "方案"}},
+        "jobs": [{"kind": "plan", "status": "failed", "error": "这次没生成出来",
+                  "progress": {"error_code": "planning_not_produced"}}],
+    })
+    assert "can_regenerate" not in open_job["jobs"][0]["progress"]
 
 
 def test_upload_limit_and_project_asset_ownership(tmp_path):

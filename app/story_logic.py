@@ -50,6 +50,15 @@ _CLOCK_GAP = re.compile(r"[\s\u3000，。！？、；：,.!?;:\"'“”‘’「
 _ASLEEP = re.compile(r"睡着|在睡|睡熟|酣睡|没醒|未醒")
 _AWAKE = re.compile(r"(?<!没)醒了|醒来|已经醒|坐起来")
 _LISTENER_WORDS = ("室友", "同事", "朋友", "旁边的人", "另一个人")
+_ALONE_NOW = re.compile(r"一个人|独自|身旁没有|旁边没有人|没有别人")
+_OPPOSITE_COMPANY = re.compile(
+    r"(?:朋友|室友|同事).{0,12}(?:坐在对面|坐在对过|对坐|对面)"
+    r"|(?:坐在对面|坐在对过|对坐|对面).{0,12}(?:朋友|室友|同事|人)"
+    r"|坐在对面|对坐"
+)
+_CLOSE_UP = re.compile(r"特写|微距|大特写|只拍")
+_HANDS_OR_CAKE = re.compile(r"手|蛋糕")
+_BODY_IN_FRAME = re.compile(r"脸|全身|走|站着|坐着|回头|推|柜子|脚步")
 _INNER_NOTE = "这一场没有醒着的人听，台词改成她自己的内心独白，不对口型。"
 _SHOT_INNER_NOTE = "这一镜没有醒着的人听，台词改成她自己的内心独白，不对口型。"
 _INNER_ACTING = "她放轻脚步，回头看一眼，屏住一点呼吸，表情松一下。这句是她的内心独白，嘴没有动。"
@@ -1453,8 +1462,33 @@ def _asleep_text(text):
     return _ASLEEP.search(text) is not None
 
 
-def shot_awake_listener(production, shot):
-    """True when this shot, not the rest of the film, has someone awake besides the speaker."""
+def scene_groups(shots):
+    """Shots that share a place, split only when a shot enters by scene_change."""
+    groups = []
+    current = []
+    for shot in shots or []:
+        if not isinstance(shot, dict):
+            continue
+        continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else {}
+        if current and continuity.get("entry_transition") == "scene_change":
+            groups.append(current)
+            current = []
+        current.append(shot)
+    if current:
+        groups.append(current)
+    return groups
+
+
+def _hands_or_cake_macro(description):
+    """A close-up that only shows hands or cake cannot take a full-body acting cue."""
+    text = description if isinstance(description, str) else ""
+    if not _CLOSE_UP.search(text) or not _HANDS_OR_CAKE.search(text):
+        return False
+    return _BODY_IN_FRAME.search(text) is None
+
+
+def _listener_in_shot(production, shot):
+    """True when this shot's own text or cast has someone awake besides the speaker."""
     if not isinstance(production, dict) or not isinstance(shot, dict):
         return False
     speaker = production.get("speaker_id")
@@ -1476,22 +1510,53 @@ def shot_awake_listener(production, shot):
         if word in named or word not in text:
             continue
         blobs.append(text)
+    if _OPPOSITE_COMPANY.search(text) and not _asleep_text(text):
+        blobs.append(text)
     if not blobs:
         return False
     return any(not _asleep_text(blob) for blob in blobs)
 
 
+def shot_awake_listener(production, shot, scene_shots=None):
+    """True when this shot has someone awake who can hear her.
+
+    A companion sitting in the same scene counts, including a friend opposite
+    her, even when this shot is a close-up that does not list them. A shot that
+    says she is alone does not borrow that companion.
+    """
+    if not isinstance(shot, dict):
+        return False
+    if _listener_in_shot(production, shot):
+        return True
+    text = shot.get("description") if isinstance(shot.get("description"), str) else ""
+    if _ALONE_NOW.search(text):
+        return False
+    for other in scene_shots or []:
+        if other is shot:
+            continue
+        if _listener_in_shot(production, other):
+            return True
+    return False
+
+
 def awake_listener(production, shots):
     """True when any shot has someone besides the speaker who is awake."""
-    return any(shot_awake_listener(production, shot) for shot in shots or [])
+    for group in scene_groups(shots):
+        if any(shot_awake_listener(production, shot, group) for shot in group):
+            return True
+    return False
 
 
 def rewrite_inner_shot(description, speaking):
-    """Turn an on-screen speaking cue into private thought. Idempotent."""
+    """Turn an on-screen speaking cue into private thought. Idempotent.
+
+    A macro that only shows hands or cake does not gain footsteps, a look back,
+    or a held breath. Those actions are not in the frame.
+    """
     if not isinstance(description, str):
         return description
     updated = _OPENING_LINE.sub("没有开口", description)
-    if speaking and "放轻脚步" not in updated:
+    if speaking and "放轻脚步" not in updated and not _hands_or_cake_macro(description):
         if updated and not updated.endswith("。"):
             updated = updated.rstrip() + "。"
         updated += _INNER_ACTING
@@ -1537,6 +1602,7 @@ def settle_inner_monologue(plan):
     if not spans:
         return []
     shots = iter_plan_shots(plan)
+    groups = scene_groups(shots)
     film_inner = not awake_listener(production, shots)
 
     def rewrite(shot, speaking):
@@ -1549,9 +1615,10 @@ def settle_inner_monologue(plan):
             rewrite(shot, _shot_speaks(shot, spans))
         return [_INNER_NOTE]
     alone_spoken = False
-    for shot in shots:
-        if shot_awake_listener(production, shot) or not _shot_speaks(shot, spans):
-            continue
-        alone_spoken = True
-        rewrite(shot, True)
+    for group in groups:
+        for shot in group:
+            if shot_awake_listener(production, shot, group) or not _shot_speaks(shot, spans):
+                continue
+            alone_spoken = True
+            rewrite(shot, True)
     return [_SHOT_INNER_NOTE] if alone_spoken else []

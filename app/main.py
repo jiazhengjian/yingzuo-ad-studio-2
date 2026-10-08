@@ -31,8 +31,8 @@ from app.schemas import ContinuityInput, CredentialsInput, CreativeConfirmInput,
 
 PRIVATE_FIELDS = {
     "path", "source_path", "payload", "snapshot", "raw", "provider_url", "download_url", "lease_until",
-    # Kept in storage and backend logs. The merchant API does not return them.
-    "review_status_note", "auto_release",
+    # Kept in storage, diagnostics, and backend logs. The browser payload does not return them.
+    "review_status", "review_status_note", "plan_review", "auto_release",
 }
 _WORKBENCH_ORIGINS = {
     "http://127.0.0.1:8787", "http://localhost:8787",
@@ -74,9 +74,47 @@ def attachment_name(asset, path: Path):
     return stem + path.suffix
 
 
+def _plan_review_blocks_regenerate(plan):
+    if not isinstance(plan, dict):
+        return False
+    if plan.get("review_status") in ("passed", "repaired"):
+        return True
+    return bool(plan.get("auto_release"))
+
+
+def _with_can_regenerate(shown, original, plan):
+    """Button flag only. Review labels stay off the payload the browser receives."""
+    if not isinstance(shown, dict):
+        return shown
+    original_progress = original.get("progress") if isinstance(original, dict) and isinstance(original.get("progress"), dict) else {}
+    progress = dict(shown.get("progress") or {}) if isinstance(shown.get("progress"), dict) else {}
+    if (_plan_review_blocks_regenerate(plan) or original_progress.get("review_status") in (
+            "passed", "repaired", "auto_release") or original_progress.get("auto_release")):
+        progress["can_regenerate"] = False
+    progress.pop("review_status", None)
+    progress.pop("plan_review", None)
+    progress.pop("auto_release", None)
+    return {**shown, "progress": progress}
+
+
 def public(value):
     if isinstance(value, dict):
-        return {k: public(v) for k, v in value.items() if k not in PRIVATE_FIELDS}
+        plan = None
+        project = value.get("project")
+        if isinstance(project, dict) and isinstance(project.get("plan"), dict):
+            plan = project.get("plan")
+        elif isinstance(value.get("plan"), dict) and isinstance(value.get("jobs"), list):
+            plan = value.get("plan")
+        original_jobs = value.get("jobs") if isinstance(value.get("jobs"), list) else None
+        shown = {k: public(v) for k, v in value.items() if k not in PRIVATE_FIELDS}
+        if original_jobs is not None and isinstance(shown.get("jobs"), list):
+            shown["jobs"] = [
+                _with_can_regenerate(shown_job, original, plan)
+                for shown_job, original in zip(shown["jobs"], original_jobs)
+            ]
+        elif value.get("kind") in ("plan", "generate", "recompose", "cta"):
+            shown = _with_can_regenerate(shown, value, plan)
+        return shown
     if isinstance(value, list):
         return [public(v) for v in value]
     return value

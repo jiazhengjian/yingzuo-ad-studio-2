@@ -125,8 +125,49 @@ def test_manual_edit_locks_the_new_line_and_refuses_a_board_that_fails_elsewhere
     ]}
     blocked, reason = settle_manual_edit(None, same_shots, 15)
     assert blocked is None
-    assert reason == "这版没有换成你改的内容，上一版还在。"
+    assert reason == "还没确定这是哪种广告，上一版还在。"
     assert "检查" not in reason
+    assert "硬门" not in reason and "没通过" not in reason
+
+    unreadable, plain = settle_manual_edit(previous, ["不是一份方案"], 15)
+    assert unreadable is None
+    assert plain == "这版读不出来，上一版还在。"
+
+    story = _strategy("scene_story")
+    selling = "这风不吵。"
+    pitched = _board(story, [selling], ["她看着桌上的瓶子。", "瓶子还在桌上。"], mode="character_dialogue")
+    quiet = _board(story, ["先放这儿。"], ["她看着桌上的瓶子。", "瓶子还在桌上。"], mode="character_dialogue")
+    held_story, ask_story = settle_manual_edit(quiet, pitched, 15, story)
+    assert held_story is None
+    assert selling in ask_story and "像在推销" in ask_story
+    assert "碰到了这条规则" not in ask_story
+    assert "没通过" not in ask_story and "硬门" not in ask_story and "不是最好" not in ask_story
+
+    looked = _board(story, ["先放这儿。"], ["她看着镜头，瓶子在桌上。", "瓶子还在桌上。"], mode="character_dialogue")
+    blocked_look, look_reason = settle_manual_edit(quiet, looked, 15, story)
+    assert blocked_look is None
+    assert "看着镜头" in look_reason and "上一版还在" in look_reason
+    assert "检查" not in look_reason and "硬门" not in look_reason and "没通过" not in look_reason
+
+
+def test_spoken_line_repair_names_a_plain_reason():
+    from app.release_gate import _plain_line_reason, spoken_repair_message
+
+    story = _strategy("scene_story")
+    old = "这风不吵。"
+    new = "先放这儿。"
+    before = _board(story, [old], ["她看着桌上的瓶子。", "瓶子还在桌上。"], mode="character_dialogue")
+    note = spoken_repair_message(before, [(old, new)])
+    assert note.startswith("出图前改了这句台词：")
+    assert f"「{old}」改成了「{new}」" in note
+    assert "这句在剧情片里像在推销，改得更自然了" in note
+    assert "没通过" not in note and "硬门" not in note and "不是最好" not in note
+    quiet = _board(story, ["先放这儿。"], ["瓶子在桌上。", "瓶子还在桌上。"], mode="character_dialogue")
+    plain = spoken_repair_message(quiet, [("先放这儿。", "你拿着。")])
+    assert "改得更自然了" in plain
+    assert "因为" not in plain
+    assert _plain_line_reason("综合检查没通过，不是最好") == "改得更自然了"
+    assert _plain_line_reason("") == "改得更自然了"
 
 
 def test_insisted_line_is_the_only_exemption_and_other_content_still_fails():
@@ -565,6 +606,10 @@ def test_changed_passed_plan_is_repaired_before_image_spend_without_asking_the_m
     assert "它带负离子。" in notes[0]
     assert "堆卖点" in notes[0]
     assert "出图前改了这句台词" in notes[0]
+    assert "改得更自然了" in notes[0]
+    assert "没通过" not in notes[0]
+    assert "硬门" not in notes[0]
+    assert "不是最好" not in notes[0]
 
 
 def _pipeline(store, tmp_path):
