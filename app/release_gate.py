@@ -323,6 +323,92 @@ def images_blocked_reason(plan, *, strategy=None, project=None):
     return None
 
 
+_INCOMPLETE_REVIEW_NOTE = "没有完整的综合检查，硬门已通过"
+_OLD_INCOMPLETE_NOTES = {
+    _INCOMPLETE_REVIEW_NOTE,
+    "没有完整的综合检查，硬门已经通过。这条已记下。",
+}
+_CHECK_LABELS = {
+    "product_relevance": "商品关联",
+    "audience_relevance": "受众关联",
+    "factual_support": "商品事实依据",
+    "audiovisual_complement": "声画互补",
+    "natural_speech": "台词自然度",
+    "narrative_progression": "叙事推进",
+}
+
+
+def _review_record(plan):
+    review = plan.get("plan_review") if isinstance(plan, dict) else None
+    return review if isinstance(review, dict) else None
+
+
+def _review_ran_and_failed(review):
+    """A finished review with ready false. A missing or cut-off record is not this."""
+    if not isinstance(review, dict) or review.get("ready") is not False:
+        return False
+    checks = review.get("checks")
+    execution = review.get("execution_check")
+    alignment = review.get("alignment")
+    if not isinstance(checks, list) or not checks:
+        return False
+    if not all(isinstance(item, dict) and "criterion" in item and "passed" in item for item in checks):
+        return False
+    if not isinstance(execution, dict) or "action_capacity" not in execution or "state_continuity" not in execution:
+        return False
+    if not isinstance(alignment, dict) or "ad_expression_passed" not in alignment:
+        return False
+    return True
+
+
+def _failed_review_labels(review):
+    labels = []
+    for item in review.get("checks") or []:
+        if isinstance(item, dict) and item.get("passed") is False:
+            labels.append(_CHECK_LABELS.get(item.get("criterion"), "内容检查"))
+    execution = review.get("execution_check") or {}
+    if execution.get("action_capacity") is False:
+        labels.append("动作与台词容量")
+    if execution.get("state_continuity") is False:
+        labels.append("前后状态衔接")
+    alignment = review.get("alignment") or {}
+    if alignment.get("ad_expression_passed") is False:
+        labels.append("广告表达")
+    shots = alignment.get("shots") if isinstance(alignment.get("shots"), list) else []
+    spans = alignment.get("spans") if isinstance(alignment.get("spans"), list) else []
+    if any(isinstance(item, dict) and item.get("passed") is False for item in shots):
+        labels.append("镜头")
+    if any(isinstance(item, dict) and item.get("passed") is False for item in spans):
+        labels.append("台词与画面")
+    return list(dict.fromkeys(labels))
+
+
+def _fit_failure_note(labels):
+    if not labels:
+        return "综合检查没通过，硬门已通过"
+    body = "、".join(labels)
+    text = f"综合检查没通过（{body}），硬门已通过"
+    if len(text) <= 200:
+        return text
+    kept = []
+    for label in labels:
+        trial = "、".join([*kept, label, "等"])
+        if len(f"综合检查没通过（{trial}），硬门已通过") > 200:
+            break
+        kept.append(label)
+    if not kept:
+        return "综合检查没通过，硬门已通过"
+    return f"综合检查没通过（{'、'.join(kept)}等），硬门已通过"
+
+
+def conservative_fallback_note(plan):
+    """Say whether the full review failed, or never finished."""
+    review = _review_record(plan)
+    if not _review_ran_and_failed(review):
+        return _INCOMPLETE_REVIEW_NOTE
+    return _fit_failure_note(_failed_review_labels(review))
+
+
 def stamp_honest_label(plan, strategy=None, *, repairs=0, project=None):
     """Write the review label the table actually supports. Returns the status."""
     if not isinstance(plan, dict):
@@ -341,14 +427,17 @@ def stamp_honest_label(plan, strategy=None, *, repairs=0, project=None):
         else:
             plan["review_status_note"] = "硬门没有通过，这版不会拿去确认。"
         return "not_ready"
-    review = plan.get("plan_review") if isinstance(plan.get("plan_review"), dict) else None
+    review = _review_record(plan)
     if isinstance(review, dict) and review.get("ready") is True and review.get("checks"):
         plan["review_status"] = "repaired" if repairs else "passed"
         plan.pop("review_status_note", None)
         return plan["review_status"]
-    note = plan.get("review_status_note") if plan.get("review_status") == "conservative_fallback" else None
+    kept = plan.get("review_status_note") if plan.get("review_status") == "conservative_fallback" else None
     plan["review_status"] = "conservative_fallback"
-    plan["review_status_note"] = note or "没有完整的综合检查，硬门已经通过。这条已记下。"
+    if isinstance(kept, str) and kept not in _OLD_INCOMPLETE_NOTES:
+        plan["review_status_note"] = kept
+    else:
+        plan["review_status_note"] = conservative_fallback_note(plan)
     return "conservative_fallback"
 
 

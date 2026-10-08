@@ -632,8 +632,12 @@ def test_content_failure_exposes_only_owned_summary_and_is_not_retryable(source)
     assert "PRIVATE_MODEL_RECEIPT" not in json.dumps(recorded, ensure_ascii=False)
     assert plan["plan_review"]["ready"] is False
     # Soft review failure with the hard-gate table clear is an honest conservative
-    # label. It is no longer stored as not_ready and then offered for confirmation.
+    # label. The note names the failed review item. It does not claim the review never ran.
     assert plan["review_status"] == "conservative_fallback"
+    assert plan["review_status_note"].startswith("综合检查没通过（")
+    assert "镜头" in plan["review_status_note"]
+    assert plan["review_status_note"].endswith("硬门已通过")
+    assert "没有完整的综合检查" not in plan["review_status_note"]
 
 
 @pytest.mark.parametrize("outside", ["beat", "shot", "global_message"])

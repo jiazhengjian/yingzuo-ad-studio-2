@@ -394,6 +394,45 @@ def test_truncated_planner_reply_does_not_release_an_unchecked_board():
     assert images_blocked_reason(shown, strategy=shown.get("strategy")) is None
 
 
+def _failed_review(**overrides):
+    review = {
+        "ready": False,
+        "checks": [{"criterion": name, "passed": True} for name in (
+            "product_relevance", "audience_relevance", "factual_support",
+            "audiovisual_complement", "natural_speech", "narrative_progression")],
+        "execution_check": {"action_capacity": True, "state_continuity": True},
+        "alignment": {"ready": False, "ad_expression_passed": True, "shots": [], "spans": []},
+    }
+    review.update(overrides)
+    return review
+
+
+def test_a_finished_failed_review_names_the_failed_items_on_the_fallback_note():
+    strategy = _strategy("scene_story")
+    board = _board(strategy, ["先放这儿。"], ["她把瓶子放在桌角。", "瓶子留在原处。"], mode="character_dialogue")
+    board["plan_review"] = _failed_review()
+    board["plan_review"]["alignment"]["ad_expression_passed"] = False
+    board["plan_review"]["checks"][4]["passed"] = False
+    assert stamp_honest_label(board, strategy) == "conservative_fallback"
+    assert board["review_status_note"] == "综合检查没通过（台词自然度、广告表达），硬门已通过"
+    assert "没有完整的综合检查" not in board["review_status_note"]
+
+
+def test_a_missing_truncated_or_errored_review_says_the_check_did_not_finish():
+    strategy = _strategy("brand_tvc")
+    missing = _board(strategy, ["看清这件。"], ["瓶身在左侧。", "瓶身靠近一些。"])
+    assert stamp_honest_label(missing, strategy) == "conservative_fallback"
+    assert missing["review_status_note"] == "没有完整的综合检查，硬门已通过"
+    truncated = _board(strategy, ["看清这件。"], ["瓶身在左侧。", "瓶身靠近一些。"])
+    truncated["plan_review"] = {"ready": False, "checks": [{"criterion": "product_relevance", "passed": False}]}
+    assert stamp_honest_label(truncated, strategy) == "conservative_fallback"
+    assert truncated["review_status_note"] == "没有完整的综合检查，硬门已通过"
+    errored = _board(strategy, ["看清这件。"], ["瓶身在左侧。", "瓶身靠近一些。"])
+    errored["plan_review"] = {"error": "综合检查没有返回"}
+    assert stamp_honest_label(errored, strategy) == "conservative_fallback"
+    assert errored["review_status_note"] == "没有完整的综合检查，硬门已通过"
+
+
 def test_legacy_unlabeled_plan_is_labelled_and_unknown_form_is_blocked():
     """Bypass 5: the old picture-and-speech path no longer ships with a missing label."""
     plain = {"segments": [{"shots": [{"description": "瓶身在左侧。"}, {"description": "瓶身靠近一些。"}]}]}
