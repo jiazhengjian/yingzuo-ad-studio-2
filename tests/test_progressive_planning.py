@@ -96,7 +96,7 @@ def progressive_gateway(settings, source, install_transport, tmp_path):
         second_review_mutation=None, third_review_mutation=None, refinement_mutations=[], empty_stage=None, empty_count=0,
         empty_finish="stop", empty_forever=False, inherited_skill_trace=(), ad_form=None,
         review_suffix=None, project_id=None, job_id=None, follow_up_step="speech",
-        reentry_reply=None)
+        follow_up_reply=None, reentry_reply=None)
 
     def handler(request):
         assert str(request.url) == "https://api.deepseek.com/chat/completions"
@@ -113,6 +113,8 @@ def progressive_gateway(settings, source, install_transport, tmp_path):
                     "completion_tokens_details": {"reasoning_tokens": 32766}}
             return httpx.Response(200, json=body)
         if context.get("task_kind") == "next_step":
+            if state.follow_up_reply is not None:
+                return chat_output(deepcopy(state.follow_up_reply))
             return chat_output({"next_step": state.follow_up_step or "speech"})
         if stage == "strategy" and state.reentry_reply is not None:
             return chat_output(deepcopy(state.reentry_reply))

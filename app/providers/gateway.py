@@ -2729,7 +2729,8 @@ class Gateway:
             if speech_without_board:
                 # Speech is written and the board is not. Ask once more.
                 # Clarify or directions on that answer are done as named.
-                # Only a second speech-only answer continues into the storyboard.
+                # A second speech-only answer, a program step, or a blank answer
+                # continues into the storyboard. That miss is not shown.
                 follow_input = {"stage": "strategy", "task_kind": "next_step",
                     "written": ["speech"], "schema": next_step_followup_schema()}
                 raw_follow = await stage_call(NEXT_STEP_FOLLOWUP_SYSTEM, follow_input, [], max_tokens=800)
@@ -2746,8 +2747,8 @@ class Gateway:
                 elif "storyboard" in follow.steps:
                     pass
                 else:
-                    attach_storyboard = False
-                    logger.info("Follow-up did not name clarify, directions, or a storyboard")
+                    logger.info("Follow-up named %s; continuing storyboard as if only speech was written",
+                        follow.refused or "nothing")
                 if named:
                     logger.info("Follow-up named %s; doing that step", named)
                     return await self.decide(
@@ -2759,9 +2760,7 @@ class Gateway:
                         stage_result_cache=stage_result_cache, stage_cache_sink=stage_cache_sink,
                         abandon_check=abandon_check, on_planner_stream=on_planner_stream,
                         job_id=job_id, model_next_step=named)
-            if speech_without_board and not attach_storyboard:
-                raise ProviderError("下一步没有写成澄清、出方向或分镜，尚未开始图片或视频生成")
-            if choice_enabled and getattr(self.settings, "progressive_planning_enabled", False):
+            if choice_enabled and getattr(self.settings, "progressive_planning_enabled", False) and attach_storyboard:
                 self._plan_warning_holder = {
                     "project_id": project.get("id") if isinstance(project, dict) and isinstance(project.get("id"), str) else "",
                     "job_id": job_id if isinstance(job_id, str) else "",

@@ -56,6 +56,7 @@ def test_scheduler_follows_the_model_and_refuses_program_steps():
     assert "信息不够就只提问" in STRATEGY_SELECTION_SYSTEM
     assert "只有第二次还是只有台词，才按原来的顺序把分镜接上" in STRATEGY_SELECTION_SYSTEM
     assert "第二次写成澄清或出方向就照做" in STRATEGY_SELECTION_SYSTEM
+    assert "第二次写成排时、审核、花钱，或什么都没写，按只写台词把分镜接上" in STRATEGY_SELECTION_SYSTEM
     assert "不会替你补上" not in STRATEGY_SELECTION_SYSTEM
     assert still_only_speech(schedule_from_choice("speech"))
     assert not still_only_speech(schedule_from_choice("storyboard"))
@@ -220,6 +221,35 @@ def test_second_answer_clarify_or_directions_is_followed(progressive_gateway, se
     blob = json.dumps(offered, ensure_ascii=False)
     assert "台词先写好了" not in blob
     assert "画面还没排，现在不会出图" not in blob
+
+
+@pytest.mark.parametrize("reply", [
+    {"next_step": "排时"},
+    {"next_step": "审核"},
+    {"next_step": "花钱"},
+    {},
+], ids=["timing", "review", "spend", "blank"])
+def test_second_answer_program_step_or_blank_continues_storyboard(
+        progressive_gateway, settings, source, monkeypatch, reply):
+    async def denied(self, *args, **kwargs):
+        pytest.fail("a program step or a blank follow-up must not submit image or video")
+    monkeypatch.setattr(Gateway, "create_designs", denied)
+    monkeypatch.setattr(Gateway, "submit_video", denied)
+
+    state = progressive_gateway
+    state.follow_up_reply = reply
+    state.reentry_reply = None
+    result, state = _continue(progressive_gateway, settings, source, "speech")
+    assert state.calls == ["ad_script", "strategy", "storyboard", "plan_review"]
+    assert [item.get("task_kind") for item in state.contexts].count("next_step") == 1
+    assert result["kind"] == "plan"
+    assert result["plan"]["segments"]
+    blob = json.dumps(result, ensure_ascii=False)
+    assert "台词先写好了" not in blob
+    assert "画面还没排，现在不会出图" not in blob
+    assert "下一步没有写成" not in blob
+    for token in BANNED:
+        assert token not in result["message"]
 
 
 def test_model_can_choose_clarify_after_a_direction_was_selected(progressive_gateway, settings, source, monkeypatch):
