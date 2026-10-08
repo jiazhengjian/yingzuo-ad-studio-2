@@ -1359,18 +1359,20 @@ def _scene_of(shot, shots):
     return None
 
 
-def _line_needs_a_face(form, production, overlapping, shots):
+def _line_needs_a_face(form, production, overlapping, shots, scene_shots=None):
     """True when this line has to show a mouth, so a hands insert cannot carry it.
 
     A presenter line may cross a hands insert when another shot in the same
     line already shows the face. That continuation is the existing voice rule.
-    A story line needs a mouth only when someone awake can hear it.
+    A story line needs a mouth only when someone awake can hear it. The scene
+    is the whole film, split only at scene_change, same as inner voice.
     """
     production = _production_dict(production)
     if production.get("speech_mode") != "character_dialogue" or not overlapping:
         return False
     if form == "scene_story":
-        return any(shot_awake_listener(production, shot, _scene_of(shot, shots)) for shot in overlapping)
+        scene = scene_shots if scene_shots is not None else shots
+        return any(shot_awake_listener(production, shot, _scene_of(shot, scene)) for shot in overlapping)
     if form == "presenter_pitch":
         if production.get("speech_delivery") == "on_and_off_screen":
             return not any(not hands_only_shot(shot) for shot in overlapping)
@@ -1378,9 +1380,9 @@ def _line_needs_a_face(form, production, overlapping, shots):
     return False
 
 
-def _unwanted_shots(overlapping, shots, *, form, production):
+def _unwanted_shots(overlapping, shots, *, form, production, scene_shots=None):
     unwanted = []
-    needs_face = _line_needs_a_face(form, production, overlapping, shots)
+    needs_face = _line_needs_a_face(form, production, overlapping, shots, scene_shots)
     for shot in overlapping:
         if form == "presenter_pitch" and _is_quiet(shot):
             unwanted.append(shot)
@@ -1410,10 +1412,13 @@ def settle_speech_coverage(segments, schedule, *, form=None, production=None):
 
     A presenter shot marked as not speaking is not covered by that line.
     A hands-only close-up does not carry a line that needs a visible mouth.
-    A line that cannot move stays put. This is not a hard gate.
+    Who can hear a story line is read from the whole film, split only when a
+    shot enters by scene_change. A line that cannot move stays put. This is not a hard gate.
     """
     if not isinstance(segments, list) or not isinstance(schedule, list):
         return False
+    film = [shot for segment in segments if isinstance(segment, dict)
+            for shot in (segment.get("shots") or []) if isinstance(shot, dict)]
     changed = False
     for segment, booked in zip(segments, schedule):
         if not isinstance(segment, dict) or not isinstance(booked, dict):
@@ -1425,18 +1430,18 @@ def settle_speech_coverage(segments, schedule, *, form=None, production=None):
             continue
         spoken = [span for span in spans if isinstance(span, dict) and isinstance(span.get("text"), str) and span["text"]]
         for span in spoken:
-            if _clear_unwanted_coverage(span, shots, spoken, groups, form=form, production=production):
+            if _clear_unwanted_coverage(span, shots, spoken, groups, form=form, production=production, scene_shots=film):
                 changed = True
     return changed
 
 
-def _clear_unwanted_coverage(span, shots, spoken, groups, *, form, production):
+def _clear_unwanted_coverage(span, shots, spoken, groups, *, form, production, scene_shots=None):
     try:
         start, end = float(span["start"]), float(span["end"])
     except (TypeError, ValueError, KeyError):
         return False
     overlapping = [shot for shot in shots if isinstance(shot, dict) and _overlap(shot, start, end)]
-    unwanted = _unwanted_shots(overlapping, shots, form=form, production=production)
+    unwanted = _unwanted_shots(overlapping, shots, form=form, production=production, scene_shots=scene_shots)
     if not unwanted:
         return False
     homes = _homes_for(shots, overlapping, unwanted)
@@ -1912,8 +1917,11 @@ def _shot_speaks(shot, spans):
 def line_is_private_thought(plan, segment_id, span_id):
     """A story line said where nobody awake is listening.
 
-    This is not a hard gate. It only tells the review that off_screen on this
-    line is the inner voice already written into the shot.
+    The scene is the whole film, split only at scene_change, same as inner
+    voice. A friend still sitting from the previous segment counts. A shot
+    that says she is alone does not borrow that friend. This is not a hard
+    gate. It only tells the review that off_screen on this line is the inner
+    voice already written into the shot.
     """
     data = plan.model_dump() if hasattr(plan, "model_dump") else plan
     if not isinstance(data, dict):
@@ -1941,7 +1949,8 @@ def line_is_private_thought(plan, segment_id, span_id):
         overlapping = [shot for shot in shots if _overlap(shot, start, end)]
         if not overlapping:
             return False
-        return all(not shot_awake_listener(production, shot, _scene_of(shot, shots)) for shot in overlapping)
+        film = iter_plan_shots(data) or shots
+        return all(not shot_awake_listener(production, shot, _scene_of(shot, film)) for shot in overlapping)
     return False
 
 

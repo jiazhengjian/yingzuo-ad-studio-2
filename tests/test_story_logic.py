@@ -15,7 +15,7 @@ from app.story_logic import (
     apply_background_rewrite, background_issues, cast_distinction_issues, film_scene_shots, line_is_punchline,
     align_declared_continuity, plan_state_references, proof_highlight_issues, repair_prop_handoff,
     rewrite_background_if_needed,
-    hands_only_shot, line_is_private_thought,
+    hands_only_shot, line_is_private_thought, scene_groups,
     scrub_story_purposes, settle_inner_monologue, settle_speech_coverage, shot_awake_listener,
     snap_declared_speech,
     stamp_background_lines, state_change_warnings,
@@ -1867,6 +1867,58 @@ def test_story_hands_close_up_can_keep_a_line_when_nobody_awake_is_listening():
     plan = {"strategy": _dryer().model_dump(), "production": production,
             "segments": [{"id": "seg_1", "shots": shots, "speech_spans": [span]}]}
     assert line_is_private_thought(plan, "seg_1", "speech_1") is True
+
+
+def test_listener_across_segments_uses_the_same_scene_as_inner_voice():
+    production = {
+        "speech_mode": "character_dialogue", "speaker_id": "char_xia",
+        "characters": [
+            {"id": "char_xia", "name": "小夏", "description": "二十多岁"},
+            {"id": "char_ning", "name": "阿宁", "description": "醒着"},
+        ],
+    }
+
+    def entry(kind):
+        return {"entry_transition": kind}
+
+    def board(hands_description):
+        friend = {"id": "s1", "start": 0.0, "end": 8.0, "beat_id": "b1", "beat_ids": ["b1"],
+                  "character_ids": ["char_xia", "char_ning"], "continuity": entry("opening"),
+                  "description": "对面坐着朋友，醒着。"}
+        face = {"id": "s2", "start": 0.0, "end": 4.0, "beat_id": "b2", "beat_ids": ["b2"],
+                "character_ids": ["char_xia"], "continuity": entry("continuous"),
+                "description": "她的脸在画面，看着桌面。"}
+        hands = {"id": "s3", "start": 4.0, "end": 8.0, "beat_id": "b2", "beat_ids": ["b2"],
+                 "character_ids": ["char_xia"], "continuity": entry("continuous"),
+                 "description": hands_description}
+        span = _line(4.2, 6.0, "s3", beat="b2", text="这块给你。")
+        segments = [
+            {"id": "seg_1", "shots": [friend], "speech_spans": []},
+            {"id": "seg_2", "shots": [face, hands], "speech_spans": [span]},
+        ]
+        schedule = [
+            {"groups": [_group(0.0, 8.0, 0.0, 0.0, beat="b1")]},
+            {"groups": [_group(0.0, 8.0, 4.2, 6.0, beat="b2")]},
+        ]
+        return segments, schedule, span, hands
+
+    heard, heard_schedule, heard_span, heard_hands = board("手部特写，只有手。她开口说。")
+    heard_plan = {"strategy": _dryer().model_dump(), "production": production, "segments": heard}
+    assert line_is_private_thought(heard_plan, "seg_2", "speech_1") is False
+    assert settle_speech_coverage(heard, heard_schedule, form="scene_story", production=production) is True
+    assert min(heard_span["end"], heard_hands["end"]) - max(heard_span["start"], heard_hands["start"]) <= 1e-6
+    assert "s3" not in heard_span["shot_ids"]
+    assert line_is_private_thought(heard_plan, "seg_2", "speech_1") is False
+
+    alone, alone_schedule, alone_span, alone_hands = board("她一个人，手部特写，只有手。她开口说。")
+    alone_plan = {"strategy": _dryer().model_dump(), "production": production, "segments": alone}
+    film = [shot for segment in alone for shot in segment["shots"]]
+    scene = next(group for group in scene_groups(film) if any(item is alone_hands for item in group))
+    assert any(shot["id"] == "s1" for shot in scene)
+    assert shot_awake_listener(production, alone_hands, scene) is False
+    assert settle_speech_coverage(alone, alone_schedule, form="scene_story", production=production) is False
+    assert alone_span["shot_ids"] == ["s3"]
+    assert line_is_private_thought(alone_plan, "seg_2", "speech_1") is True
 
 
 def test_asleep_company_selling_point_still_fails():
