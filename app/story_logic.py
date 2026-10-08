@@ -1163,7 +1163,37 @@ _GARMENTS = ("夹克", "外套", "大衣", "风衣", "羽绒服", "卫衣", "衬
 def _line_number(token):
     if token.isdigit():
         return int(token)
-    return _LINE_ORDINALS.get(token)
+    if token in _LINE_ORDINALS:
+        return _LINE_ORDINALS[token]
+    if token.startswith("十") and len(token) <= 2:
+        rest = token[1:]
+        extra = _LINE_ORDINALS.get(rest, 0) if rest else 0
+        if rest and rest not in _LINE_ORDINALS:
+            return None
+        return 10 + extra
+    if "十" in token:
+        tens, _, ones = token.partition("十")
+        if tens in _LINE_ORDINALS and (not ones or ones in _LINE_ORDINALS):
+            return _LINE_ORDINALS[tens] * 10 + (_LINE_ORDINALS[ones] if ones else 0)
+    return None
+
+
+def _ordinal_word(number):
+    """一 to 十, then 十一. Larger counts stay digits so the same reader can see them."""
+    names = "一二三四五六七八九"
+    if number == 10:
+        return "十"
+    if 1 <= number <= 9:
+        return names[number - 1]
+    if 11 <= number <= 19:
+        return "十" + names[number - 11]
+    if 20 <= number <= 99:
+        tens, ones = divmod(number, 10)
+        word = names[tens - 1] + "十"
+        if ones:
+            word += names[ones - 1]
+        return word
+    return str(number)
 
 
 def _shot_text(shot):
@@ -1968,54 +1998,201 @@ def _stitch_continuous_starts(plan):
         previous = continuity
 
 
-_SPEECH_ORDINAL = re.compile(r"第\s*(?:[0-9]{1,2}|[一二两三四五六七八九十]+)\s*句")
+def _ordinals_in(text):
+    found = []
+    if not isinstance(text, str):
+        return found
+    for match in _LINE_ORDINAL.finditer(text):
+        number = _line_number(match.group(1))
+        if number:
+            found.append(number)
+    return found
 
 
-def _without_speech_ordinal(text):
-    if not isinstance(text, str) or "句" not in text:
-        return text
-    return _SPEECH_ORDINAL.sub("", text)
+def _position_run(numbers, positions):
+    """True when the written counts are this shot's index, then the next shot, and so on."""
+    for start in positions:
+        if numbers == [start + offset for offset in range(len(numbers))]:
+            return True
+    return False
 
 
-def strip_speech_ordinals(plan):
-    """Shot prose keeps who is speaking. It does not keep “第三句” as the line.
+def _ordinal_pairs(numbers, indices, positions, only_shot_numbers):
+    """Map picture counts onto the spoken lines already on this shot.
 
-    snap_declared_speech already used that counter to place the real sentence.
-    The sentence stays on the narration and speech span.
+    Before a declared line is moved, only a run that follows the shot index is
+    retargeted. A later shot that says 第三句 keeps that cue so the line can move.
     """
-    if not isinstance(plan, dict):
+    if not numbers or not indices or numbers == indices:
+        return []
+    shot_numbered = _position_run(numbers, positions) or (
+        len(set(numbers)) == 1 and numbers[0] in positions)
+    if len(numbers) == len(indices) and (not only_shot_numbers or shot_numbered):
+        return list(zip(numbers, indices))
+    if len(set(numbers)) == 1 and len(indices) == 1 and numbers[0] != indices[0]:
+        if not only_shot_numbers or numbers[0] in positions:
+            return [(numbers[0], indices[0])] * len(numbers)
+    return []
+
+
+def _apply_ordinal_pairs(text, pairs):
+    queue = [(old, new) for old, new in pairs if old != new]
+    if not queue or not isinstance(text, str):
+        return text
+
+    def replace(match):
+        number = _line_number(match.group(1))
+        if queue and queue[0][0] == number:
+            _, new = queue.pop(0)
+            return "第" + _ordinal_word(new) + "句"
+        return match.group(0)
+
+    return _LINE_ORDINAL.sub(replace, text)
+
+
+def _primary_spoken_home(span, shots):
+    """The one shot this line is spoken in. A line split across two shots has no single home."""
+    try:
+        start, end = float(span["start"]), float(span["end"])
+    except (TypeError, ValueError, KeyError):
+        return None
+    if end <= start:
+        return None
+    containing = [shot for shot in shots if _inside(shot, start, end)]
+    if len(containing) == 1:
+        return containing[0]
+    scored = [(shot, _overlap_seconds(shot, start, end)) for shot in shots]
+    scored = [(shot, seconds) for shot, seconds in scored if seconds > 0]
+    if scored:
+        best = max(seconds for _, seconds in scored)
+        winners = [shot for shot, seconds in scored if abs(seconds - best) < 1e-7]
+        if len(winners) == 1:
+            return winners[0]
+        return None
+    ids = span.get("shot_ids") if isinstance(span.get("shot_ids"), list) else []
+    if len(ids) == 1:
+        return next((shot for shot in shots if shot.get("id") == ids[0]), None)
+    return None
+
+
+def _picture_fields(shot):
+    fields = []
+    for key in ("description", "purpose"):
+        if isinstance(shot.get(key), str):
+            fields.append((shot, key))
+    continuity = shot.get("continuity")
+    if isinstance(continuity, dict):
+        for key, value in continuity.items():
+            if isinstance(value, str):
+                fields.append((continuity, key))
+    return fields
+
+
+def _sync_ordinal_quote(segment, shot, old, new):
+    """Copied picture notes follow the shot. Spoken sentences stay where they are."""
+    if not isinstance(segment, dict) or not old or old == new:
+        return
+    prompt = segment.get("prompt")
+    if isinstance(prompt, str):
+        start, end = shot.get("start"), shot.get("end")
+        replaced = False
+        if isinstance(start, (int, float)) and isinstance(end, (int, float)) and not isinstance(start, bool):
+            for dash in ("–", "-", "—"):
+                stamped = f"{start:g}{dash}{end:g}秒：{old}"
+                if stamped in prompt:
+                    segment["prompt"] = prompt.replace(stamped, f"{start:g}{dash}{end:g}秒：{new}", 1)
+                    replaced = True
+                    break
+        if not replaced and prompt.count(old) == 1:
+            segment["prompt"] = prompt.replace(old, new, 1)
+    purpose = segment.get("purpose")
+    if isinstance(purpose, str) and old in purpose:
+        segment["purpose"] = purpose.replace(old, new, 1)
+    shot_id = shot.get("id")
+    for span in segment.get("speech_spans") or []:
+        if not isinstance(span, dict):
+            continue
+        for anchor in span.get("anchors") or []:
+            if not isinstance(anchor, dict):
+                continue
+            ids = anchor.get("shot_ids") if isinstance(anchor.get("shot_ids"), list) else []
+            if isinstance(shot_id, str) and shot_id and shot_id not in ids:
+                continue
+            evidence = anchor.get("visual_evidence")
+            if isinstance(evidence, str) and old in evidence:
+                anchor["visual_evidence"] = evidence.replace(old, new, 1)
+
+
+def align_spoken_ordinals(segments, *, only_shot_numbers=False):
+    """Picture notes keep 第几句, counted by the spoken line, not the shot number.
+
+    「玫瑰清香。」 is the first spoken sentence even when it lands on shot 3, so
+    that shot says 第一句. The sentence itself stays in the narration. A shot
+    that declares 第三句 before the line has moved there is left alone when
+    only_shot_numbers is set, so the existing landing can still follow the cue.
+    """
+    if not isinstance(segments, list):
         return False
-    changed = False
-
-    def write(container, key):
-        nonlocal changed
-        current = container.get(key)
-        updated = _without_speech_ordinal(current)
-        if updated != current:
-            container[key] = updated
-            changed = True
-
-    for segment in plan.get("segments") or []:
+    homes = {}
+    film_at = {}
+    segment_at = {}
+    cursor = 0
+    spoken_index = 0
+    for segment in segments:
         if not isinstance(segment, dict):
             continue
-        write(segment, "prompt")
-        write(segment, "purpose")
+        shots = [shot for shot in segment.get("shots") or [] if isinstance(shot, dict)]
+        for offset, shot in enumerate(shots, start=1):
+            cursor += 1
+            film_at[id(shot)] = cursor
+            segment_at[id(shot)] = offset
+        for span in segment.get("speech_spans") or []:
+            if not isinstance(span, dict) or not isinstance(span.get("text"), str) or not span["text"].strip():
+                continue
+            spoken_index += 1
+            home = _primary_spoken_home(span, shots)
+            if home is not None:
+                homes.setdefault(id(home), []).append(spoken_index)
+    changed = False
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
         for shot in segment.get("shots") or []:
             if not isinstance(shot, dict):
                 continue
-            write(shot, "description")
-            write(shot, "purpose")
-            continuity = shot.get("continuity")
-            if isinstance(continuity, dict):
-                for key in list(continuity):
-                    if isinstance(continuity.get(key), str):
-                        write(continuity, key)
-        for span in segment.get("speech_spans") or []:
-            if not isinstance(span, dict):
+            indices = homes.get(id(shot)) or []
+            positions = {film_at.get(id(shot)), segment_at.get(id(shot))}
+            positions.discard(None)
+            for owner, key in _picture_fields(shot):
+                original = owner[key]
+                numbers = _ordinals_in(original)
+                updated = _apply_ordinal_pairs(
+                    original, _ordinal_pairs(numbers, indices, positions, only_shot_numbers))
+                if updated == original:
+                    continue
+                owner[key] = updated
+                changed = True
+                if key in ("description", "purpose"):
+                    _sync_ordinal_quote(segment, shot, original, updated)
+            shot_id = shot.get("id")
+            if not isinstance(shot_id, str) or not shot_id:
                 continue
-            for anchor in span.get("anchors") or []:
-                if isinstance(anchor, dict):
-                    write(anchor, "visual_evidence")
+            for span in segment.get("speech_spans") or []:
+                if not isinstance(span, dict):
+                    continue
+                for anchor in span.get("anchors") or []:
+                    if not isinstance(anchor, dict):
+                        continue
+                    ids = anchor.get("shot_ids") if isinstance(anchor.get("shot_ids"), list) else []
+                    evidence = anchor.get("visual_evidence")
+                    if ids != [shot_id] or not isinstance(evidence, str):
+                        continue
+                    numbers = _ordinals_in(evidence)
+                    updated = _apply_ordinal_pairs(
+                        evidence, _ordinal_pairs(numbers, indices, positions, only_shot_numbers))
+                    if updated != evidence:
+                        anchor["visual_evidence"] = updated
+                        changed = True
     return changed
 
 

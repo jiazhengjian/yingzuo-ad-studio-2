@@ -9,7 +9,6 @@ from app.ad_form import asks_product_name, intake_strategy_response, pack_clarif
 from app.db import Store
 from app.design import character_design_request
 from app.production import required_designs
-from app.story_logic import strip_speech_ordinals
 
 
 @pytest.fixture(autouse=True)
@@ -35,28 +34,6 @@ def test_product_name_is_not_asked():
     assert result["kind"] == "clarify"
     assert result["questions"]
     assert all("名称" not in item["prompt"] for item in result["questions"])
-
-
-def test_storyboard_ordinal_is_not_the_spoken_line():
-    plan = {"script": "玫瑰清香", "segments": [{
-        "prompt": "0–2秒：画外女声旁白说第三句",
-        "purpose": "她开口说第三句",
-        "narration": "玫瑰清香",
-        "shots": [{"description": "画外女声旁白说第三句", "purpose": "心里想第三句",
-                   "continuity": {"start_state": "她开口说第三句"}}],
-        "speech_spans": [{"text": "玫瑰清香", "anchors": [{"visual_evidence": "旁白说第三句", "text": "玫瑰清香"}]}],
-    }]}
-    assert strip_speech_ordinals(plan) is True
-    shot = plan["segments"][0]["shots"][0]
-    assert "第三句" not in shot["description"]
-    assert "第三句" not in shot["purpose"]
-    assert "第三句" not in shot["continuity"]["start_state"]
-    assert "第三句" not in plan["segments"][0]["prompt"]
-    assert "第三句" not in plan["segments"][0]["speech_spans"][0]["anchors"][0]["visual_evidence"]
-    assert plan["segments"][0]["speech_spans"][0]["text"] == "玫瑰清香"
-    assert plan["segments"][0]["narration"] == "玫瑰清香"
-    assert plan["script"] == "玫瑰清香"
-    assert "旁白说" in shot["description"]
 
 
 def test_states_stay_on_the_character_sheet():

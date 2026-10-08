@@ -15,7 +15,7 @@ from app.story_logic import (
     apply_background_rewrite, background_issues, cast_distinction_issues, film_scene_shots, line_is_punchline,
     align_declared_continuity, plan_state_references, proof_highlight_issues, repair_prop_handoff,
     rewrite_background_if_needed,
-    hands_only_shot, line_is_private_thought, scene_groups,
+    align_spoken_ordinals, hands_only_shot, line_is_private_thought, scene_groups,
     scrub_story_purposes, settle_inner_monologue, settle_speech_coverage, shot_awake_listener,
     snap_declared_speech,
     stamp_background_lines, state_change_warnings,
@@ -948,6 +948,80 @@ def test_r21_short_silent_shot_retimes_the_line_into_the_speaking_shot():
     assert third["start"] == 7.8 and abs(third["end"] - 9.5) < 1e-6
     assert groups[2]["speech_start"] == 7.8 and abs(groups[2]["speech_end"] - 9.5) < 1e-6
     assert shots[1]["end"] == 7.8 and shots[2]["start"] == 7.8
+
+
+def test_storyboard_prompt_counts_spoken_lines_not_shots():
+    from app.progressive_planning import DIRECTOR_SYSTEM
+    assert "不按镜头号" in DIRECTOR_SYSTEM
+    assert "第一句、第二句、第三句" in DIRECTOR_SYSTEM
+    assert "她开口说第三句" in DIRECTOR_SYSTEM
+
+
+def test_picture_ordinal_follows_the_spoken_line_not_the_shot_number():
+    lines = ["玫瑰清香。", "约会前，心里就稳了。", "点下面链接，把它看清楚。"]
+    shots = [
+        {"id": "s1", "start": 0.0, "end": 2.0, "description": "瓶身静置，她没说话。", "purpose": "看瓶子"},
+        {"id": "s2", "start": 2.0, "end": 4.0, "description": "盖子打开，她没说话。", "purpose": "打开"},
+        {"id": "s3", "start": 4.0, "end": 7.0, "description": "画外女声旁白说第三句。", "purpose": "旁白说第三句",
+         "continuity": {"start_state": "旁白说第三句"}},
+        {"id": "s4", "start": 7.0, "end": 10.0, "description": "她把瓶子拿近，旁白说第四句。", "purpose": "旁白说第四句"},
+        {"id": "s5", "start": 10.0, "end": 14.0, "description": "瓶子停在桌面，旁白说第5句。", "purpose": "旁白说第五句"},
+    ]
+    spans = []
+    for index, (text, shot) in enumerate(zip(lines, shots[2:]), start=1):
+        spans.append({
+            "id": f"speech_{index}", "text": text,
+            "start": shot["start"] + 0.2, "end": shot["end"] - 0.2,
+            "shot_ids": [shot["id"]],
+            "anchors": [{"text": text, "shot_ids": [shot["id"]], "visual_evidence": shot["description"]}],
+        })
+    segment = {
+        "shots": shots, "speech_spans": spans,
+        "narration": "".join(lines),
+        "purpose": "旁白说第三句",
+        "prompt": "\n".join(f"{shot['start']:g}–{shot['end']:g}秒：{shot['description']}" for shot in shots),
+    }
+    assert align_spoken_ordinals([segment], only_shot_numbers=True) is True
+    assert shots[2]["description"] == "画外女声旁白说第一句。"
+    assert shots[3]["description"] == "她把瓶子拿近，旁白说第二句。"
+    assert shots[4]["description"] == "瓶子停在桌面，旁白说第三句。"
+    assert shots[2]["purpose"] == "旁白说第一句"
+    assert shots[2]["continuity"]["start_state"] == "旁白说第一句"
+    assert "第一句" in segment["prompt"] and "第5句" not in segment["prompt"]
+    assert "第五句" not in segment["prompt"] and "第四句" not in segment["prompt"]
+    assert spans[0]["anchors"][0]["visual_evidence"] == "画外女声旁白说第一句。"
+    assert [span["text"] for span in spans] == lines
+    assert segment["narration"] == "".join(lines)
+    assert "玫瑰清香" not in shots[2]["description"]
+    assert align_spoken_ordinals([segment]) is False
+
+
+def test_a_declared_third_line_is_not_renumbered_before_it_lands():
+    shots = [
+        {"id": "s1", "start": 0.0, "end": 2.5, "description": "她开口说第一句。"},
+        {"id": "s2", "start": 2.5, "end": 4.0, "description": "她开口说第二句。"},
+        {"id": "s4", "start": 4.0, "end": 7.8, "description": "她没说话，只看了室友一眼。"},
+        {"id": "s5", "start": 7.8, "end": 12.0, "description": "她开口说第三句。"},
+    ]
+    third = _speech("speech_3", "b3", "你接着睡", 6.1, 7.8, "s4")
+    spans = [
+        _speech("speech_1", "b1", "你醒着？", 0.4, 1.6, "s1"),
+        _speech("speech_2", "b2", "那我吹了。", 2.8, 3.8, "s2"),
+        third,
+    ]
+    groups = [
+        {"beat_id": "b1", "start": 0.0, "end": 2.5, "speech_start": 0.4, "speech_end": 1.6},
+        {"beat_id": "b2", "start": 2.5, "end": 4.0, "speech_start": 2.8, "speech_end": 3.8},
+        {"beat_id": "b3", "start": 4.0, "end": 7.8, "speech_start": 6.1, "speech_end": 7.8},
+        {"beat_id": "b4", "start": 7.8, "end": 12.0},
+    ]
+    segments = [{"shots": shots, "speech_spans": spans}]
+    assert align_spoken_ordinals(segments, only_shot_numbers=True) is False
+    assert shots[3]["description"] == "她开口说第三句。"
+    assert snap_declared_speech(segments, [{"groups": groups}]) is True
+    assert third["shot_ids"] == ["s5"]
+    assert align_spoken_ordinals(segments) is False
+    assert "第三句" in shots[3]["description"]
 
 
 def test_a_jacket_in_the_shot_warns_when_the_appearance_only_has_the_sweatshirt():
