@@ -8,6 +8,7 @@ from app.plan_review import lower_failed_plan_verdicts, validate_plan_review
 from app.progressive_planning import compile_director
 from app.providers.gateway import ProviderError
 from app.schemas import Plan
+from app.strategy import StrategyRecord
 from test_progressive_planning import (
     accepted_review, chosen_strategy, director_output, forbid_real_network,
     progressive_gateway,
@@ -87,6 +88,44 @@ def test_confirmed_voiceover_does_not_require_on_screen_speaker(source, visibili
     assert lower_failed_plan_verdicts(review, plan) == review
     assert validate_plan_review(review, plan).ready is True
     assert review_speech_requirements(plan)["requires_visible_speaking"] is False
+
+
+def _story(source, description):
+    strategy = chosen_strategy(source, "character_dialogue")
+    raw = strategy.model_dump()
+    raw["brief"]["ad_form"] = "scene_story"
+    strategy = StrategyRecord.model_validate(raw)
+    draft = director_output(strategy)
+    for shot in draft["shots"]:
+        shot["description"] = description
+        shot["character_ids"] = ["char_worker"]
+    return compile_director(draft, strategy, 20, "continuity_v1", [source["id"]])[0]
+
+
+def test_private_thought_marked_off_screen_stays_a_pass(source):
+    plan = _story(source, "她一个人坐着，开口说。")
+    assert "开口说" not in plan["segments"][0]["shots"][0]["description"]
+    assert "心里想" in plan["segments"][0]["shots"][0]["description"]
+    review = accepted_review(plan)
+    review["alignment"]["spans"][0]["speaker_visibility"] = "off_screen"
+    lowered = lower_failed_plan_verdicts(review, plan)
+    assert lowered["alignment"]["spans"][0]["passed"] is True
+    assert validate_plan_review(lowered, plan).ready is True
+    unclear = accepted_review(plan)
+    unclear["alignment"]["spans"][0]["speaker_visibility"] = "unclear"
+    assert lower_failed_plan_verdicts(unclear, plan)["alignment"]["spans"][0]["passed"] is False
+
+
+def test_awake_listener_still_fails_when_the_speaker_is_off_screen(source):
+    plan = _story(source, "对面坐着朋友，醒着，她开口说。")
+    assert "开口说" in plan["segments"][0]["shots"][0]["description"]
+    review = accepted_review(plan)
+    review["alignment"]["spans"][0].update(
+        speaker_visibility="off_screen", note="朋友在场，说话人却不在画面里。")
+    lowered = lower_failed_plan_verdicts(review, plan)
+    assert lowered["alignment"]["spans"][0]["passed"] is False
+    with pytest.raises(ValueError, match="说话人不可见"):
+        validate_plan_review(review, plan)
 
 
 def test_silent_plan_has_no_invented_visibility_items(source):

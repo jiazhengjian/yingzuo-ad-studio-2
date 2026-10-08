@@ -557,7 +557,7 @@ def compile_director(raw, strategy, duration, generation_strategy, asset_ids, lo
             "reference_asset_ids": list(asset_ids), "shots": shots, "speech_spans": spans,
             "narration": "".join(span["text"] for span in spans)})
     from .planning import align_ending_hold, ending_hold_seconds, fit_story_insert
-    from .story_logic import snap_declared_speech
+    from .story_logic import settle_speech_coverage, snap_declared_speech
     hold = ending_hold_seconds(script, form)
     if hold and segments:
         last_beat = next((beat for beat in reversed(script.beats) if beat.narration), None)
@@ -577,6 +577,10 @@ def compile_director(raw, strategy, duration, generation_strategy, asset_ids, lo
     snapped = snap_declared_speech(segments, schedule)
     if form == "scene_story" and segments and schedule:
         fit_story_insert(segments[-1], schedule[-1])
+    covered = settle_speech_coverage(
+        segments, schedule, form=form, production=selected.production)
+    if covered and form == "scene_story" and segments and schedule:
+        fit_story_insert(segments[-1], schedule[-1])
     payload = {"title": draft.title, "ad_script": script.model_dump(),
         "script": narration, "strategy": strategy.model_dump(), "audio_strategy": "native",
         "facts": {"name": strategy.brief.product_name, "claims": [fact.text for fact in strategy.brief.facts]},
@@ -592,9 +596,9 @@ def compile_director(raw, strategy, duration, generation_strategy, asset_ids, lo
         schema_ok = True
         validate_expression_schedule(plan, schedule)
     except (ValueError, ValidationError, KeyError, TypeError):
-        # A snap that already satisfies the plan schema stays. Restoring the
-        # pre-snap clocks would put the line back on the silent shot.
-        if not (schema_ok and snapped):
+        # A move that already satisfies the plan schema stays. Restoring the
+        # earlier clocks would put the line back on the shot that cannot carry it.
+        if not (schema_ok and (snapped or covered)):
             segments = speech_segments
             schedule.clear()
             schedule.extend(speech_schedule)
@@ -630,6 +634,10 @@ def _finish_compiled_plan(plan):
     before_ending = deepcopy(plan)
     if settle_ending_actions(plan):
         plan = accept(plan, before_ending)
+    before_voice = deepcopy(plan)
+    from .story_logic import settle_inner_monologue
+    if settle_inner_monologue(plan):
+        plan = accept(plan, before_voice)
     return plan
 
 
@@ -651,7 +659,11 @@ def _continuity_signature(director):
 
 
 def _rebind_reviewed_plan(plan):
-    """The inner-voice rewrite happens after review. Keep the same verdict on the new text."""
+    """Keep the stored verdict on the wording settled before release.
+
+    Inner voice is written before review. A later identical settle still
+    refreshes the hash so the saved review names this plan.
+    """
     review = plan.get("plan_review") if isinstance(plan, dict) else None
     if not isinstance(review, dict) or not isinstance(review.get("reviewed_plan_sha256"), str):
         return
@@ -1533,6 +1545,23 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                     return _hand(chosen)
             _label_for_release(plan)
             return _hand(plan)
+        # The mouth rewrite already happened before review. Running it again
+        # is idempotent, and the hard gates then see the same wording. A
+        # rewrite that no longer validates is put back, so release does not
+        # keep text the review never saw.
+        before_voice = deepcopy(plan)
+        notes = settle_inner_monologue(plan)
+        if notes:
+            try:
+                Plan.model_validate(plan, context={"require_beat_ids": True, "require_directing_contract": True})
+            except (ValueError, ValidationError, KeyError, TypeError):
+                plan.clear()
+                plan.update(before_voice)
+                notes = []
+        if notes:
+            _rebind_reviewed_plan(plan)
+            record_failure({"nonblocking": True, "message": notes[0],
+                            "issues": notes[:8], "error_code": "inner_monologue"})
         kind, findings = classify_release(plan, strategy, locked_lines=locked, insisted_lines_=insisted)
         if kind == "ask":
             from .release_gate import line_gate_questions
@@ -1549,11 +1578,6 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 unfinished_board()
             return _hand(chosen)
         _label_for_release(plan)
-        notes = settle_inner_monologue(plan)
-        if notes:
-            _rebind_reviewed_plan(plan)
-            record_failure({"nonblocking": True, "message": notes[0],
-                            "issues": notes[:8], "error_code": "inner_monologue"})
         from .release_gate import images_blocked_reason as decide
         if decide(plan, strategy=strategy):
             chosen = _release_best()

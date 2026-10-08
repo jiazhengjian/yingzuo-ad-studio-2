@@ -15,7 +15,9 @@ from app.story_logic import (
     apply_background_rewrite, background_issues, cast_distinction_issues, film_scene_shots, line_is_punchline,
     align_declared_continuity, plan_state_references, proof_highlight_issues, repair_prop_handoff,
     rewrite_background_if_needed,
-    scrub_story_purposes, settle_inner_monologue, shot_awake_listener, snap_declared_speech,
+    hands_only_shot, line_is_private_thought,
+    scrub_story_purposes, settle_inner_monologue, settle_speech_coverage, shot_awake_listener,
+    snap_declared_speech,
     stamp_background_lines, state_change_warnings,
     state_pairing_issues, story_ending_issues, story_gaze_line, story_plan_issues,
     storyboard_content_failure, wardrobe_warnings, with_background_line,
@@ -23,6 +25,7 @@ from app.story_logic import (
 from app.strategy import StrategyRecord
 from app.video_prompt import compile_grouped_video
 from test_line_quality import _lines, typed
+from test_providers import source
 from test_video_prompt_lipsync import _segment
 
 
@@ -1733,6 +1736,137 @@ def test_a_scene_spanning_segments_uses_the_same_listener():
     block = _shot_block(prompt, "镜头1 |")
     assert "内心独白" not in block and "放轻脚步" not in block and "不对口型" not in block
     assert "嘴型与台词同步" in block
+
+
+def _spoken_board(shots, span, groups):
+    return [{"shots": shots, "speech_spans": [span]}], [{"groups": groups}]
+
+
+def _line(start, end, *shot_ids, beat="b1", text="看这个。"):
+    return {
+        "id": "speech_1", "beat_id": beat, "text": text, "start": start, "end": end,
+        "shot_ids": list(shot_ids),
+        "anchors": [{"text": text, "start": start, "end": end, "shot_ids": list(shot_ids),
+                     "visual_evidence": "画面"}],
+    }
+
+
+def _group(start, end, speech_start, speech_end, beat="b1"):
+    return {"beat_id": beat, "start": start, "end": end,
+            "speech_start": speech_start, "speech_end": speech_end}
+
+
+def test_hands_in_frame_is_not_a_hands_only_close_up():
+    assert hands_only_shot({"description": "她手里拿着瓶子，看着镜头开口说。"}) is False
+    assert hands_only_shot({"description": "手上停着同一瓶身。"}) is False
+    assert hands_only_shot({"description": "手部特写，只有手。"}) is True
+    assert hands_only_shot({"description": "手部特写，正脸也在。"}) is False
+
+
+def test_compiled_pitch_does_not_leave_a_line_on_the_silent_shot(source):
+    from app.progressive_planning import compile_director
+    from test_progressive_planning import chosen_strategy, director_output
+    strategy = chosen_strategy(source, "character_dialogue")
+    raw = strategy.model_dump()
+    raw["brief"]["ad_form"] = "presenter_pitch"
+    strategy = StrategyRecord.model_validate(raw)
+    draft = director_output(strategy, count=2)
+    draft["shots"][0]["description"] = "她看着镜头开口说。"
+    draft["shots"][1]["description"] = "她没说话，手里拿着瓶子。"
+    plan, _, _ = compile_director(draft, strategy, 12, "continuity_v1", [source["id"]])
+    shots = plan["segments"][0]["shots"]
+    quiet = next(shot for shot in shots if "没说话" in shot["description"])
+    for span in plan["segments"][0]["speech_spans"]:
+        overlap = min(span["end"], quiet["end"]) - max(span["start"], quiet["start"])
+        assert overlap <= 1e-6, span
+
+
+def test_pitch_line_moves_off_the_shot_marked_not_speaking():
+    shots = [
+        {"id": "s1", "start": 0.0, "end": 4.0, "beat_id": "b1", "beat_ids": ["b1"],
+         "description": "她看着镜头开口说。"},
+        {"id": "s2", "start": 4.0, "end": 7.0, "beat_id": "b1", "beat_ids": ["b1"],
+         "description": "她没说话，手里拿着瓶子。"},
+    ]
+    span = _line(3.2, 5.4, "s1", "s2")
+    segments, schedule = _spoken_board(shots, span, [_group(0.0, 7.0, 3.2, 5.4)])
+    production = {"speech_mode": "character_dialogue", "speech_delivery": "visible_only", "speaker_id": "host"}
+    assert settle_speech_coverage(segments, schedule, form="presenter_pitch", production=production) is True
+    assert span["shot_ids"] == ["s1"]
+    assert span["end"] <= shots[0]["end"] + 1e-6
+    assert min(span["end"], shots[1]["end"]) - max(span["start"], shots[1]["start"]) <= 1e-6
+    assert settle_speech_coverage(segments, schedule, form="presenter_pitch", production=production) is False
+
+
+def test_pitch_continuation_may_cross_a_hands_insert_when_the_face_is_in_the_line():
+    shots = [
+        {"id": "face", "start": 0.0, "end": 4.0, "beat_id": "b1", "beat_ids": ["b1"],
+         "description": "她看着镜头说。"},
+        {"id": "hands", "start": 4.0, "end": 6.0, "beat_id": "b1", "beat_ids": ["b1"],
+         "description": "手部特写，只有手。"},
+    ]
+    span = _line(2.5, 5.2, "face", "hands")
+    segments, schedule = _spoken_board(shots, span, [_group(0.0, 6.0, 2.5, 5.2)])
+    production = {"speech_mode": "character_dialogue", "speech_delivery": "on_and_off_screen", "speaker_id": "host"}
+    assert settle_speech_coverage(segments, schedule, form="presenter_pitch", production=production) is False
+    assert span["shot_ids"] == ["face", "hands"]
+
+
+def test_pitch_line_leaves_a_hands_only_close_up_when_no_face_shares_it():
+    shots = [
+        {"id": "face", "start": 0.0, "end": 3.0, "beat_id": "b1", "beat_ids": ["b1"],
+         "description": "她看着镜头说。"},
+        {"id": "hands", "start": 3.0, "end": 6.0, "beat_id": "b1", "beat_ids": ["b1"],
+         "description": "手部特写，只有她的手。"},
+    ]
+    span = _line(3.4, 5.2, "hands")
+    segments, schedule = _spoken_board(shots, span, [_group(0.0, 6.0, 3.4, 5.2)])
+    production = {"speech_mode": "character_dialogue", "speech_delivery": "on_and_off_screen", "speaker_id": "host"}
+    assert settle_speech_coverage(segments, schedule, form="presenter_pitch", production=production) is True
+    assert span["shot_ids"] == ["face"]
+    assert span["end"] <= shots[0]["end"] + 1e-6
+
+
+def test_story_hands_close_up_does_not_carry_a_line_someone_awake_can_hear():
+    production = {
+        "speech_mode": "character_dialogue", "speaker_id": "char_xia",
+        "characters": [
+            {"id": "char_xia", "name": "小夏", "description": "二十多岁"},
+            {"id": "char_ning", "name": "阿宁", "description": "醒着"},
+        ],
+    }
+    shots = [
+        {"id": "face", "start": 0.0, "end": 3.0, "beat_id": "b1", "beat_ids": ["b1"],
+         "character_ids": ["char_xia", "char_ning"],
+         "description": "对面坐着朋友，她开口说。"},
+        {"id": "hands", "start": 3.0, "end": 6.0, "beat_id": "b1", "beat_ids": ["b1"],
+         "character_ids": ["char_xia"],
+         "description": "手部特写，只有手。她开口说。"},
+    ]
+    span = _line(3.3, 5.1, "hands", text="这块给你。")
+    segments, schedule = _spoken_board(shots, span, [_group(0.0, 6.0, 3.3, 5.1)])
+    assert settle_speech_coverage(segments, schedule, form="scene_story", production=production) is True
+    assert span["shot_ids"] == ["face"]
+    assert min(span["end"], shots[1]["end"]) - max(span["start"], shots[1]["start"]) <= 1e-6
+
+
+def test_story_hands_close_up_can_keep_a_line_when_nobody_awake_is_listening():
+    production = {
+        "speech_mode": "character_dialogue", "speaker_id": "char_xia",
+        "characters": [{"id": "char_xia", "name": "小夏", "description": "二十多岁"}],
+    }
+    shots = [
+        {"id": "hands", "start": 0.0, "end": 4.0, "beat_id": "b1", "beat_ids": ["b1"],
+         "character_ids": ["char_xia"],
+         "description": "她一个人，手部特写，只有手。她开口说。"},
+    ]
+    span = _line(0.4, 2.0, "hands", text="樱桃我留着。")
+    segments, schedule = _spoken_board(shots, span, [_group(0.0, 4.0, 0.4, 2.0)])
+    assert settle_speech_coverage(segments, schedule, form="scene_story", production=production) is False
+    assert span["shot_ids"] == ["hands"]
+    plan = {"strategy": _dryer().model_dump(), "production": production,
+            "segments": [{"id": "seg_1", "shots": shots, "speech_spans": [span]}]}
+    assert line_is_private_thought(plan, "seg_1", "speech_1") is True
 
 
 def test_asleep_company_selling_point_still_fails():

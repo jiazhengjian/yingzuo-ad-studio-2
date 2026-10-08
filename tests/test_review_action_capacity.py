@@ -85,22 +85,47 @@ def overrun_review(plan, required=7):
     return raw
 
 
-def test_fresh_review_lowers_numeric_contradiction_without_an_extra_format_repair(source):
+def test_fresh_review_keeps_a_pass_when_the_shot_itself_is_long_enough(source):
+    # The reserved action window is 4 seconds. The shot is the whole segment.
+    # 7 seconds of action fits the shot, so the tighter window must not fail it.
     plan = compiled(source)
     raw = overrun_review(plan)
     before = deepcopy((plan, raw))
     assert _planned_action_limits(plan) == {("seg_1", "shot_0"): 4}
-    with pytest.raises(ValueError, match="动作窗口并集"):
+    assert validate_plan_review(raw, plan, require_visual_execution=True).ready
+    assert lower_failed_plan_verdicts(raw, plan) == raw
+    assert (plan, raw) == before
+
+
+def test_tighter_intersection_does_not_overturn_a_pass_inside_the_shot(source, monkeypatch):
+    plan = compiled(source)
+    monkeypatch.setattr("app.av_review._planned_action_limits", lambda _plan: {("seg_1", "shot_0"): 0.1})
+    raw = overrun_review(plan, 1.6)
+    pacing = lower_failed_av_verdicts(raw["alignment"], plan)["shots"][0]["pacing"]
+    assert pacing["action_timing_passed"] is True
+    assert validate_plan_review(raw, plan, require_visual_execution=True).ready
+
+
+def test_action_longer_than_the_shot_still_lowers_a_pass(source):
+    plan = compiled(source)
+    shot = plan["segments"][0]["shots"][0]
+    length = shot["end"] - shot["start"]
+    required = length + 1
+    raw = overrun_review(plan, required)
+    before = deepcopy((plan, raw))
+    with pytest.raises(ValueError, match="超过镜头时长"):
         validate_plan_review(raw, plan)
-    with pytest.raises(ValueError, match="动作窗口并集"):
+    with pytest.raises(ValueError, match="超过镜头时长"):
         validate_av_review(raw["alignment"], plan, require_pacing=True)
     lowered = lower_failed_plan_verdicts(raw, plan)
     checked = validate_plan_review(lowered, plan)
     assert not checked.ready and not checked.alignment.ready
     check = checked.alignment.shots[0]
     assert not check.passed and not check.pacing.action_timing_passed
-    assert check.pacing.action_seconds_required == 7
-    assert check.note == check.pacing.note == "程序计算：shot_0动作估计7秒，实际相交动作窗口并集仅4秒，超过上限。"
+    assert check.pacing.action_seconds_required == required
+    note = f"程序计算：shot_0动作估计{required:g}秒，镜头实际只有{length:g}秒，超过镜头时长。"
+    assert check.note == check.pacing.note == note
+    assert "动作窗口并集" not in note
     assert checked.execution_check.action_capacity  # No invented semantic judgment.
     assert (plan, raw) == before
     with pytest.raises(ValueError, match="已有失败"):
@@ -131,10 +156,16 @@ def test_bound_historical_review_and_saved_plan_remain_readable_but_live_review_
                                                for segment in plan["segments"]})
     assert validate_plan_review(stored, plan).ready
     assert Plan.model_validate({**plan, "plan_review": stored}).plan_review == stored
-    # The live call's existing strict flag applies even to an injected binding.
-    with pytest.raises(ValueError, match="动作窗口并集"):
-        validate_plan_review(stored, plan, require_visual_execution=True)
-    assert not validate_plan_review(lower_failed_plan_verdicts(stored, plan), plan).ready
+    # A saved pass stays a pass when the shot is long enough, even on the live wire.
+    assert validate_plan_review(stored, plan, require_visual_execution=True).ready
+    shot = plan["segments"][0]["shots"][0]
+    length = shot["end"] - shot["start"]
+    too_long = overrun_review(plan, length + 1)
+    too_long.update(reviewed_plan_sha256=stored["reviewed_plan_sha256"],
+                    reviewed_reference_asset_ids=stored["reviewed_reference_asset_ids"])
+    with pytest.raises(ValueError, match="超过镜头时长"):
+        validate_plan_review(too_long, plan, require_visual_execution=True)
+    assert not validate_plan_review(lower_failed_plan_verdicts(too_long, plan), plan).ready
 
 
 def test_actual_legacy_script_without_timing_keeps_whole_shot_guard(source):

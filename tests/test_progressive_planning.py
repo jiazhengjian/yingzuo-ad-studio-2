@@ -1288,6 +1288,28 @@ def test_incomplete_review_record_returns_the_compiled_plan(progressive_gateway)
     assert "看这里" not in "".join(beat.get("narration") or "" for beat in plan["ad_script"]["beats"])
 
 
+def test_inner_voice_is_already_rewritten_when_the_plan_is_reviewed(progressive_gateway):
+    state = progressive_gateway
+    raw = state.strategy.model_dump()
+    raw["brief"]["ad_form"] = "scene_story"
+    state.strategy = _lock_speech(StrategyRecord.model_validate(raw), "character_dialogue")
+
+    def alone(value):
+        for shot in value["shots"]:
+            shot["description"] = "她一个人坐着，开口说第一句。"
+            shot["character_ids"] = ["char_worker"]
+
+    state.first_director_mutation = alone
+    plan = state.run()
+    review = next(item for item in state.contexts if item.get("stage") == "plan_review")
+    text = review["final_plan"]["segments"][0]["shots"][0]["description"]
+    assert "开口说" not in text
+    assert "心里想" in text and "嘴没有动" in text
+    assert plan["segments"][0]["shots"][0]["description"] == text
+    assert plan["plan_review"]["ready"] is True
+    assert plan["plan_review"]["reviewed_plan_sha256"] == plan_review_fingerprint(plan)
+
+
 def test_review_json_with_an_extra_brace_is_accepted_on_the_first_call(progressive_gateway):
     state = progressive_gateway
     state.review_suffix = "}"
