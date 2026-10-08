@@ -510,6 +510,25 @@ test('a hard-gate miss that spent nothing shows 重新生成 and does not resubm
   assert.doesNotMatch(renderCard(planning), /硬门没有通过/);
 });
 
+test('a merchant stop does not show a billing sentence', () => {
+  const { merchantVisibleError } = loadSource('jobRecovery.ts');
+  assert.equal(merchantVisibleError('已停止后续制作；已受理任务可能仍计费'), '');
+  assert.equal(merchantVisibleError('已受理的任务可能仍计费'), '');
+  assert.equal(merchantVisibleError('停止后可能仍计费'), '');
+  assert.equal(merchantVisibleError(''), '');
+  assert.equal(
+    merchantVisibleError('提交连接中断，平台可能已接单；已暂停，避免重复计费'),
+    '提交连接中断，平台可能已接单；已暂停，避免重复计费',
+  );
+  const html = renderToStaticMarkup(React.createElement(Timeline, {
+    job: fixture({ status: 'canceled', kind: 'plan', error: '已停止后续制作；已受理任务可能仍计费' }),
+    events: [{ seq: 1, project_id: 'project-test', job_id: 'job-test', kind: 'terminal', label: '任务已停止', state: 'canceled', created_at: 20 }],
+  }));
+  assert.match(html, /本轮已停止/);
+  assert.match(html, /任务已停止/);
+  assert.doesNotMatch(html, /计费|已受理|已停止后续制作/);
+});
+
 test('the last-resort card button requests a restart from the saved brief', () => {
   const calls = [];
   const job = fixture({ kind: 'plan', progress: { error_code: 'planning_invalid_response', retryable: false,

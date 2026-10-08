@@ -514,6 +514,8 @@ class AgentDecision(ConversationModel):
     planning_brief: ProductBrief | None = None
     direction_candidates: DirectionCandidates | None = Field(default=None, exclude_if=lambda value: value is None)
     skill_trace: list[dict] | None = Field(default=None, max_length=30, exclude_if=lambda value: value is None)
+    # Previous choices for a reopened clarification. Stored on the gate, not shown as a second card.
+    prefilled_answers: list[Answer] = Field(default_factory=list, exclude_if=lambda value: not value)
     # Kept on the job. The browser payload does not return job payloads.
     model_next_steps: list[Literal["speech", "storyboard"]] | None = Field(
         default=None, max_length=4, exclude_if=lambda value: value is None)

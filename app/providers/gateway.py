@@ -25,7 +25,8 @@ from app.schemas import AgentDecision, Plan, Segment, segment_durations, script_
 from app.media import run, MediaCanceled
 from app.db import StaleRevision
 from app.ad_form import (ClarificationIncomplete, ad_form_confirmation, ad_form_question,
-                         clarification_questions_cover, intake_strategy_response,
+                         clarification_questions_cover, clarification_revision_response,
+                         intake_strategy_response, is_which_part_menu,
                          missing_clarification_ids, needs_ad_form_choice, response_carries_direction,
                          salvage_clarification_card)
 from app.planning import StrategyDecision, STRATEGY_SYSTEM, STRATEGY_SELECTION_SYSTEM, STORYBOARD_SYSTEM, STORYBOARD_STAGE_SYSTEM, COPY_REVIEW_SYSTEM, advertising_copy_brief, compact_schema, evidence_sources, expression_schedule, validate_expression_schedule, requests_new_directions, strategy_decision_schema, concept_revision_permissions, validate_concept_revision
@@ -2099,6 +2100,9 @@ class Gateway:
         from app.cta import project_cta_mode
         if project.get("ad_form_confirmation_required"):
             return ad_form_confirmation(project)
+        revised = clarification_revision_response(project, messages, gates)
+        if revised is not None:
+            return revised
         if not planner_api_key(self.settings):
             raise PlannerConfigurationError("请先配置策划服务的连接凭证")
         choice_enabled = bool(getattr(self.settings, "direction_selection_enabled", False) or selected_strategy is not None)
@@ -2496,6 +2500,11 @@ class Gateway:
                         recovery_override["wall"] = None
                         recovery_override["kind"] = None
                     try:
+                        if isinstance(raw, dict) and is_which_part_menu(raw):
+                            revised = clarification_revision_response(project, messages, gates, force=True)
+                            if revised is not None:
+                                logger.info("Which-part clarification replaced with the saved card")
+                                return revised
                         if isinstance(raw, dict):
                             found = detach_model_schedule(raw)
                             if found.steps or found.refused:

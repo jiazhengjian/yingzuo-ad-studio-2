@@ -101,6 +101,7 @@ export const SYSTEM_FAILURE_COPY = '这是系统问题，已记录；你的方�
 export const RETRY_PLANNING_COPY = '点继续处理，会重新生成分镜，已确认的需求和方向不变。';
 
 const TECHNICAL_CARD = /pydantic|validation|请重新策划|请先重新策划|\b[a-z][a-z0-9]*_[a-z0-9_]+\b/i;
+const STOP_BILLING_NOTICE = /已停止后续制作|已受理任务可能仍计费|已受理的任务可能仍计费|可能仍会计费|停止后可能仍计费/;
 
 /** Card text only. Field names, check results, and validator output stay in the log. */
 export function sanitizeCardText(text?: string): string {
@@ -112,7 +113,7 @@ export function sanitizeCardText(text?: string): string {
 /** Run-log sentence. Internal check wording is not shown to the merchant. */
 export function merchantVisibleError(error?: string | null): string {
   const value = (error || '').trim();
-  if (!value) return '';
+  if (!value || STOP_BILLING_NOTICE.test(value)) return '';
   if (TECHNICAL_CARD.test(value) || INTERNAL_ERROR.test(value)) return SYSTEM_FAILURE_COPY;
   return value;
 }

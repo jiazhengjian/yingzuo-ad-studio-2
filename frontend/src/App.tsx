@@ -26,7 +26,7 @@ import { stageProductImages } from './composerDraft';
 import ComposerImageDraft from './ComposerImageDraft';
 import './conversation.css';
 import { api, json, activeStatus, mediaUrl, downloadUrl } from './api';
-import type { Answer, Asset, Detail, Gate, Health, Job, Message, Plan, Project, Render, RunEvent } from './api';
+import type { AdForm, Answer, Asset, Detail, Gate, Health, Job, Message, Plan, Project, Render, RunEvent } from './api';
 
 const phaseNames: Record<string, string> = { planning: '正在整理商品与脚本', plan: '正在整理商品与脚本', voice: '正在准备中文配音', tts: '正在准备中文配音', synthesizing: '正在准备中文配音', submit: '正在提交视频任务', submitting: '正在提交视频任务', generate: '正在生成视频', generating: '正在生成视频', video: '正在生成视频', polling: '视频生成中', downloading: '正在取回视频', download: '正在取回视频', compose: '正在合成成片', composing: '正在合成成片', rendering: '正在合成成片', render: '正在合成成片', inspect: '正在检查文件', checking: '正在检查文件', completed: '文件已准备好', ready: '文件已准备好', canceled: '已停止', queued: '等待制作', retry: '正在继续处理' };
 const kindNames: Record<string, string> = { product: '商品', person: '人物', character: '角色参考', scene: '场景', start_frame: '状态参考' };
@@ -77,6 +77,7 @@ export default function App() {
   const gateComposerKey = useRef('');
   const [gateComposer, setGateComposer] = useState<GateComposerState | null>(null);
   const [draft, setDraft] = useState('');
+  const [homeAdForm, setHomeAdForm] = useState<AdForm | null>(null);
   const [durationSeconds, setDurationSeconds] = useState(20);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
@@ -139,7 +140,7 @@ export default function App() {
     navigationEpoch.current += 1; nearBottom.current = true;
     if (historyMode === 'push' && id !== selectedProjectRef.current) window.history.pushState(null, '', id ? `?project=${encodeURIComponent(id)}` : window.location.pathname);
     if (id && id === selectedProjectRef.current) { void refresh(id).catch(e => setError(errorText(e))); setSidebar(false); return; }
-    selectedProjectRef.current = id; setProjectId(id); setDetail(null); setDraft(''); setPendingFiles([]); setError(''); setNotice(''); setPendingText(null);
+    selectedProjectRef.current = id; setProjectId(id); setDetail(null); setDraft(''); setHomeAdForm(null); setPendingFiles([]); setError(''); setNotice(''); setPendingText(null);
     setSelectedAsset(null); setPreviewAsset(null); setSidebar(false); setEditPlan(null); setEditRevision(null); setGateComposer(null); gateComposerKey.current = '';
     setShowHistory(false); setShowSegments(false); setStatusOpen(false);
     setRenameOpen(false); setWorkspaceView('chat'); autoCanvasProject.current = '';
@@ -254,7 +255,8 @@ export default function App() {
     if (target) { nearBottom.current = true; setPendingText({projectId: target, text: brief}); }
     try { await run('message', async setTarget => {
       if (!target) {
-        const created = await api<Project>('/api/projects', json('POST', { brief, route: 'product', duration_seconds: durationSeconds }));
+        const selectedForm = homeAdForm;
+        const created = await api<Project>('/api/projects', json('POST', { brief, route: 'product', duration_seconds: durationSeconds, ...(selectedForm ? { ad_form: selectedForm } : {}) }));
         setTarget(created.id);
         if (navigationEpoch.current === startedNavigation) { chooseProject(created.id); setDetail({ project: created, assets: [], messages: [{id:'initial-local',role:'user',content:brief,created_at:created.created_at}], jobs: [], renders: [], gates: [], events: [] }); }
         try { for (const file of files) await uploadFile(created.id, file); } finally { await refresh(created.id); await loadProjects(); }
@@ -364,7 +366,7 @@ export default function App() {
     }); } finally { submissionLock.current = false; }
   }
   async function savePlan() { if (!projectId || !editPlan || editRevision === null || !validEditedPlan(editPlan)) return; await run('edit', async () => { await api(`/api/projects/${projectId}/plan`, json('PATCH', { plan: editPlan, accepted_revision: editRevision })); if (selectedProjectRef.current === projectId) { setEditPlan(null); setEditRevision(null); setNotice('台词已保存，生成前请再确认。'); } await refresh(projectId); }); }
-  async function cancel() { if (!projectId) return; await run('cancel', async () => { await api(`/api/projects/${projectId}/cancel`, json('POST', {})); await refresh(projectId); if (selectedProjectRef.current === projectId) setNotice('已请求停止后续工作。供应商已受理的任务仍需核对结果，取消不等于退款。'); }); }
+  async function cancel() { if (!projectId) return; await run('cancel', async () => { await api(`/api/projects/${projectId}/cancel`, json('POST', {})); await refresh(projectId); if (selectedProjectRef.current === projectId) setNotice('已请求停止后续工作。'); }); }
   async function resumeSavedPlanning() {
     if (!projectId || !canPlan || submissionLock.current || uploadLock.current || hasActive) {
       if (projectId) setError('当前不能按已保存的需求继续，请等正在进行的步骤结束。');
@@ -474,7 +476,7 @@ export default function App() {
 
   return <div className={`app-shell ${projectId ? 'in-project' : 'at-home'}`}>
     {sidebar && <><button className="sidebar-scrim" aria-label="关闭项目列表" onClick={closeSidebar}/><aside className="project-sidebar" aria-label="项目列表"><div className="sidebar-top"><Brand/><button className="icon-button" onClick={closeSidebar} aria-label="关闭项目列表"><PanelLeftClose size={20}/></button></div><button className="new-project" onClick={() => chooseProject(null)}><Plus size={18}/>新建广告</button><span className="section-eyebrow">我的项目</span><nav>{projects.map(p => <button key={p.id} className={`project-link ${p.id === projectId ? 'selected' : ''}`} onClick={() => chooseProject(p.id)}><Film size={18}/><span>{p.title}<small>{dateText(p.updated_at)} · {projectListStatus(p)}</small></span><ChevronRight size={14}/></button>)}{!projects.length && <p className="sidebar-empty">你的作品会保存在这里。</p>}</nav><button className="sidebar-settings" onClick={() => { setSidebar(false); setSettingsOpen(true); }}><Settings2 size={16}/>连接设置</button></aside></>}
-    {!projectId ? <Home brand={<Brand/>} durationSeconds={durationSeconds} onDurationChange={setDurationSeconds} draft={draft} onDraft={setDraft} files={pendingFiles} onFiles={files => stageIncoming(files)} onRemoveFile={index => setPendingFiles(files => files.filter((_,i) => i !== index))} onSubmit={send} onOpenProjects={() => setSidebar(true)} onSelectProject={id => chooseProject(id)} projects={projects} busy={!!busy || uploading} online={online} plannerConfigured={!!health?.configured.planner} onSettings={() => setSettingsOpen(true)} loading={loading} error={error} onDismissError={() => setError('')}/> : <div className="main-shell">
+    {!projectId ? <Home brand={<Brand/>} durationSeconds={durationSeconds} onDurationChange={setDurationSeconds} draft={draft} onDraft={setDraft} adForm={homeAdForm} onAdFormChange={setHomeAdForm} files={pendingFiles} onFiles={files => stageIncoming(files)} onRemoveFile={index => setPendingFiles(files => files.filter((_,i) => i !== index))} onSubmit={send} onOpenProjects={() => setSidebar(true)} busy={!!busy || uploading} online={online} plannerConfigured={!!health?.configured.planner} onSettings={() => setSettingsOpen(true)} loading={loading} error={error} onDismissError={() => setError('')}/> : <div className="main-shell">
       <header className="studio-header">
         <div className="header-left"><button className="brand-link" aria-label="返回首页" onClick={() => chooseProject(null)}><Brand/></button><span className="header-divider"/><button className="project-heading" onClick={() => { if (project) { setNewTitle(project.title); setRenameOpen(true); } }} aria-label="修改项目名称"><span>{project?.title || '正在打开项目'}</span><Pencil size={14}/></button></div>
         <nav className="view-switch" role="tablist" aria-label="工作区视图"><button role="tab" aria-selected={workspaceView === 'chat'} onClick={() => selectView('chat')}><MessageSquare size={16}/>对话</button><button role="tab" aria-selected={workspaceView === 'canvas'} onClick={() => selectView('canvas')}><Images size={16}/>画布</button><button role="tab" aria-selected={false} disabled title="时间线剪辑将在后续版本开放"><Layers3 size={16}/>时间线</button></nav>

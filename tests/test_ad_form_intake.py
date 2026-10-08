@@ -10,8 +10,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.ad_form import (AD_FORM_LABELS, ad_form_question, explicit_ad_form,
-                         intake_strategy_response, unresolved_ad_form_change,
-                         guard_ad_form_confirmation)
+                         intake_strategy_response, missing_clarification_ids,
+                         unresolved_ad_form_change, guard_ad_form_confirmation)
 from app.config import Settings
 from app.db import Store, StaleRevision
 from app.main import create_app
@@ -250,6 +250,26 @@ def test_real_acceptance_sequence_through_api_frozen_gateway_and_reopened_store(
         if previous_gate:
             assert next(g for g in reopened.project_detail(pid)["gates"] if g["id"] == previous_gate)["status"] == "superseded"
         previous_gate = reopened.pending_gate(pid)["id"]
+
+
+@pytest.mark.parametrize("form", ["brand_tvc", "scene_story", "presenter_pitch"])
+def test_saved_home_choice_is_not_asked_again(store, form):
+    """A homepage choice is already the expression. The first card does not ask it again."""
+    project = store.create_project("给杯子做广告", "product", ad_form=form)
+    missing = missing_clarification_ids(project)
+    assert "ad_form" not in missing
+    assert ("cta_target" in missing) is (form != "scene_story")
+    offered = intake_strategy_response(
+        {"kind": "directions", "message": "三个方向"}, project)
+    assert offered["kind"] == "clarify"
+    assert "ad_form" not in [item["id"] for item in offered["questions"]]
+    assert ("cta_target" in [item["id"] for item in offered["questions"]]) is (form != "scene_story")
+
+
+def test_home_without_a_choice_still_asks_for_the_expression(store):
+    project = store.create_project("给杯子做广告", "product")
+    assert project["ad_form"] is None
+    assert missing_clarification_ids(project)[0] == "ad_form"
 
 
 def test_database_upgrade_does_not_infer_form_or_rewrite_old_plan(tmp_path):

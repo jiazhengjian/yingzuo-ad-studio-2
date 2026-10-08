@@ -46,8 +46,22 @@ export function validAnswer(question: Question, answer?: Answer): boolean {
   if (answer.text !== undefined) return question.allow_custom !== false && typeof answer.text === 'string' && answer.text.trim().length > 0 && answer.text.length <= 500;
   return question.allow_skip !== false && answer.skipped === true;
 }
+function cleanedAnswer(question: Question, answer?: Answer): Answer | null {
+  if (!answer || answer.question_id !== question.id) return null;
+  if (answer.skipped === true) return { question_id: question.id, skipped: true };
+  if (typeof answer.text === 'string' && answer.text.trim()) return { question_id: question.id, text: answer.text };
+  if (typeof answer.option_id === 'string' && answer.option_id) return { question_id: question.id, option_id: answer.option_id };
+  return null;
+}
 export function initialDraft(gate: Gate): GateDraft {
-  return { signature: signatureOf(gate), answers: {}, composerDrafts: {}, step: 0, selectedOptionId: gate.kind === 'creative' && gate.options.some(option => option.id === 'current') ? 'current' : '', note: '' };
+  const answers: Record<string, Answer> = {};
+  if (gate.kind === 'clarification' && gate.status === 'pending') {
+    for (const question of gate.questions) {
+      const answer = cleanedAnswer(question, gate.answers.find(item => item.question_id === question.id));
+      if (answer && validAnswer(question, answer)) answers[question.id] = answer;
+    }
+  }
+  return { signature: signatureOf(gate), answers, composerDrafts: {}, step: 0, selectedOptionId: gate.kind === 'creative' && gate.options.some(option => option.id === 'current') ? 'current' : '', note: '' };
 }
 export function restoreDraft(gate: Gate, raw: string | null): GateDraft {
   const empty = initialDraft(gate);

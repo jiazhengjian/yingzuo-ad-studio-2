@@ -5,6 +5,7 @@ import asyncio
 import copy
 import hashlib
 import inspect
+import logging
 import math
 import time
 from pathlib import Path
@@ -18,6 +19,8 @@ from .video_prompt import expected_grouped_speech
 from .generation_policy import validate_generation_durations
 from .directing import direction_context
 from .production import required_designs, saved_character_sheet_is_stale, validate_design_assets
+
+logger = logging.getLogger(__name__)
 
 
 def _segment_closes_film(plan, segment) -> bool:
@@ -592,7 +595,9 @@ class Pipeline:
     def _guard(self, job_id, require_current=False):
         job = self.store.get_job(job_id)
         if self.store.is_cancelled(job_id):
-            raise media.MediaCanceled("已停止后续制作；已受理任务可能仍计费")
+            # 计费事实只记日志。商家界面只保留「本轮已停止」。
+            logger.info("已停止后续制作；已受理任务可能仍计费")
+            raise media.MediaCanceled("")
         if require_current and self.store.get_project(job["project_id"])["revision"] != job["revision"]:
             raise StaleRevision("方案已更新，旧任务不再提交新的生成请求")
         if require_current:

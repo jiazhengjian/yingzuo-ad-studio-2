@@ -439,6 +439,25 @@ def test_design_cancellation_stops_video_posts(setup, fake_media):
     assert result["status"] == "canceled" and not gateway.submissions
 
 
+def test_active_stop_keeps_billing_in_the_log_only(setup, fake_media, caplog):
+    store, project, plan, settings = setup
+    gateway = FakeGateway(store, plan)
+
+    async def designs(project, assets, plan, folder, cancelled=None):
+        store.request_cancel(project["id"])
+        raise RuntimeError("TEST canceled during image poll")
+
+    gateway.create_designs = designs
+    with caplog.at_level("INFO", logger="app.pipeline"):
+        result = execute(store, project, settings, gateway)
+    assert result["status"] == "canceled"
+    assert "计费" not in (result.get("error") or "")
+    assert "已受理" not in (result.get("error") or "")
+    assert "已停止后续制作；已受理任务可能仍计费" in caplog.text
+    labels = [event["label"] for event in store.project_detail(project["id"])["events"]]
+    assert "任务已停止" in labels
+
+
 @pytest.mark.parametrize("safe", [False, True])
 def test_design_error_only_exposes_opted_in_safe_message(setup, fake_media, safe):
     store, project, plan, settings = setup
