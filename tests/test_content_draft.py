@@ -194,7 +194,7 @@ def test_lean_draft_cannot_bypass_final_director_guards(content_gateway, source,
                 shot["evidence_ids"] = []
         state.first_director_mutation = remove_evidence
     if guard == "selected_evidence":
-        with pytest.raises(ProviderError, match="这是系统问题，已记录"):
+        with pytest.raises(ProviderError, match="这次没生成出来"):
             state.run()
         assert state.calls[0:2] == ["ad_script", "storyboard"]
         assert "plan_review" not in state.calls

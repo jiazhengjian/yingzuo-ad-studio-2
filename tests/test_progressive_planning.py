@@ -689,7 +689,7 @@ def test_incomplete_independent_reviews_never_release_or_invent_passes(progressi
 def test_unknown_fact_stops_before_review_or_refinement(progressive_gateway):
     state = progressive_gateway
     state.first_director_mutation = lambda value: value["ad_script"]["beats"][0].update(evidence_ids=["invented"])
-    with pytest.raises(ProviderError, match="这是系统问题，已记录"):
+    with pytest.raises(ProviderError, match="这次没生成出来"):
         state.run()
     assert state.calls[0] == "ad_script" and "storyboard" in state.calls
     assert state.calls.count("plan_refinement") <= 1
@@ -800,7 +800,7 @@ def test_capacity_repair_cannot_shrink_estimates_without_changing_actual_actions
         value["ad_script"]["beats"][0]["timing"].update(visual_seconds=3,
             action_plan="重新估计本拍三秒可完成。")
     state.refinement_mutation = merely_lower_estimate
-    with pytest.raises(ProviderError, match="这是系统问题，已记录"):
+    with pytest.raises(ProviderError, match="这次没生成出来"):
         state.run()
     assert state.calls == ["ad_script", "storyboard", "plan_refinement", "plan_refinement"]
 
@@ -809,7 +809,7 @@ def test_capacity_repair_stops_if_action_changes_do_not_reduce_overrun(progressi
     state = progressive_gateway
     state.first_director_mutation = overburden_first_beat
     state.refinement_mutation = simplify_shot(0)
-    with pytest.raises(ProviderError, match="这是系统问题，已记录"):
+    with pytest.raises(ProviderError, match="这次没生成出来"):
         state.run()
     assert state.calls == ["ad_script", "storyboard", "plan_refinement"]
 
@@ -860,7 +860,7 @@ def test_deterministic_repair_cannot_bypass_capacity_or_stable_contract(progress
             assert plan["ad_script"]["core_message"] == "省去重复取放，直接辨认同一商品与桌角的关系。"
         assert state.calls == ["ad_script", "storyboard", "plan_refinement", "plan_review"]
     else:
-        with pytest.raises(ProviderError, match="这是系统问题，已记录"):
+        with pytest.raises(ProviderError, match="这次没生成出来"):
             state.run()
         assert state.calls == ["ad_script", "storyboard", "plan_refinement"]
 

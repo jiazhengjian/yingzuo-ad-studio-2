@@ -62,7 +62,7 @@ def test_schema_failure_repairs_then_regenerates_and_does_not_keep_the_template(
                 "entry_transition": "cut", "sound_extra": None, "start_state_note": ""}}]}
         return {}
 
-    with pytest.raises(ProgressivePlanningError, match="占位稿不是完成的方案"):
+    with pytest.raises(ProgressivePlanningError, match="这次没生成出来") as caught:
         asyncio.run(progressive_plan(
             stage_call=stage_call, on_progress=lambda _phase: None, record_failure=lambda _item: None,
             strategy=strategy, draft=None, draft_issues=[], duration=20, generation_strategy="continuity_v1",
@@ -70,6 +70,7 @@ def test_schema_failure_repairs_then_regenerates_and_does_not_keep_the_template(
     assert "storyboard_repair" in calls
     assert "storyboard_regeneration" in calls
     assert "plan_review" not in calls
+    assert any("占位稿" in text for text in caught.value.issue_summary)
 
 
 def test_sparse_revision_falls_back_to_the_previous_plan(source):

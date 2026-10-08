@@ -60,7 +60,7 @@ def test_long_narration_in_director_or_refinement_cannot_reach_delivery(progress
         state.first_review_mutation = reject_first_shot
         state.refinement_mutation = lambda value: value["ad_script"]["beats"][0].update(narration=LONG_LINE)
     if stage == "storyboard":
-        with pytest.raises(ProviderError, match="这是系统问题，已记录"):
+        with pytest.raises(ProviderError, match="这次没生成出来"):
             state.run()
         assert state.calls[0] == "ad_script" and "storyboard" in state.calls
         assert "plan_review" not in state.calls
