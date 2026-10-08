@@ -1,5 +1,6 @@
 """Spoken-line checks, candidate selection and the one rewrite gate. Offline."""
 import asyncio
+import json
 
 import pytest
 
@@ -8,6 +9,7 @@ from app.line_quality import (
     LINE_REWRITE_SYSTEM, apply_brand_claim_collapse, apply_line_rewrite, brand_stack_remaining,
     collapse_brand_claims, drop_stale_story_lines, line_offenses, line_style, narration_budget_ok,
     offending_lines, prepare_script_lines, prepare_speech_draft, product_terms, rewrite_director_if_needed,
+    rewrite_schema,
     rewrite_script_if_needed, script_line_offenses, story_explainer_remaining, type_line_score,
     voice_identity_issues,
 )
@@ -406,6 +408,85 @@ def test_scene_lines_follow_the_character_and_mention_the_product_once():
     assert "人物没带到商品" not in _focus(_lines("终于不毛躁了。"), "scene_story")
     assert "口播腔" not in _focus(_lines("终于不毛躁了。"), "scene_story")
     assert "在念画面" not in _focus(_lines("太吵了。", "终于不毛躁了。"), "scene_story")
+
+
+def test_a_repeated_spoken_line_is_repaired_and_not_handed_to_the_merchant():
+    from app.plan_review import lower_failed_plan_verdicts, program_downgrade_reasons
+    from app.planner_recovery import needs_merchant
+
+    line = "这块给你。樱桃我留着。"
+    assert _focus(_lines(line), "scene_story") == []
+    repeated = _lines(line, line)
+    assert "台词重复" in _focus(repeated, "scene_story")
+    punctuated = _lines(line, "这块给你，樱桃我留着")
+    assert "台词重复" in _focus(punctuated, "scene_story")
+    own = {"ad_script": _lines(line, "你先吃。"), "segments": [{"speech_spans": [
+        {"beat_id": "b0", "text": line}]}]}
+    assert "台词重复" not in _focus(own["ad_script"], "scene_story", plan=own)
+    copied = {"ad_script": _lines(line, "你先吃。"), "segments": [{"speech_spans": [
+        {"beat_id": "b0", "text": line},
+        {"beat_id": "b1", "text": line}]}]}
+    assert "台词重复" in _focus(copied["ad_script"], "scene_story", plan=copied)
+    locked = script_line_offenses(_lines(line, line), typed("scene_story"), (line,))
+    assert locked == []
+    plan = {"ad_script": repeated, "segments": [{"speech_spans": [
+        {"beat_id": "b0", "text": line}, {"beat_id": "b1", "text": line}]}]}
+    review = {"ready": True, "checks": [{"criterion": "natural_speech", "passed": True}]}
+    lowered = lower_failed_plan_verdicts(review, plan)
+    assert review["ready"] is True and review["checks"][0]["passed"] is True
+    assert lowered["checks"][0]["passed"] is False
+    assert lowered["ready"] is False
+    assert any("同一句说了两遍" in item for item in program_downgrade_reasons(review, plan))
+    single = {"ad_script": _lines(line), "segments": []}
+    assert lower_failed_plan_verdicts(
+        {"ready": True, "checks": [{"criterion": "natural_speech", "passed": True}]}, single)["ready"] is True
+    assert needs_merchant("台词自然度仍需调整") is False
+    director = {"ad_script": repeated, "segments": copied["segments"]}
+    schema = rewrite_schema(
+        [{"beat_id": "b1", "narration": line, "offenses": ["台词重复"], "max_characters": 40}], 40)
+    assert "同一句" in json.dumps(schema, ensure_ascii=False)
+    rejected = apply_line_rewrite(
+        repeated, {"lines": [{"beat_id": "b1", "narration": line}]},
+        limits={"b1": 40}, strategy=typed("scene_story"), duration_seconds=15,
+        offense_names={"b1": ["台词重复"]})
+    assert rejected is None
+
+    async def rewrite(system, payload, *args):
+        assert payload["task_kind"] == "line_jargon_rewrite"
+        assert "同一句" in json.dumps(payload["schema"], ensure_ascii=False)
+        return {"lines": [
+            {"beat_id": "b0", "narration": "你先尝尝。"},
+            {"beat_id": "b1", "narration": "樱桃我留着。"},
+        ]}
+
+    called, replacement = asyncio.run(rewrite_director_if_needed(
+        rewrite, director, typed("scene_story"), 15))
+    assert called is True
+    assert replacement["ad_script"]["beats"][0]["narration"] == "你先尝尝。"
+    assert replacement["ad_script"]["beats"][1]["narration"] == "樱桃我留着。"
+    assert "台词重复" not in _focus(replacement["ad_script"], "scene_story", plan=replacement)
+
+
+def test_locked_and_insisted_repeats_are_not_review_failures():
+    from app.plan_review import lower_failed_plan_verdicts
+
+    line = "这块给你。樱桃我留着。"
+    review = {"ready": True, "checks": [{"criterion": "natural_speech", "passed": True}]}
+    base = {"ad_script": _lines(line, line), "segments": [{"speech_spans": [
+        {"beat_id": "b0", "text": line}, {"beat_id": "b1", "text": line}]}]}
+    locked = lower_failed_plan_verdicts(review, {**base, "merchant_locked_lines": [line]})
+    assert locked["ready"] is True
+    assert locked["checks"][0]["passed"] is True
+    insisted = lower_failed_plan_verdicts(review, {**base, "merchant_insisted_lines": [line], "segments": [{
+        "speech_spans": [
+            {"beat_id": "b0", "text": line, "merchant_insisted": True},
+            {"beat_id": "b1", "text": line},
+        ]}]})
+    assert insisted["ready"] is True
+    assert insisted["checks"][0]["passed"] is True
+    open_repeat = lower_failed_plan_verdicts(review, base)
+    assert open_repeat["ready"] is False
+    assert open_repeat["checks"][0]["passed"] is False
 
 
 def test_scene_dialogue_does_not_restate_the_shot():

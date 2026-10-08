@@ -261,7 +261,8 @@ def test_hand_closeup_does_not_ask_for_lip_sync():
     prompt = compile_grouped_video(segment)
     hand = prompt.split("镜头2 |", 1)[1].split("台词时间", 1)[0]
     assert "面向镜头说话，嘴型与台词同步" not in hand
-    assert "画外接着说" in hand
+    assert "嘴不要动" in hand
+    assert "嘴型与台词同步" not in hand
     assert "面向镜头说话，嘴型与台词同步" in prompt.split("镜头1 |", 1)[1].split("镜头2 |", 1)[0]
 
 

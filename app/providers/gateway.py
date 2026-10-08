@@ -540,6 +540,61 @@ def _owned_check_reasons(reasons):
     return saved
 
 
+def save_stage_diagnostic(settings, candidate, stage_result):
+    """Write one diagnostics file for this failure.
+
+    A later note for the same stage result does not store the raw model output
+    again. The error code is kept on validation_reasons. A non-blocking warning
+    may still be stored, and it does not mark the stage, so a blocking failure
+    after it keeps its own reasons.
+    """
+    if not isinstance(candidate, dict):
+        return None
+    if isinstance(stage_result, dict) and stage_result.get("_diagnostic_saved"):
+        return None
+    reasons = candidate.get("failed_reasons") if isinstance(candidate.get("failed_reasons"), list) else None
+    if not reasons and isinstance(candidate.get("plan_review"), dict):
+        from app.plan_review import structured_review_reasons
+        reasons = structured_review_reasons(candidate.get("plan_review"), candidate)
+    structured = candidate.get("validation_errors") if isinstance(candidate.get("validation_errors"), list) else None
+    safe_structured = _safe_validation_errors(structured) if isinstance(structured, list) else []
+    code = candidate.get("error_code") if isinstance(candidate.get("error_code"), str) else None
+    nonblocking = candidate.get("nonblocking") is True
+    # A warning with no check text is stored on the plan job, not as a failed model body.
+    if nonblocking and not safe_structured and not reasons:
+        return None
+    if isinstance(stage_result, dict):
+        if safe_structured:
+            stage_result["validation_errors"] = safe_structured
+        elif reasons:
+            stage_result["validation_errors"] = [
+                {"loc": ["check"], "type": "content_check", "msg": text}
+                for text in _owned_check_reasons(reasons)]
+        if isinstance(code, str) and re.fullmatch(r"[a-z0-9_]{1,40}", code):
+            stage_result["validation_reasons"] = [code]
+    if nonblocking:
+        if safe_structured and isinstance(stage_result, dict) and "raw_output" in stage_result:
+            return save_failed_planner_output(settings, stage_result)
+        if reasons:
+            return save_check_reasons(settings, reasons, error_code=code, stage_result=stage_result)
+        return None
+    if stage_result is None:
+        if reasons:
+            return save_check_reasons(settings, reasons, error_code=code, stage_result=stage_result)
+        return None
+    if not reasons:
+        stage_result["validation_candidate"] = copy.deepcopy(candidate)
+    if "raw_output" not in stage_result:
+        if reasons:
+            saved = save_check_reasons(settings, reasons, error_code=code, stage_result=stage_result)
+            stage_result["_diagnostic_saved"] = True
+            return saved
+        return None
+    saved = save_failed_planner_output(settings, stage_result)
+    stage_result["_diagnostic_saved"] = True
+    return saved
+
+
 def save_check_reasons(settings, reasons, *, error_code=None, stage_result=None):
     """Write the failed check sentences next to any raw model output.
 
@@ -2594,31 +2649,9 @@ class Gateway:
                 }
 
                 def record_progressive_failure(candidate):
-                    reasons = candidate.get("failed_reasons") if isinstance(candidate, dict) else None
-                    if not reasons and isinstance(candidate, dict) and isinstance(candidate.get("plan_review"), dict):
-                        from app.plan_review import structured_review_reasons
-                        reasons = structured_review_reasons(candidate.get("plan_review"), candidate)
                     if isinstance(candidate, dict) and candidate.get("nonblocking") is True:
                         remember_plan_warning(self.settings, self._plan_warning_holder, candidate)
-                        if reasons:
-                            save_check_reasons(self.settings, reasons,
-                                               error_code=candidate.get("error_code"),
-                                               stage_result=last_stage_result)
-                        return
-                    if reasons and isinstance(last_stage_result, dict):
-                        last_stage_result["validation_errors"] = [
-                            {"loc": ["check"], "type": "content_check", "msg": text}
-                            for text in _owned_check_reasons(reasons)]
-                    if last_stage_result is None or last_stage_result.get("_diagnostic_saved"):
-                        if last_stage_result is not None and candidate is not None and not reasons:
-                            last_stage_result["validation_candidate"] = copy.deepcopy(candidate)
-                        if reasons:
-                            save_check_reasons(self.settings, reasons, stage_result=last_stage_result)
-                        return
-                    if candidate is not None and not reasons:
-                        last_stage_result["validation_candidate"] = copy.deepcopy(candidate)
-                    save_failed_planner_output(self.settings, last_stage_result)
-                    last_stage_result["_diagnostic_saved"] = True
+                    save_stage_diagnostic(self.settings, candidate, last_stage_result)
 
                 checking_plan = True
                 plan = await progressive_plan(stage_call=stage_call, on_progress=on_progress,
@@ -3466,6 +3499,11 @@ class Gateway:
 
     def prepare_video_request(self, segment):
         """Compile before the durable reservation, without contacting a supplier."""
+        original = segment
+        scene_film = None
+        if isinstance(segment, dict) and "scene_film_shots" in segment:
+            scene_film = segment.get("scene_film_shots")
+            segment = {key: value for key, value in segment.items() if key != "scene_film_shots"}
         production = segment.get("production") if isinstance(segment.get("production"), dict) else None
         if production and production.get("speech_mode") == "character_dialogue" and segment.get("speech_spans") is None:
             raise SubmissionError("人物讲解必须走逐句台词时间表，尚未提交视频")
@@ -3501,7 +3539,7 @@ class Gateway:
                 raise SubmissionError("原生台词与镜头时长或内容分配不一致，尚未提交视频；请先修改方案")
         compiled_trace = []
         if native and segment.get("speech_spans") is not None:
-            compiled = compiled_video_request(segment)
+            compiled = compiled_video_request(segment, scene_film)
             prompt, compiled_trace = compiled["prompt"], compiled["skill_trace"]
         else:
             if native:
@@ -3529,7 +3567,7 @@ class Gateway:
                 "duration": segment["duration_seconds"] if continuous else 10,
                 "aspect_ratio": "9:16", "resolution": "720p", "skill_trace": compiled_trace,
                 "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
-                "input_sha256": self._video_input_hash(segment)}
+                "input_sha256": self._video_input_hash(original)}
 
     async def submit_video(self, segment, assets, idempotency_key, *, prepared_request=None):
         self._submission_refusals = []

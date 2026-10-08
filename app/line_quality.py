@@ -802,6 +802,71 @@ def _line_logic_offenses(spoken, form):
     return rows
 
 
+def repeated_spoken_line(plan, locked_lines=()):
+    """True when the same spoken line appears twice and a later copy is not locked."""
+    script = (plan or {}).get("ad_script") if isinstance(plan, dict) else None
+    if not isinstance(script, dict):
+        script = {}
+    seen = []
+    for beat in _beats(script):
+        text = beat.get("narration") if isinstance(beat, dict) else None
+        if not isinstance(text, str) or not text.strip() or _locked(text, locked_lines):
+            continue
+        core = _spoken_core(text)
+        if len(core) < 2:
+            continue
+        if core in seen:
+            return True
+        seen.append(core)
+    return any(_repeated_span_lines(plan, locked_lines))
+
+
+def _repeated_span_lines(plan, locked_lines):
+    """A later span that repeats another line. A span that only speaks its own beat is not a repeat."""
+    if not isinstance(plan, dict):
+        return []
+    beats = _beats(plan.get("ad_script") or {}) if isinstance(plan.get("ad_script"), dict) else []
+    indexes = {beat.get("id"): index for index, beat in enumerate(beats) if isinstance(beat, dict)}
+    first = {}
+    for beat in beats:
+        if not isinstance(beat, dict):
+            continue
+        text = beat.get("narration")
+        if not isinstance(text, str) or not text.strip() or _locked(text, locked_lines):
+            continue
+        core = _spoken_core(text)
+        if len(core) >= 2:
+            first.setdefault(core, beat.get("id"))
+    found = []
+    spoken_once = set()
+    for segment in plan.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        for span in segment.get("speech_spans") or []:
+            if not isinstance(span, dict):
+                continue
+            text = span.get("text")
+            if not isinstance(text, str) or not text.strip() or _locked(text, locked_lines):
+                continue
+            core = _spoken_core(text)
+            if len(core) < 2:
+                continue
+            beat_id = span.get("beat_id")
+            key = (beat_id, core)
+            owner = first.get(core)
+            if owner is None:
+                first[core] = beat_id
+                spoken_once.add(key)
+                continue
+            if owner == beat_id and key not in spoken_once:
+                spoken_once.add(key)
+                continue
+            if key in {(item[0], _spoken_core(item[2])) for item in found}:
+                continue
+            found.append((beat_id, indexes.get(beat_id, 0), text.strip()))
+    return found
+
+
 def _script_line_offenses(script, strategy, locked_lines, plan=None, duration_seconds=None):
     """Cross-line problems one rewrite should see. Locked lines stay untouched."""
     form = _brand_form(strategy)
@@ -826,6 +891,8 @@ def _script_line_offenses(script, strategy, locked_lines, plan=None, duration_se
             add(beat, indexes.get(id(beat), 0), "台词重复")
         elif core:
             seen_cores.append(core)
+    for beat_id, index, narration in _repeated_span_lines(plan, locked_lines):
+        add({"id": beat_id, "narration": narration}, index, "台词重复")
     if form == "scene_story" and spoken:
         third = [beat for beat in spoken if _THIRD_PERSON.search(_spoken_core(beat["narration"]))]
         first = [beat for beat in spoken if _FIRST_PERSON.search(beat["narration"])]
@@ -1499,6 +1566,40 @@ def _sync_quoted_narration(director, before, after):
                 host[field] = updated
 
 
+def _sync_span_narration(director, before, after):
+    """A rewritten beat keeps its spoken span on the new line, so the repeat does not survive."""
+    old_by_id = {}
+    new_by_id = {}
+    for left, right in zip(_beats(before), _beats(after)):
+        if not isinstance(left, dict) or not isinstance(right, dict):
+            continue
+        beat_id = left.get("id")
+        old = left.get("narration") if isinstance(left.get("narration"), str) else ""
+        new = right.get("narration") if isinstance(right.get("narration"), str) else ""
+        if isinstance(beat_id, str) and old.strip() and old.strip() != new.strip():
+            old_by_id[beat_id] = old.strip()
+            new_by_id[beat_id] = new.strip()
+    if not new_by_id or not isinstance(director, dict):
+        return
+    for segment in director.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        for span in segment.get("speech_spans") or []:
+            if not isinstance(span, dict):
+                continue
+            beat_id = span.get("beat_id")
+            text = span.get("text")
+            if beat_id not in new_by_id or not isinstance(text, str):
+                continue
+            if _spoken_core(text) != _spoken_core(old_by_id[beat_id]):
+                continue
+            span["text"] = new_by_id[beat_id]
+            for anchor in span.get("anchors") or []:
+                if (isinstance(anchor, dict) and isinstance(anchor.get("text"), str)
+                        and _spoken_core(anchor["text"]) == _spoken_core(old_by_id[beat_id])):
+                    anchor["text"] = new_by_id[beat_id]
+
+
 def _fold_brand_director(director, locked_lines, duration_seconds):
     """Return (director, changed). Narration, beats and shots share one claim set."""
     script = director.get("ad_script") if isinstance(director.get("ad_script"), dict) else {"beats": []}
@@ -1655,6 +1756,11 @@ def rewrite_schema(lines: list[dict], beat_cap: int) -> dict:
             one["properties"]["narration"]["description"] = (
                 "这句的好处和这条的主好处不是同一件。改成对主好处的反应或态度。"
                 "不要换成另一条卖点，也不要写固定套话。")
+        elif "台词重复" in offenses or "相邻台词重复" in offenses:
+            one["properties"]["narration"]["minLength"] = 1
+            one["properties"]["narration"]["description"] = (
+                "这一句和前面已经说过的是同一句。改成另一句这个人会说的话，不要把原句再写一遍。"
+                "不要留空，也不要指定某一句替换。")
         elif "在说卖点" in offenses:
             one["properties"]["narration"]["minLength"] = 1
             one["properties"]["narration"]["description"] = (
@@ -1718,7 +1824,7 @@ def apply_line_rewrite(script: dict, raw, *, limits: dict, locked_lines=(), fact
             form_now = script_form(strategy)
             if form_now in ("brand_tvc", "scene_story"):
                 leftover = _script_line_offenses(revised, strategy, locked_lines, duration_seconds=duration_seconds)
-                blocked = {"电报体", "主轴拧了"}
+                blocked = {"电报体", "主轴拧了", "台词重复", "相邻台词重复"}
                 if form_now == "scene_story":
                     blocked.update({"在点题", "在说卖点"})
                 if form_now == "brand_tvc":
@@ -1904,12 +2010,14 @@ async def rewrite_director_if_needed(stage_call, director: dict, strategy, durat
             shots_same = _iter_shots(folded) == _iter_shots(director)
             if shots_same:
                 return True, None
+        _sync_span_narration(folded, script, chosen)
         return True, folded
     if revised is None and not changed and _narration_text(chosen) == _narration_text(script):
         return True, None
     replacement = deepcopy(director)
     replacement["ad_script"] = chosen
     _sync_quoted_narration(replacement, script, chosen)
+    _sync_span_narration(replacement, script, chosen)
     return True, replacement
 
 

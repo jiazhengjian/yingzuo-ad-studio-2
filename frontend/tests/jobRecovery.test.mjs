@@ -68,14 +68,17 @@ test('only exhausted planning request failures expose a last-resort resume', () 
   assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
   const html = renderCard(job);
   assert.match(html, /继续处理/);
-  assert.match(html, /这是系统问题，已记录/);
+  assert.match(html, /点继续处理，会重新生成分镜，已确认的需求和方向不变/);
+  assert.doesNotMatch(html, /没通过|硬门|不是最好/);
   assert.doesNotMatch(html, /重新尝试|请重试|恢复任务|输入修改要求|检查素材|请重新策划/);
-  for (const progress of [{ error_code: 'planning_request_failed' },
-    { ...job.progress, retryable: false }]) {
+  for (const progress of [{ error_code: 'planning_request_failed', can_regenerate: true },
+    { ...job.progress, retryable: false, can_regenerate: true }]) {
     const next = { ...job, progress };
     assert.notEqual(recoveryForJob(next).kind, 'retry_planning');
     assert.equal(recoveryForJob(next).label, '重新生成');
   }
+  const codedOnly = { ...job, progress: { error_code: 'planning_not_produced' } };
+  assert.notEqual(recoveryForJob(codedOnly).label, '重新生成');
   const content = { ...job, progress: { error_code: 'planning_content_failed', retry_action: 'retry_planning' } };
   assert.equal(recoveryForJob(content).kind, 'unavailable');
   assert.notEqual(recoveryForJob(content).label, '重新生成');
@@ -120,7 +123,7 @@ test('a content structure failure does not offer 重新生成', () => {
 });
 
 test('a model planning failure offers a new text generation and does not open the composer', () => {
-  for (const progress of [{}, terminalFailure]) {
+  for (const progress of [{ can_regenerate: true }, { can_regenerate: true, error_code: 'planning_not_produced' }]) {
     const job = fixture({ kind: 'plan', progress });
     assert.deepEqual(recoveryForJob(job), { kind: 'retry_existing', label: '重新生成' });
     const html = renderCard(job, { hasExistingResult: true });
@@ -223,6 +226,13 @@ test('current failure is presented once while historical timeline errors stay av
   assert.equal((current.match(/测试专用失败原因/g) || []).length, 1);
   const historical = renderToStaticMarkup(React.createElement(Timeline, { job, events: [] }));
   assert.match(historical, /测试专用失败原因/);
+  const blamed = fixture({ error: '方案检查没通过' });
+  const log = renderToStaticMarkup(React.createElement(Timeline, { job: blamed, events: [] }));
+  assert.doesNotMatch(log, /方案检查没通过|没有通过/);
+  assert.match(log, /这是系统问题，已记录/);
+  const card = fixture({ kind: 'plan', error: '这次分镜没有通过内容检查', progress: {
+    error_code: 'planning_content_failed', retry_action: 'retry_planning', issue_summary: ['背景人物没有跟着床入画'] } });
+  assert.doesNotMatch(renderCard(card), /这次分镜没有通过内容检查|没有通过内容检查/);
 });
 
 test('unclassified non-retryable failures stay unavailable and do not claim bad materials', () => {
@@ -251,8 +261,8 @@ test('an interrupted planner reply keeps the request and one last resume', () =>
   assert.equal(recoveryForJob(job).label, '继续处理');
   assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
   const html = renderCard(job);
-  assert.match(html, /这是系统问题，已记录/);
-  assert.match(html, /方案和图片都还在/);
+  assert.match(html, /点继续处理，会重新生成分镜，已确认的需求和方向不变/);
+  assert.doesNotMatch(html, /没通过|硬门|不是最好/);
   assert.match(html, /继续处理/);
   assert.equal((html.match(/<button/g) || []).length, 1);
   assert.doesNotMatch(html, /重新尝试|请重试|结构校验|输入修改要求|继续对话|请重新策划/);
@@ -296,13 +306,15 @@ test('a saved storyboard rejected for segment structure does not offer 重新生
 
 test('a structurally invalid planning reply regenerates after automatic recovery is exhausted', () => {
   const held = fixture({ kind: 'plan', error: '规划结果未通过结构校验，已有成果仍保留；尚未开始图片或视频生成',
-    progress: { error_code: 'planning_invalid_response', retryable: false, retry_action: 'edit_plan' } });
+    progress: { error_code: 'planning_invalid_response', retryable: false, retry_action: 'edit_plan', can_regenerate: true } });
   assert.equal(recoveryForJob(held).kind, 'retry_existing');
   assert.equal(recoveryForJob(held).label, '重新生成');
   assert.deepEqual(retryRequest(held), { job_id: held.id, retry_failed_segments: false });
+  const guessed = { ...held, progress: { error_code: 'planning_invalid_response', retryable: false, retry_action: 'edit_plan' } };
+  assert.notEqual(recoveryForJob(guessed).label, '重新生成');
   const job = fixture({ kind: 'plan', error: '这次没生成出来',
     progress: { error_code: 'planning_invalid_response', retryable: true, retry_action: 'retry_planning',
-      structure_retries_exhausted: true } });
+      structure_retries_exhausted: true, can_regenerate: true } });
   assert.equal(recoveryForJob(job).kind, 'retry_existing');
   assert.equal(recoveryForJob(job).label, '重新生成');
   const html = renderCard(job);
@@ -384,7 +396,7 @@ test('an account or balance refusal offers 重新生成 and keeps the saved work
   for (const [code, sentence] of cases) {
     const job = fixture({
       error: '账户问题',
-      progress: { error_code: code, retryable: false, retry_action: null, failed_segment_ids: ['seg_1'] },
+      progress: { error_code: code, retryable: false, retry_action: null, failed_segment_ids: ['seg_1'], can_regenerate: true },
     });
     assert.deepEqual(recoveryForJob(job), { kind: 'retry_existing', label: '重新生成' });
     assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
@@ -394,6 +406,12 @@ test('an account or balance refusal offers 重新生成 and keeps the saved work
     assert.match(html, /本次制作未完成/);
     assert.doesNotMatch(html, /重试失败片段|视频片段未生成|继续制作/);
     assert.equal((html.match(/<button/g) || []).length, 1);
+    const codedOnly = fixture({
+      error: '账户问题',
+      progress: { error_code: code, retryable: false, retry_action: null, failed_segment_ids: ['seg_1'] },
+    });
+    assert.notEqual(recoveryForJob(codedOnly)?.label, '重新生成');
+    assert.doesNotMatch(renderCard(codedOnly), /<button/);
   }
 });
 
@@ -413,7 +431,7 @@ test('an exhausted or permanent video refusal uses the system sentence', () => {
 test('a spend-time hard-gate miss can be generated again and does not send the merchant back to edit', () => {
   const job = fixture({
     error: '这版方案需要重新检查。请在对话里改完再制作，这次不会生成图片或视频。',
-    progress: { error_code: 'release_recheck', retryable: false, retry_action: 'edit_plan' },
+    progress: { error_code: 'release_recheck', retryable: false, retry_action: 'edit_plan', can_regenerate: true },
   });
   assert.deepEqual(recoveryForJob(job), { kind: 'retry_existing', label: '重新生成' });
   assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
@@ -430,31 +448,37 @@ test('重新生成 is only for a hard-gate miss or a plan that was never produce
   const shows = job => recoveryForJob(job)?.kind === 'retry_existing' && recoveryForJob(job)?.label === '重新生成';
   const missed = fixture({
     error: '这次没生成出来',
-    progress: { error_code: 'planning_not_produced', retryable: true, retry_action: 'retry_planning' },
+    progress: { error_code: 'planning_not_produced', retryable: true, retry_action: 'retry_planning', can_regenerate: true },
   });
   const recheck = fixture({
     error: '这版方案需要重新检查。请在对话里改完再制作，这次不会生成图片或视频。',
-    progress: { error_code: 'release_recheck', retryable: false, retry_action: 'edit_plan' },
+    progress: { error_code: 'release_recheck', retryable: false, retry_action: 'edit_plan', can_regenerate: true },
   });
   const exhausted = fixture({ kind: 'plan', error: '这次没生成出来', progress: {
     error_code: 'planning_invalid_response', retryable: true, retry_action: 'retry_planning',
-    structure_retries_exhausted: true } });
-  const failedJob = fixture({ kind: 'plan', progress: {} });
+    structure_retries_exhausted: true, can_regenerate: true } });
+  const failedJob = fixture({ kind: 'plan', progress: { can_regenerate: true } });
   for (const job of [missed, recheck, exhausted, failedJob]) {
     assert.equal(shows(job), true);
-    assert.equal(canRegenerate(job) || job.kind === 'plan', true);
+    assert.equal(canRegenerate(job), true);
     assert.match(renderCard(job), /重新生成/);
   }
-  for (const review of ['passed', 'repaired', 'auto_release']) {
-    const ready = fixture({ status: 'ready', kind: 'plan', progress: { review_status: review } });
-    const failed = fixture({ kind: 'plan', error: '供应商生成失败', progress: { review_status: review, retryable: false } });
-    const released = fixture({ status: 'ready', kind: 'generate', progress: { review_status: review, auto_release: { note: '硬门已通过' } } });
-    assert.equal(shows(ready), false);
-    assert.equal(shows(failed), false);
-    assert.equal(shows(released), false);
-    assert.equal(canRegenerate(failed), false);
-    assert.doesNotMatch(renderCard(failed), /重新生成/);
-  }
+  const codeOnly = fixture({
+    error: '这次没生成出来',
+    progress: { error_code: 'planning_not_produced', retryable: true, retry_action: 'retry_planning' },
+  });
+  assert.equal(canRegenerate(codeOnly), false);
+  assert.notEqual(recoveryForJob(codeOnly).label, '重新生成');
+  const held = { can_regenerate: false };
+  const ready = fixture({ status: 'ready', kind: 'plan', progress: held });
+  const failed = fixture({ kind: 'plan', error: '供应商生成失败', progress: { ...held, retryable: false } });
+  const released = fixture({ status: 'ready', kind: 'generate', progress: held });
+  assert.equal(shows(ready), false);
+  assert.equal(shows(failed), false);
+  assert.equal(shows(released), false);
+  assert.equal(canRegenerate(failed), false);
+  assert.doesNotMatch(renderCard(failed), /重新生成/);
+  assert.doesNotMatch(renderCard(failed), /review_status|plan_review|硬门/);
   const normal = fixture({ status: 'ready', kind: 'generate', progress: {} });
   assert.equal(recoveryForJob(normal), null);
   assert.equal(shows(normal), false);
@@ -466,7 +490,7 @@ test('a hard-gate miss that spent nothing shows 重新生成 and does not resubm
     status: 'failed',
     error: '这次没生成出来',
     submission_count: 0,
-    progress: { error_code: 'planning_not_produced', retryable: true, retry_action: 'retry_planning' },
+    progress: { error_code: 'planning_not_produced', retryable: true, retry_action: 'retry_planning', can_regenerate: true },
   });
   assert.deepEqual(recoveryForJob(job), { kind: 'retry_existing', label: '重新生成' });
   assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
@@ -479,7 +503,7 @@ test('a hard-gate miss that spent nothing shows 重新生成 and does not resubm
     kind: 'plan',
     error: '这次没生成出来',
     progress: { error_code: 'planning_not_produced', retryable: true, retry_action: 'retry_planning',
-      issue_summary: ['占位稿不是完成的方案'] },
+      can_regenerate: true, issue_summary: ['占位稿不是完成的方案'] },
   });
   assert.deepEqual(recoveryForJob(planning), { kind: 'retry_existing', label: '重新生成' });
   assert.match(renderCard(planning), /重新生成/);

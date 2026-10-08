@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useState } from 'react';
 import { Check, ChevronDown, Circle, Clock3, LoaderCircle, MessageSquare, Square, TriangleAlert } from 'lucide-react';
 import type { Job, MediaSkillUsage, RunEvent } from './api';
 import type { PlanningNote } from './planningDisplay';
+import { merchantVisibleError } from './jobRecovery';
 import { runTiming } from './runTiming';
 import './conversation.css';
 
@@ -55,6 +56,7 @@ export default function RunTimeline({ job, events, notes = [], hideError = false
     return [...unique.values()].sort((a, b) => a.seq - b.seq);
   }, [events, job.id, job.project_id]);
   const latest = rows.at(-1);
+  const visibleError = merchantVisibleError(job.error);
   const { start, end } = runTiming(job, rows);
   const duration = start != null && (running || (terminal && end != null)) ? readableDuration((running ? now : end!) - start) : null;
   useEffect(() => { if (!running) return; setNow(Date.now() / 1000); const timer = window.setInterval(() => setNow(Date.now() / 1000), 1000); return () => window.clearInterval(timer); }, [running, job.id, start]);
@@ -98,6 +100,6 @@ export default function RunTimeline({ job, events, notes = [], hideError = false
         <MediaSkillRecords records={mediaSkills}/>
       </div>}
     </>}
-    {job.error && !hideError && <div className="run-job-error"><TriangleAlert size={14} /><p>{job.error}</p></div>}
+    {visibleError && !hideError && <div className="run-job-error"><TriangleAlert size={14} /><p>{visibleError}</p></div>}
   </section>;
 }

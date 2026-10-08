@@ -1,4 +1,5 @@
 import io
+import json
 import re
 from urllib.parse import unquote
 
@@ -153,6 +154,7 @@ def test_public_detail_strips_review_note_and_auto_release(tmp_path):
         "title": "方案", "script": "看清瓶子。", "language": "zh-CN", "aspect_ratio": "9:16",
         "audio_strategy": "voiceover", "review_status": "conservative_fallback",
         "review_status_note": note,
+        "plan_review": {"ready": True, "checks": [{"criterion": "natural_speech", "passed": True}]},
         "auto_release": {"note": note, "failed_checks": ["台词自然度"], "repair_rounds": 1,
                          "project_id": pid, "ad_form": "brand_tvc"},
         "segments": [
@@ -162,15 +164,84 @@ def test_public_detail_strips_review_note_and_auto_release(tmp_path):
              "shots": [{"start": 0, "end": 10, "description": "瓶身靠近一些。"}]},
         ],
     }
-    app.state.store.update_plan(pid, plan)
+    updated = app.state.store.update_plan(pid, plan)
+    job = app.state.store.create_job(pid, "plan", updated["revision"])
+    app.state.store.update_job(job["id"], status="failed", error="这次没生成出来", progress={
+        "error_code": "planning_not_produced", "review_status": "passed",
+        "plan_review": {"ready": True}, "auto_release": True})
     response = c.get(f"/api/projects/{pid}")
     assert response.status_code == 200
+    assert "review_status" not in response.text
+    assert "plan_review" not in response.text
     assert "review_status_note" not in response.text
     assert "auto_release" not in response.text
     assert "硬门已通过" not in response.text
+    body = response.json()
+    failed = next(item for item in body["jobs"] if item["id"] == job["id"])
+    assert failed["progress"]["can_regenerate"] is True
+    assert failed["progress"]["error_code"] == "planning_not_produced"
+    assert "review_status" not in failed["progress"]
     stored = app.state.store.get_project(pid)["plan"]
+    assert stored["review_status"] == "conservative_fallback"
     assert stored["review_status_note"] == note
+    assert stored["plan_review"]["ready"] is True
     assert stored["auto_release"]["failed_checks"] == ["台词自然度"]
+    kept = app.state.store.get_job(job["id"])["progress"]
+    assert kept["review_status"] == "passed"
+    assert kept["plan_review"]["ready"] is True
+    open_job = main.public({
+        "project": {"plan": {"title": "方案", "review_status": "passed", "auto_release": {"note": note}}},
+        "jobs": [{"kind": "plan", "status": "failed", "error": "这次没生成出来",
+                  "progress": {"error_code": "planning_not_produced"}}],
+    })
+    assert open_job["jobs"][0]["progress"]["can_regenerate"] is True
+    assert "review_status" not in open_job["jobs"][0]["progress"]
+    assert "auto_release" not in response.text
+
+
+def test_can_regenerate_uses_this_job_and_counts_conservative_release(tmp_path):
+    from app.main import job_can_regenerate, public
+
+    missed = {"kind": "plan", "status": "failed", "error": "这次没生成出来",
+              "progress": {"error_code": "planning_not_produced"}}
+    assert job_can_regenerate(missed) is True
+    recheck = {"kind": "generate", "status": "failed",
+               "error": "这版方案需要重新检查。请在对话里改完再制作，这次不会生成图片或视频。",
+               "progress": {"error_code": "release_recheck"},
+               "payload": {"plan": {"review_status": "passed"}}}
+    # The hard-gate miss is this job's result, even when the payload still holds an older passed board.
+    assert job_can_regenerate(recheck) is True
+    released = {"kind": "plan", "status": "failed", "error": "这是系统问题，已记录；你的方案和图片都还在。",
+                "progress": {"error_code": "planning_content_failed"},
+                "payload": {"plan": {"review_status": "conservative_fallback"}}}
+    assert "auto_release" not in released["payload"]["plan"]
+    assert job_can_regenerate(released) is False
+    content = {"kind": "plan", "status": "failed", "error": "本次方案未能满足已确认要求，暂未采用",
+               "progress": {"error_code": "planning_content_failed"}}
+    assert job_can_regenerate(content) is False
+    structure = {"kind": "plan", "status": "failed",
+                 "error": "规划结果未通过结构校验，已有成果仍保留；尚未开始图片或视频生成",
+                 "progress": {"error_code": "planning_invalid_response", "retryable": False}}
+    assert job_can_regenerate(structure) is True
+    assert job_can_regenerate({"kind": "plan", "status": "failed", "error": "供应商生成失败", "progress": {}}) is True
+    for code in ("provider_balance", "provider_auth"):
+        account = {"kind": "generate", "status": "failed", "error": "账户余额或额度不足",
+                   "progress": {"error_code": code, "retryable": False},
+                   "payload": {"plan": {"review_status": "passed"}}}
+        assert job_can_regenerate(account) is True
+        shown_account = public({"jobs": [account]})
+        assert shown_account["jobs"][0]["progress"]["can_regenerate"] is True
+    rejected = {"kind": "generate", "status": "failed", "error": "视频没有生成",
+                "progress": {"error_code": "provider_request_rejected"},
+                "payload": {"plan": {"review_status": "passed"}}}
+    assert job_can_regenerate(rejected) is False
+    shown = public({
+        "project": {"plan": {"review_status": "passed", "auto_release": True}},
+        "jobs": [missed, released],
+    })
+    assert shown["jobs"][0]["progress"]["can_regenerate"] is True
+    assert shown["jobs"][1]["progress"]["can_regenerate"] is False
+    assert "review_status" not in json.dumps(shown)
 
 
 def test_upload_limit_and_project_asset_ownership(tmp_path):

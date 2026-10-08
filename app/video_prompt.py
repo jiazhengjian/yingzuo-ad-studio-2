@@ -8,7 +8,8 @@ from .cta import strip_guidance
 from .picture_rules import prepare_prompt_shot, unlock_wet_identity
 from .production import cast_appearance_clause
 from .story_logic import (
-    _STORY_HOLD_LINE, awake_listener, rest_product_for_story_ending, rewrite_inner_shot, shot_awake_listener,
+    _STORY_HOLD_LINE, _hands_or_cake_macro, awake_listener, rest_product_for_story_ending,
+    quiet_inner_shot, scene_groups, shot_awake_listener,
     state_prompt_lines, story_gaze_line, story_needs_lens, with_background_line,
 )
 from .runtime_skills import compiler_template
@@ -404,14 +405,14 @@ def _hand_product_line(shot):
     return None
 
 
-def compile_grouped_video(segment):
-    return compiled_video_request(segment)["prompt"]
+def compile_grouped_video(segment, scene_film_shots=None):
+    return compiled_video_request(segment, scene_film_shots)["prompt"]
 
 
-def compiled_video_request(segment):
+def compiled_video_request(segment, scene_film_shots=None):
     """Return the actual media prompt with the provenance of the template used."""
     template, trace = compiler_template("ads-video-video-prompts", "references/video-template.txt")
-    return {"prompt": _compile_grouped_video(segment, template), "skill_trace": [trace]}
+    return {"prompt": _compile_grouped_video(segment, template, scene_film_shots), "skill_trace": [trace]}
 
 
 def _story_span(span):
@@ -439,7 +440,41 @@ def _only_guidance(shot, spans):
     return all(_story_span(span) is None for span in hit)
 
 
-def _compile_grouped_video(segment, template):
+def _scene_key(segment_id, shot_id):
+    return f"{segment_id}\x1f{shot_id}"
+
+
+def _scene_of(shots, scene_film_shots):
+    """Same scene split as the plan. Extra film shots are only for who can hear her.
+
+    Shot ids can repeat across segments. Those scenes are stored under segment id
+    plus shot id, so a later s1 does not replace an earlier s1.
+    """
+    source = scene_film_shots if isinstance(scene_film_shots, list) and scene_film_shots else shots
+    groups = scene_groups(source)
+    counts = {}
+    for group in groups:
+        for item in group:
+            shot_id = item.get("id") if isinstance(item, dict) else None
+            if isinstance(shot_id, str) and shot_id:
+                counts[shot_id] = counts.get(shot_id, 0) + 1
+    by_id = {}
+    for group in groups:
+        for item in group:
+            if not isinstance(item, dict):
+                continue
+            shot_id = item.get("id")
+            if not isinstance(shot_id, str) or not shot_id:
+                continue
+            segment_id = item.get("segment_id") if isinstance(item.get("segment_id"), str) else ""
+            if segment_id:
+                by_id[_scene_key(segment_id, shot_id)] = group
+            if counts.get(shot_id) == 1:
+                by_id[shot_id] = group
+    return by_id
+
+
+def _compile_grouped_video(segment, template, scene_film_shots=None):
     """Caller validates Segment before any upload or paid submission."""
     from .design import settle_shot_pronouns
     settle_shot_pronouns(segment)
@@ -458,14 +493,32 @@ def _compile_grouped_video(segment, template):
         ])
     lines.extend(_director_lines(director, production))
     lines.extend(_product_lines(director, production))
+    if scene_film_shots is None and isinstance(segment.get("scene_film_shots"), list):
+        scene_film_shots = segment.get("scene_film_shots")
+    scene_of = _scene_of(shots, scene_film_shots)
+
+    def scene_for(shot):
+        if not isinstance(shot, dict):
+            return [shot]
+        shot_id = shot.get("id")
+        segment_id = segment.get("id") if isinstance(segment.get("id"), str) else ""
+        if segment_id and isinstance(shot_id, str):
+            found = scene_of.get(_scene_key(segment_id, shot_id))
+            if found:
+                return found
+        found = scene_of.get(shot_id) if isinstance(shot_id, str) else None
+        return found or [shot]
+
+    listener_shots = scene_film_shots if isinstance(scene_film_shots, list) and scene_film_shots else shots
     inner = (segment.get("ad_form") == "scene_story" and production
              and production.get("speech_mode") == "character_dialogue" and spans
-             and not awake_listener(production, shots))
+             and not awake_listener(production, listener_shots))
     partial_inner = False
     if (not inner and segment.get("ad_form") == "scene_story" and production
             and production.get("speech_mode") == "character_dialogue" and spans):
         partial_inner = any(
-            any(_speech_overlaps(shot, span) for span in spans) and not shot_awake_listener(production, shot)
+            any(_speech_overlaps(shot, span) for span in spans)
+            and not shot_awake_listener(production, shot, scene_for(shot))
             for shot in shots)
     lines.extend(_voice_lines(production, director, spans, characters,
                               ad_form=segment.get("ad_form"), inner=bool(inner)))
@@ -495,17 +548,19 @@ def _compile_grouped_video(segment, template):
                 first_speaking_shot = candidate["id"]
                 break
     people_list = list(people.values())
-    for index, shot in enumerate(shots):
-        shot = _scrub_shot(shot, people_list)
+    for index, original in enumerate(shots):
+        # Scrubbing copies the shot. The scene is the plan's scene, keyed by shot id.
+        # A later product-insert rewrite can mention a hand. That is not this shot's macro.
+        scene = scene_for(original)
+        hands_macro = _hands_or_cake_macro(original.get("description") or "")
+        shot = _scrub_shot(original, people_list)
         last = index == last_index
         speaking_here = bool(spans) and any(_speech_overlaps(shot, span) for span in spans)
         alone_here = (segment.get("ad_form") == "scene_story" and production
                       and production.get("speech_mode") == "character_dialogue" and speaking_here
-                      and not shot_awake_listener(production, shot))
-        if inner:
-            shot = {**shot, "description": rewrite_inner_shot(shot.get("description") or "", speaking_here)}
-        elif alone_here:
-            shot = {**shot, "description": rewrite_inner_shot(shot.get("description") or "", True)}
+                      and not shot_awake_listener(production, shot, scene))
+        if inner or alone_here:
+            shot = quiet_inner_shot(shot, True if alone_here else speaking_here)
         if segment.get("ad_form") == "scene_story":
             shot = {**shot, "description": with_background_line(shot.get("description") or "", shots, index)}
             if last:
@@ -543,7 +598,7 @@ def _compile_grouped_video(segment, template):
             speaker_id = production.get("speaker_id")
             name = shot_labels.get(speaker_id) or characters.get(speaker_id, "")
             speaker_name, other_names = _cast_names(production, speaker_id)
-            face_visible = _speaker_face_visible(shot_view, speaker_name, other_names)
+            face_visible = False if hands_macro else _speaker_face_visible(shot_view, speaker_name, other_names)
             if speaking_here and speaker_id in shot.get("character_ids", []) and face_visible:
                 if segment.get("ad_form") == "scene_story":
                     gaze = "" if story_needs_lens(shot_view) else "，不转头看镜头"
@@ -553,7 +608,10 @@ def _compile_grouped_video(segment, template):
                 if shot.get("id") == first_speaking_shot:
                     lines.append("  从本镜第一帧开口说话，不先闭嘴停顿。")
             elif speaking_here and speaker_id in shot.get("character_ids", []) and not face_visible:
-                lines.append("  本镜看不见说话人的嘴，台词由上述同一人物在画外接着说，不要求嘴型。")
+                if hands_macro:
+                    lines.append("  本镜嘴不要动，不要求嘴型。")
+                else:
+                    lines.append("  本镜看不见说话人的嘴，台词由上述同一人物在画外接着说，不要求嘴型。")
             elif (speaking_here and production.get("speech_delivery") == "on_and_off_screen"
                     and speaker_id not in shot.get("character_ids", [])):
                 lines.append("  本镜说话角色不入画，台词时窗内由上述同一人物画外延续，不补人物或嘴部。")
@@ -563,7 +621,7 @@ def _compile_grouped_video(segment, template):
             lines.append("  仅局部出镜、不增加露脸：" + "、".join(shot_labels.get(cid, characters[cid]) for cid in partial)
                          + "；依实际镜头拍摄其手、头发或其他已确认局部，不把身份参考的组合版式当成本镜构图。")
         continuity = shot_view.get("continuity")
-        speaking_face = (lip_sync and not alone_here
+        speaking_face = (lip_sync and not alone_here and not hands_macro
                          and any(_speech_overlaps(shot, span) for span in spans)
                          and production.get("speaker_id") in shot.get("character_ids", [])
                          and _speaker_face_visible(shot_view, *_cast_names(production, production.get("speaker_id"))))

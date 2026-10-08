@@ -178,4 +178,70 @@ def test_presenter_contract_failure_records_the_concrete_check(source):
         merchant_request="口播", current_plan=None))
     reasons = [item for record in recorded if isinstance(record, dict) for item in record.get("failed_reasons") or []]
     assert any("出镜角色" in item for item in reasons)
+    errors = [item for record in recorded if isinstance(record, dict) for item in record.get("validation_errors") or []]
+    assert any("出镜角色" in (item.get("msg") or "") for item in errors)
     assert any(record.get("error_code") == "planning_content_failed" for record in recorded if isinstance(record, dict))
+
+
+def test_storyboard_check_writes_the_reason_into_the_diagnostics_file(tmp_path, settings):
+    from app.progressive_planning import storyboard_check_note
+    from app.providers.gateway import save_failed_planner_output
+
+    settings.data_root = tmp_path / "data"
+    note = storyboard_check_note(ValueError("镜头只能引用已确认的出镜角色"))
+    assert note["message"] == "分镜校验没有通过"
+    assert note["error_code"] == "storyboard_check"
+    assert note["validation_errors"][0]["loc"] == ["storyboard"]
+    assert note["validation_errors"][0]["msg"] == "镜头只能引用已确认的出镜角色"
+    quoted = storyboard_check_note(ValueError('引用了 "missing" 角色'))
+    assert "missing" in quoted["validation_errors"][0]["msg"]
+    assert '"' not in quoted["validation_errors"][0]["msg"]
+    path = save_failed_planner_output(settings, {
+        "stage": "storyboard", "raw_output": {"shots": [{"id": "s3"}]},
+        "validation_errors": note["validation_errors"]})
+    saved = json.loads(path.read_text())
+    assert saved["validation_errors"][0]["msg"] == "镜头只能引用已确认的出镜角色"
+    assert saved["validation_errors"][0]["type"] == "value_error"
+    kept = save_failed_planner_output(settings, {
+        "stage": "storyboard", "raw_output": {"shots": []},
+        "validation_errors": quoted["validation_errors"]})
+    assert "missing" in json.loads(kept.read_text())["validation_errors"][0]["msg"]
+
+
+def test_storyboard_diagnostic_keeps_the_error_code_once(tmp_path, settings):
+    from app.progressive_planning import storyboard_check_note
+    from app.providers.gateway import save_stage_diagnostic
+
+    settings.data_root = tmp_path / "data"
+    stage = {"stage": "storyboard", "raw_output": {"shots": [{"id": "s3"}]}}
+    note = storyboard_check_note(ValueError("镜头只能引用已确认的出镜角色"))
+    first = save_stage_diagnostic(settings, note, stage)
+    assert first is not None
+    again = save_stage_diagnostic(settings, {**note, "nonblocking": True}, stage)
+    assert again is None
+    files = list((settings.data_root / "diagnostics").glob("*.json"))
+    assert len(files) == 1
+    saved = json.loads(files[0].read_text())
+    assert saved["validation_reasons"] == ["storyboard_check"]
+    assert saved["validation_errors"][0]["msg"] == "镜头只能引用已确认的出镜角色"
+    assert saved["raw_output"] == {"shots": [{"id": "s3"}]}
+    assert files[0].read_text().count('"s3"') == 1
+
+
+def test_nonblocking_warning_does_not_hide_a_later_blocking_reason(tmp_path, settings):
+    from app.progressive_planning import storyboard_check_note
+    from app.providers.gateway import save_stage_diagnostic
+
+    settings.data_root = tmp_path / "data"
+    stage = {"stage": "storyboard", "raw_output": {"shots": [{"id": "s3"}]}}
+    warning = {"nonblocking": True, "failed_reasons": ["外套只是提醒"], "error_code": "inner_monologue"}
+    first = save_stage_diagnostic(settings, warning, stage)
+    assert first is not None
+    assert stage.get("_diagnostic_saved") is not True
+    note = storyboard_check_note(ValueError("镜头只能引用已确认的出镜角色"))
+    second = save_stage_diagnostic(settings, note, stage)
+    assert second is not None
+    assert stage.get("_diagnostic_saved") is True
+    saved = json.loads(second.read_text())
+    assert saved["validation_reasons"] == ["storyboard_check"]
+    assert saved["validation_errors"][0]["msg"] == "镜头只能引用已确认的出镜角色"
