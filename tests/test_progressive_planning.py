@@ -95,7 +95,7 @@ def progressive_gateway(settings, source, install_transport, tmp_path):
         draft_mutation=None, refinement_mutation=None, first_review_mutation=None,
         second_review_mutation=None, third_review_mutation=None, refinement_mutations=[], empty_stage=None, empty_count=0,
         empty_finish="stop", empty_forever=False, inherited_skill_trace=(), ad_form=None,
-        review_suffix=None, project_id=None, job_id=None)
+        review_suffix=None, project_id=None, job_id=None, follow_up_step="speech")
 
     def handler(request):
         assert str(request.url) == "https://api.deepseek.com/chat/completions"
@@ -111,6 +111,8 @@ def progressive_gateway(settings, source, install_transport, tmp_path):
                 body["usage"] = {"completion_tokens": 32768,
                     "completion_tokens_details": {"reasoning_tokens": 32766}}
             return httpx.Response(200, json=body)
+        if context.get("task_kind") == "next_step":
+            return chat_output({"next_step": state.follow_up_step or "speech"})
         if stage == "ad_script" and context.get("task_kind") == "line_jargon_rewrite":
             value = {"lines": [{"beat_id": item["beat_id"], "narration": "吹完头发顺了。"}
                                for item in context["lines"]]}

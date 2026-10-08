@@ -102,3 +102,31 @@ def creative_steps(schedule, historical):
     if schedule is not None and schedule.steps:
         return tuple(schedule.steps)
     return tuple(historical)
+
+
+def still_only_speech(schedule):
+    """The model named dialogue and did not name a storyboard."""
+    return schedule is not None and schedule.steps == ("speech",)
+
+
+def next_step_followup_schema():
+    """One more chance to name the next creative step after speech alone."""
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["next_step"],
+        "properties": {
+            "next_step": {
+                "type": "string",
+                "enum": list(MODEL_STEPS),
+                "description": "下一步创作只许是澄清、出方向、台词或分镜。排时间、审核、提交图片或视频不要写。",
+            },
+        },
+    }
+
+
+NEXT_STEP_FOLLOWUP_SYSTEM = """你只定下一步创作，只输出本次 schema 规定的 JSON。
+台词已经写好，画面还没排。next_step 只能是 clarify、directions、speech、storyboard 之一。
+画面还没排时，下一步写 storyboard。排时间、审核和提交图片或视频由程序决定，不要写进 next_step。
+这次只命名下一步，不要重写台词，也不要把没排完的画面交给商家。
+"""

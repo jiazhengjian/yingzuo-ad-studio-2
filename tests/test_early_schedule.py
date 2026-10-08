@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from app.ad_form import confirmation_message
-from app.early_schedule import creative_steps, detach_model_schedule, schedule_from_choice
+from app.early_schedule import creative_steps, detach_model_schedule, schedule_from_choice, still_only_speech
 from app.planning import STRATEGY_SELECTION_SYSTEM, strategy_decision_schema
 from app.providers.gateway import Gateway
 from app.release_gate import assert_spend_confirmed, images_blocked_reason
@@ -54,6 +54,11 @@ def test_scheduler_follows_the_model_and_refuses_program_steps():
     assert "spend" not in schema["properties"]["next_step"]["enum"]
     assert "必要澄清每轮最多4题" in STRATEGY_SELECTION_SYSTEM
     assert "信息不够就只提问" in STRATEGY_SELECTION_SYSTEM
+    assert "第二次还是只有台词，就按原来的顺序把分镜接上" in STRATEGY_SELECTION_SYSTEM
+    assert "不会替你补上" not in STRATEGY_SELECTION_SYSTEM
+    assert still_only_speech(schedule_from_choice("speech"))
+    assert not still_only_speech(schedule_from_choice("storyboard"))
+    assert not still_only_speech(schedule_from_choice(["speech", "storyboard"]))
     assert confirmation_message([
         {"id": "ad_form"}, {"id": "highlight"}, {"id": "audience"}, {"id": "cta_target"}]) == FOUR_QUESTION_COPY
 
@@ -140,19 +145,31 @@ def test_model_can_choose_speech_or_storyboard(progressive_gateway, settings, so
     monkeypatch.setattr(Gateway, "create_designs", denied)
     monkeypatch.setattr(Gateway, "submit_video", denied)
 
+    state = progressive_gateway
+    state.follow_up_step = "speech"
     speech, state = _continue(progressive_gateway, settings, source, "speech")
-    assert state.calls == ["ad_script"]
-    assert speech["kind"] == "reply"
-    assert speech["message"] == "台词先写好了。画面还没排，现在不会出图。"
+    assert state.calls == ["ad_script", "strategy", "storyboard", "plan_review"]
+    follow = [item for item in state.contexts if item.get("task_kind") == "next_step"]
+    assert len(follow) == 1
+    assert follow[0]["stage"] == "strategy"
+    assert follow[0]["written"] == ["speech"]
+    assert speech["kind"] == "plan"
+    assert speech["plan"]["segments"]
+    blob = json.dumps(speech, ensure_ascii=False)
+    assert "台词先写好了" not in blob
+    assert "画面还没排，现在不会出图" not in blob
     for token in BANNED:
         assert token not in speech["message"]
 
     board, state = _continue(progressive_gateway, settings, source, "storyboard")
     assert state.calls[0] == "storyboard"
     assert "ad_script" not in state.calls
+    assert "strategy" not in state.calls
     assert "plan_review" in state.calls
     assert board["kind"] == "plan"
     assert board["plan"]["segments"]
+    spoken = json.dumps(board["plan"], ensure_ascii=False)
+    assert "看轮廓" in spoken and "看桌角" in spoken and "留一处" in spoken
     assert all(type(segment["duration_seconds"]) is int for segment in board["plan"]["segments"])
 
 

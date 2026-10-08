@@ -2443,7 +2443,8 @@ class Gateway:
                 "questions": list(choice.questions),
             }).model_dump()
 
-        from app.early_schedule import EarlySchedule, creative_steps, detach_model_schedule, schedule_from_choice
+        from app.early_schedule import (EarlySchedule, NEXT_STEP_FOLLOWUP_SYSTEM, creative_steps,
+            detach_model_schedule, next_step_followup_schema, schedule_from_choice, still_only_speech)
         strategy_input = selected_strategy
         stored = schedule_from_choice(model_next_step)
         if isinstance(selected_strategy, dict):
@@ -2725,7 +2726,17 @@ class Gateway:
                         else:
                             draft = copy.deepcopy(raw_draft)
             if speech_without_board:
-                return AgentDecision(kind="reply", message="台词先写好了。画面还没排，现在不会出图。").model_dump()
+                # Speech is written and the board is not. Ask once more. A second
+                # speech-only answer continues the original order: storyboard next.
+                follow_input = {"stage": "strategy", "task_kind": "next_step",
+                    "written": ["speech"], "schema": next_step_followup_schema()}
+                raw_follow = await stage_call(NEXT_STEP_FOLLOWUP_SYSTEM, follow_input, [], max_tokens=800)
+                follow = detach_model_schedule(raw_follow if isinstance(raw_follow, dict) else {})
+                if "storyboard" not in follow.steps:
+                    if still_only_speech(follow):
+                        logger.info("Model still named only speech; continuing storyboard in the original order")
+                    else:
+                        logger.info("Follow-up did not name a storyboard; continuing storyboard after the written speech")
             if choice_enabled and getattr(self.settings, "progressive_planning_enabled", False):
                 self._plan_warning_holder = {
                     "project_id": project.get("id") if isinstance(project, dict) and isinstance(project.get("id"), str) else "",
