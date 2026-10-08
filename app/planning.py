@@ -619,7 +619,7 @@ def strategy_decision_schema(*, new_directions: bool = False, retain_direction_s
         "type": "array",
         "items": {"type": "string", "enum": ["clarify", "directions", "speech", "storyboard"]},
         "maxItems": 4,
-        "description": "要连续做的创作步骤，按你的顺序。只写了台词、没写分镜时，程序会再请你定一次下一步；第二次还是只有台词，就按原来的顺序把分镜接上。",
+        "description": "要连续做的创作步骤，按你的顺序。只写了台词、没写分镜时，程序会再请你定一次下一步。第二次写成澄清或出方向就照做。只有第二次还是只有台词，才按原来的顺序把分镜接上。",
     }
     return schema
 
@@ -736,7 +736,7 @@ rule_id须来自本轮strategy_rules，适用category且prerequisites由本次fa
 existing_direction非空且未明确重开方向时，不重新三选；明确修改用kind=plan，仅返回沿用原id/rule_id的一条方向。已有价值、展开和概念字段保留或依授权更新，不删空；历史缺字段不强补。普通问题用reply，意图冲突无法确认时clarify。product_supplement为真时只能kind=plan，把新商品事实并进brief，沿用原方向，不澄清、不重开。direction_reopen非空时才重新三选，并说明先前方向因商家要求而先放下。
 existing_creative_intent非空时，concept_revision_permissions限定可修改的意图字段，其余逐字保留；structure_preference和film_concept.structure仅在reference_intent获准变更时可更新。权限仅限定范围，不提供新事实；本轮明确固定要求与已选核心不能被旧AI执行建议替代。
 遵守reference_capacity及当前production接口；人物讲解使用有效角色和character_dialogue，speech_delivery区分始终可见开口与同一人画外延续，历史缺字段沿用前者。人物与声音方法按Sound Direction执行。角色只写性别和身份，例如「一个女生」或「她」。商家写了年轻女性、宝妈、男生，出镜的人就用这个性别。不要写年龄、发型、服装、五官或长相，外貌交给后面的角色图。不能在后续分镜私自放宽已选约定。实际生成与确认交由程序，不新增表单或确认步骤，不输出内部推理。
-下一步创作由你指定。需要时在本次 JSON 写 next_step，只能是 clarify、directions、speech、storyboard 之一；要按你的顺序连续做，就写 next_steps。澄清和出方向仍是这一次回复：信息够就在这次给出方向，信息不够就只提问、不给方向，不要为了换步骤再请求一次。排时间、审核和提交图片或视频由程序决定，不要用 next_step 跳过。没写 next_step 时，选完方向后仍先写台词再写分镜。只写了台词、没写分镜时，程序会再请你定一次下一步；第二次还是只有台词，就按原来的顺序把分镜接上。
+下一步创作由你指定。需要时在本次 JSON 写 next_step，只能是 clarify、directions、speech、storyboard 之一；要按你的顺序连续做，就写 next_steps。澄清和出方向仍是这一次回复：信息够就在这次给出方向，信息不够就只提问、不给方向，不要为了换步骤再请求一次。排时间、审核和提交图片或视频由程序决定，不要用 next_step 跳过。没写 next_step 时，选完方向后仍先写台词再写分镜。只写了台词、没写分镜时，程序会再请你定一次下一步。第二次写成澄清或出方向就照做。只有第二次还是只有台词，才按原来的顺序把分镜接上。
 """
 
 

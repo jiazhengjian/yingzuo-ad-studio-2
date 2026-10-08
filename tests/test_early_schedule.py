@@ -54,7 +54,8 @@ def test_scheduler_follows_the_model_and_refuses_program_steps():
     assert "spend" not in schema["properties"]["next_step"]["enum"]
     assert "必要澄清每轮最多4题" in STRATEGY_SELECTION_SYSTEM
     assert "信息不够就只提问" in STRATEGY_SELECTION_SYSTEM
-    assert "第二次还是只有台词，就按原来的顺序把分镜接上" in STRATEGY_SELECTION_SYSTEM
+    assert "只有第二次还是只有台词，才按原来的顺序把分镜接上" in STRATEGY_SELECTION_SYSTEM
+    assert "第二次写成澄清或出方向就照做" in STRATEGY_SELECTION_SYSTEM
     assert "不会替你补上" not in STRATEGY_SELECTION_SYSTEM
     assert still_only_speech(schedule_from_choice("speech"))
     assert not still_only_speech(schedule_from_choice("storyboard"))
@@ -132,6 +133,7 @@ def test_model_can_choose_directions_and_review_stays_with_the_program(env, monk
 def _continue(progressive_gateway, settings, source, choice):
     state = progressive_gateway
     state.calls.clear()
+    state.contexts.clear()
     project = {"brief": state.brief, "duration_seconds": state.duration}
     return asyncio.run(Gateway(settings).decide(
         project, [source], [], [], None,
@@ -171,6 +173,53 @@ def test_model_can_choose_speech_or_storyboard(progressive_gateway, settings, so
     spoken = json.dumps(board["plan"], ensure_ascii=False)
     assert "看轮廓" in spoken and "看桌角" in spoken and "留一处" in spoken
     assert all(type(segment["duration_seconds"]) is int for segment in board["plan"]["segments"])
+
+
+def test_second_answer_clarify_or_directions_is_followed(progressive_gateway, settings, source, monkeypatch):
+    from test_direction_selection import candidates_for, concept_pool_for
+
+    async def denied(self, *args, **kwargs):
+        pytest.fail("a follow-up choice must not submit image or video")
+    monkeypatch.setattr(Gateway, "create_designs", denied)
+    monkeypatch.setattr(Gateway, "submit_video", denied)
+
+    state = progressive_gateway
+    state.follow_up_step = "clarify"
+    state.reentry_reply = {"kind": "clarify", "message": "还要确认在哪用。", "questions": [{
+        "id": "channel", "prompt": "主要在哪里展示这条广告？",
+        "options": [{"id": "douyin", "label": "抖音商品页"}],
+        "allow_custom": True, "allow_skip": True}]}
+    clarified, state = _continue(progressive_gateway, settings, source, "speech")
+    assert state.calls == ["ad_script", "strategy", "strategy"]
+    assert [item.get("task_kind") for item in state.contexts].count("next_step") == 1
+    assert clarified["kind"] == "clarify"
+    assert clarified["questions"][0]["id"] == "channel"
+    assert "storyboard" not in state.calls and "plan_review" not in state.calls
+    blob = json.dumps(clarified, ensure_ascii=False)
+    assert "台词先写好了" not in blob
+    assert "画面还没排，现在不会出图" not in blob
+
+    candidate = candidates_for((None, None, None, source))
+    state.follow_up_step = "directions"
+    state.reentry_reply = {
+        "kind": "directions",
+        "message": "请比较三个讲解方向",
+        "brief": candidate.brief.model_dump(),
+        "directions": [direction.model_dump() for direction in candidate.directions],
+        "concept_pool": concept_pool_for(candidate.directions),
+        "recommended_direction_id": candidate.recommended_direction_id,
+    }
+    offered, state = _continue(progressive_gateway, settings, source, "speech")
+    assert state.calls[0] == "ad_script"
+    assert state.calls.count("strategy") == 2
+    assert "direction_review" in state.calls
+    assert "storyboard" not in state.calls and "plan_review" not in state.calls
+    assert [item.get("task_kind") for item in state.contexts].count("next_step") == 1
+    assert offered["kind"] == "directions"
+    assert len(offered["direction_candidates"]["directions"]) == 3
+    blob = json.dumps(offered, ensure_ascii=False)
+    assert "台词先写好了" not in blob
+    assert "画面还没排，现在不会出图" not in blob
 
 
 def test_model_can_choose_clarify_after_a_direction_was_selected(progressive_gateway, settings, source, monkeypatch):

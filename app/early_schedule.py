@@ -127,6 +127,7 @@ def next_step_followup_schema():
 
 NEXT_STEP_FOLLOWUP_SYSTEM = """你只定下一步创作，只输出本次 schema 规定的 JSON。
 台词已经写好，画面还没排。next_step 只能是 clarify、directions、speech、storyboard 之一。
-画面还没排时，下一步写 storyboard。排时间、审核和提交图片或视频由程序决定，不要写进 next_step。
-这次只命名下一步，不要重写台词，也不要把没排完的画面交给商家。
+要澄清就写 clarify，要出方向就写 directions，要排画面就写 storyboard。
+排时间、审核和提交图片或视频由程序决定，不要写进 next_step。
+这次只命名下一步，不要重写台词。
 """

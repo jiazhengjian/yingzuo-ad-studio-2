@@ -2725,18 +2725,42 @@ class Gateway:
                             draft = None
                         else:
                             draft = copy.deepcopy(raw_draft)
+            attach_storyboard = True
             if speech_without_board:
-                # Speech is written and the board is not. Ask once more. A second
-                # speech-only answer continues the original order: storyboard next.
+                # Speech is written and the board is not. Ask once more.
+                # Clarify or directions on that answer are done as named.
+                # Only a second speech-only answer continues into the storyboard.
                 follow_input = {"stage": "strategy", "task_kind": "next_step",
                     "written": ["speech"], "schema": next_step_followup_schema()}
                 raw_follow = await stage_call(NEXT_STEP_FOLLOWUP_SYSTEM, follow_input, [], max_tokens=800)
                 follow = detach_model_schedule(raw_follow if isinstance(raw_follow, dict) else {})
-                if "storyboard" not in follow.steps:
-                    if still_only_speech(follow):
-                        logger.info("Model still named only speech; continuing storyboard in the original order")
-                    else:
-                        logger.info("Follow-up did not name a storyboard; continuing storyboard after the written speech")
+                named = None
+                if still_only_speech(follow):
+                    logger.info("Model still named only speech; continuing storyboard in the original order")
+                elif follow.step in ("clarify", "directions"):
+                    named = follow.step
+                elif "clarify" in follow.steps and "storyboard" not in follow.steps:
+                    named = "clarify"
+                elif "directions" in follow.steps and "storyboard" not in follow.steps:
+                    named = "directions"
+                elif "storyboard" in follow.steps:
+                    pass
+                else:
+                    attach_storyboard = False
+                    logger.info("Follow-up did not name clarify, directions, or a storyboard")
+                if named:
+                    logger.info("Follow-up named %s; doing that step", named)
+                    return await self.decide(
+                        project, assets, messages, gates, current_plan,
+                        force_plan=force_plan, on_progress=on_progress,
+                        selected_strategy=strategy_input if isinstance(strategy_input, dict) else selected_strategy,
+                        inherited_skill_trace=tuple(skill_trace), on_skill_trace=on_skill_trace,
+                        planning_checkpoint=planning_checkpoint, on_checkpoint=on_checkpoint,
+                        stage_result_cache=stage_result_cache, stage_cache_sink=stage_cache_sink,
+                        abandon_check=abandon_check, on_planner_stream=on_planner_stream,
+                        job_id=job_id, model_next_step=named)
+            if speech_without_board and not attach_storyboard:
+                raise ProviderError("下一步没有写成澄清、出方向或分镜，尚未开始图片或视频生成")
             if choice_enabled and getattr(self.settings, "progressive_planning_enabled", False):
                 self._plan_warning_holder = {
                     "project_id": project.get("id") if isinstance(project, dict) and isinstance(project.get("id"), str) else "",

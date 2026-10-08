@@ -18,7 +18,7 @@ from app.runtime_skills import stage_skill_context
 from app.schemas import Plan
 from app.strategy import StrategyRecord, build_strategy, select_rules
 from ad_script_fixtures import CRITERIA, execution_check, with_action_timing
-from test_direction_selection import candidates_for
+from test_direction_selection import approved_direction_review, candidates_for
 from test_providers import settings, source, install_transport, chat_output, request_context
 
 
@@ -95,7 +95,8 @@ def progressive_gateway(settings, source, install_transport, tmp_path):
         draft_mutation=None, refinement_mutation=None, first_review_mutation=None,
         second_review_mutation=None, third_review_mutation=None, refinement_mutations=[], empty_stage=None, empty_count=0,
         empty_finish="stop", empty_forever=False, inherited_skill_trace=(), ad_form=None,
-        review_suffix=None, project_id=None, job_id=None, follow_up_step="speech")
+        review_suffix=None, project_id=None, job_id=None, follow_up_step="speech",
+        reentry_reply=None)
 
     def handler(request):
         assert str(request.url) == "https://api.deepseek.com/chat/completions"
@@ -113,6 +114,10 @@ def progressive_gateway(settings, source, install_transport, tmp_path):
             return httpx.Response(200, json=body)
         if context.get("task_kind") == "next_step":
             return chat_output({"next_step": state.follow_up_step or "speech"})
+        if stage == "strategy" and state.reentry_reply is not None:
+            return chat_output(deepcopy(state.reentry_reply))
+        if stage == "direction_review" and state.reentry_reply is not None:
+            return chat_output(approved_direction_review(context["directions"]))
         if stage == "ad_script" and context.get("task_kind") == "line_jargon_rewrite":
             value = {"lines": [{"beat_id": item["beat_id"], "narration": "吹完头发顺了。"}
                                for item in context["lines"]]}
