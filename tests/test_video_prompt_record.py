@@ -73,7 +73,7 @@ class RecordingGateway(FakeGateway):
 
 
 def _project(store, duration, segments):
-    project = store.create_project("测试商品，蓝色瓶身", "product", duration_seconds=duration)
+    project = store.create_project("测试商品，蓝色瓶身", "product", duration_seconds=duration, ad_form="brand_tvc")
     product_path = store.media_root / f"product-{duration}.png"
     scene_path = store.media_root / f"scene-{duration}.png"
     from test_pipeline import PNG
@@ -85,7 +85,7 @@ def _project(store, duration, segments):
     plan = {"title": "测试方案", "script": "展示商品。", "language": "zh-CN", "aspect_ratio": "9:16",
             "audio_strategy": "voiceover", "facts": {"name": "测试商品", "claims": []},
             "segments": [{"id": f"s{i}", "duration_seconds": 10, "purpose": "展示", "prompt": "方案里的短提示",
-                          "shots": [{"start": 0, "end": 10, "description": "商品"}],
+                          "shots": [{"start": 0, "end": 10, "description": f"商品第{i + 1}处"}],
                           "reference_asset_ids": [product["id"], scene["id"]]} for i in range(segments)]}
     return store.update_plan(project["id"], plan), plan
 

@@ -138,7 +138,7 @@ def _fingerprint_validated_plan(plan: Plan, reviewed_references: _ReviewedRefere
     # append references; the picture gate still checks ownership and content.
     content = plan.model_dump(mode="json", exclude={
         "plan_review", "script_review", "alignment_review", "skill_trace",
-        "review_status", "review_status_note"})
+        "review_status", "review_status_note", "auto_release"})
     if reviewed_references is not None and set(reviewed_references) != {segment.id for segment in plan.segments}:
         raise ValueError("综合审核的原图引用绑定须完整对应当前最终方案各段")
     for segment in content["segments"]:
@@ -281,6 +281,151 @@ def lower_failed_plan_verdicts(raw, plan):
     if result.get("ready") is True and failed:
         result["ready"] = False
     return result
+
+
+def diagnostic_sentence(text):
+    """One diagnostics line. ASCII quotes and brackets are dropped so the file keeps it."""
+    value = " ".join(str(text or "").split())
+    for mark in ('"', "'", "{", "}", "[", "]"):
+        value = value.replace(mark, "")
+    value = value.removeprefix("Value error, ").strip(" ，。")
+    if not value:
+        return ""
+    return value[:120]
+
+
+def _review_data(review):
+    if hasattr(review, "model_dump"):
+        return review.model_dump()
+    return review if isinstance(review, dict) else None
+
+
+def structured_review_reasons(review, plan=None):
+    """Which check, which shot or line, and why. Empty when the review did not fail."""
+    del plan
+    data = _review_data(review)
+    if not isinstance(data, dict):
+        return []
+    criteria = {"product_relevance": "商品关联", "audience_relevance": "受众关联",
+                "factual_support": "商品事实依据", "audiovisual_complement": "声画互补",
+                "natural_speech": "台词自然度", "narrative_progression": "叙事推进"}
+    reasons = []
+
+    def add(text):
+        sentence = diagnostic_sentence(text)
+        if sentence and sentence not in reasons and len(reasons) < 8:
+            reasons.append(sentence)
+
+    for item in data.get("checks") or []:
+        if isinstance(item, dict) and item.get("passed") is False:
+            name = criteria.get(item.get("criterion"), "内容检查")
+            add(f"检查项{name}未通过")
+    execution = data.get("execution_check") if isinstance(data.get("execution_check"), dict) else {}
+    if execution.get("action_capacity") is False:
+        add("检查项动作与台词容量未通过")
+    if execution.get("state_continuity") is False:
+        add("检查项前后状态衔接未通过")
+    alignment = data.get("alignment") if isinstance(data.get("alignment"), dict) else {}
+    if alignment.get("ad_expression_passed") is False:
+        add("检查项整片商品表达未通过")
+    if alignment.get("ready") is False:
+        add("声画总评未通过")
+    for item in alignment.get("shots") or []:
+        if not isinstance(item, dict) or item.get("passed") is not False:
+            continue
+        shot = item.get("shot_id") if isinstance(item.get("shot_id"), str) else "未知镜头"
+        segment = item.get("segment_id") if isinstance(item.get("segment_id"), str) else "未知段"
+        pacing = item.get("pacing") if isinstance(item.get("pacing"), dict) else {}
+        visual = item.get("visual_execution") if isinstance(item.get("visual_execution"), dict) else {}
+        # Owned labels only. The model's note stays in the raw diagnostic body.
+        if visual.get("verdict") in ("unclear", "conflict"):
+            why = f"画面执行结论为{visual.get('verdict')}"
+        elif pacing.get("action_timing_passed") is False:
+            why = "动作时长没有落在镜头窗口里"
+        elif pacing.get("cut_necessity_passed") is False:
+            why = "切点必要性未通过"
+        elif item.get("temporal_omission") in ("unsupported", "unclear"):
+            why = f"时间省略为{item.get('temporal_omission')}"
+        else:
+            why = "该项未通过"
+        add(f"镜头{shot}，段{segment}：{why}")
+    for item in alignment.get("spans") or []:
+        if not isinstance(item, dict) or item.get("passed") is not False:
+            continue
+        span = item.get("span_id") if isinstance(item.get("span_id"), str) else "未知台词"
+        segment = item.get("segment_id") if isinstance(item.get("segment_id"), str) else "未知段"
+        visibility = item.get("speaker_visibility")
+        why = f"说话可见性为{visibility}" if isinstance(visibility, str) and visibility else "该项未通过"
+        add(f"台词{span}，段{segment}：{why}")
+    if data.get("ready") is False and not reasons:
+        add("综合检查未通过")
+    return reasons
+
+
+def program_downgrade_reasons(raw, plan):
+    """Why a model ready=true review was turned into a failure by this program.
+
+    The stored model body stays unchanged. These sentences go next to it.
+    """
+    if not isinstance(raw, dict):
+        return []
+    before = deepcopy(raw)
+    after = lower_failed_plan_verdicts(raw, plan)
+    if not isinstance(after, dict):
+        return []
+    reasons = []
+
+    def add(text):
+        sentence = diagnostic_sentence(text)
+        if sentence and sentence not in reasons and len(reasons) < 8:
+            reasons.append(sentence)
+
+    before_align = before.get("alignment") if isinstance(before.get("alignment"), dict) else {}
+    after_align = after.get("alignment") if isinstance(after.get("alignment"), dict) else {}
+    before_shots = before_align.get("shots") if isinstance(before_align.get("shots"), list) else []
+    after_shots = after_align.get("shots") if isinstance(after_align.get("shots"), list) else []
+    for index, lowered in enumerate(after_shots):
+        if not isinstance(lowered, dict):
+            continue
+        original = before_shots[index] if index < len(before_shots) and isinstance(before_shots[index], dict) else {}
+        shot = lowered.get("shot_id") if isinstance(lowered.get("shot_id"), str) else f"第{index + 1}个镜头"
+        if original.get("passed") is True and lowered.get("passed") is False:
+            omission = original.get("temporal_omission")
+            visual = original.get("visual_execution") if isinstance(original.get("visual_execution"), dict) else {}
+            pacing = original.get("pacing") if isinstance(original.get("pacing"), dict) else {}
+            lowered_pacing = lowered.get("pacing") if isinstance(lowered.get("pacing"), dict) else {}
+            if omission in ("unsupported", "unclear"):
+                why = f"时间省略为{omission}，该项仍标成通过"
+            elif visual.get("verdict") in ("unclear", "conflict"):
+                why = f"画面执行结论为{visual.get('verdict')}，该项仍标成通过"
+            elif pacing.get("action_timing_passed") is True and lowered_pacing.get("action_timing_passed") is False:
+                why = "动作秒数超过镜头窗口，程序改写了节奏结论"
+            elif pacing.get("action_timing_passed") is False or pacing.get("cut_necessity_passed") is False:
+                why = "节奏子项未通过，镜头总评仍标成通过"
+            else:
+                why = "单项未通过，镜头总评仍标成通过"
+            add(f"程序把镜头{shot}从通过改成未通过：{why}")
+        elif (isinstance(original.get("pacing"), dict) and isinstance(lowered.get("pacing"), dict)
+              and original["pacing"].get("action_timing_passed") is True
+              and lowered["pacing"].get("action_timing_passed") is False):
+            add(f"程序把镜头{shot}的动作节奏从通过改成未通过：动作秒数超过镜头窗口")
+    before_spans = before_align.get("spans") if isinstance(before_align.get("spans"), list) else []
+    after_spans = after_align.get("spans") if isinstance(after_align.get("spans"), list) else []
+    for index, lowered in enumerate(after_spans):
+        if not isinstance(lowered, dict):
+            continue
+        original = before_spans[index] if index < len(before_spans) and isinstance(before_spans[index], dict) else {}
+        if original.get("passed") is True and lowered.get("passed") is False:
+            span = lowered.get("span_id") if isinstance(lowered.get("span_id"), str) else f"第{index + 1}句"
+            visibility = original.get("speaker_visibility") or "unclear"
+            add(f"程序把台词{span}从通过改成未通过：说话可见性为{visibility}")
+    if before_align.get("ad_expression_passed") is True and after_align.get("ad_expression_passed") is False:
+        add("程序把广告表达从通过改成未通过：台词全部明确画外")
+    if before_align.get("ready") is True and after_align.get("ready") is False:
+        add("程序把声画总评从通过改成未通过")
+    if before.get("ready") is True and after.get("ready") is False:
+        add("程序把审核总评从通过改成未通过")
+    return reasons
 
 
 # Runtime review role/contract lives in progressive_planning.PLAN_REVIEW_SYSTEM.

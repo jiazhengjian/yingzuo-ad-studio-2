@@ -23,14 +23,14 @@ PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4
 @pytest.fixture
 def setup(tmp_path):
     store = Store(tmp_path / "db.sqlite", tmp_path / "media")
-    project = store.create_project("测试商品，蓝色瓶身，不增加功效承诺", "product")
+    project = store.create_project("测试商品，蓝色瓶身，不增加功效承诺", "product", ad_form="brand_tvc")
     path = store.media_root / "product.png"
     path.write_bytes(PNG)
     asset = store.add_asset(project["id"], "product", "用户商品图", path, "image/png")
     plan = {"title": "测试方案", "script": "展示商品。了解详情。", "language": "zh-CN",
             "aspect_ratio": "9:16", "audio_strategy": "voiceover", "facts": {"name": "测试商品", "claims": []},
             "segments": [{"id": f"s{i}", "duration_seconds": 10, "purpose": "展示", "prompt": "真实商品展示",
-                          "shots": [{"start": 0, "end": 10, "description": "商品"}], "reference_asset_ids": [asset["id"]]} for i in range(2)]}
+                          "shots": [{"start": 0, "end": 10, "description": f"商品第{i + 1}处"}], "reference_asset_ids": [asset["id"]]} for i in range(2)]}
     project = store.update_plan(project["id"], plan)
     settings = SimpleNamespace(ffmpeg_path="unused_in_orchestration_tests", max_video_submissions=2,
                                max_active_runs=1, poll_seconds=.01, provider_timeout_seconds=1,
@@ -111,14 +111,14 @@ def execute(store, project, settings, gateway, job=None):
 
 def selected_duration_project(setup, duration):
     store, _, original_plan, settings = setup
-    project = store.create_project("测试用户所选时长", "product", duration_seconds=duration)
+    project = store.create_project("测试用户所选时长", "product", duration_seconds=duration, ad_form="brand_tvc")
     path = store.media_root / f"product_{duration}.png"
     path.write_bytes(PNG)
     asset = store.add_asset(project["id"], "product", "真实商品", path, "image/png")
     durations = [10] * (duration // 10) + ([duration % 10] if duration % 10 else [])
     plan = copy.deepcopy(original_plan)
     plan["segments"] = [{**copy.deepcopy(original_plan["segments"][0]), "id": f"s{i}", "duration_seconds": seconds,
-        "shots": [{"start": 0, "end": seconds, "description": "本段完整镜头"}],
+        "shots": [{"start": 0, "end": seconds, "description": f"本段完整镜头{i + 1}"}],
         "reference_asset_ids": [asset["id"]]} for i, seconds in enumerate(durations)]
     return store, store.update_plan(project["id"], plan), plan, settings
 

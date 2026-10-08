@@ -14,11 +14,26 @@ export type JobRecovery =
   | { kind: 'retry_failed_segments'; label: '重试失败片段' };
 
 const STORYBOARD_CONTENT = /背景人物没有跟着床入画|背景人物朝向和前面不一致|剧情卖点没有高光证明镜|状态结果还停在半程|结果状态没有单独的结果镜|结果状态和过程写在同一镜|剧情末镜写成了英雄定格|剧情末镜人物对着镜头举着产品|剧情末镜把家用物品带出了门/;
+const HARD_GATE_MISS = /方案检查没有通过|方案检查没通过|这版方案需要重新检查/;
+const STRUCTURE_CHECK = /规划结果未通过结构校验/;
 
 export function storyboardContentFailure(job?: Job): boolean {
   if (!job) return false;
   const issues = Array.isArray(job.progress?.issue_summary) ? job.progress.issue_summary.join('') : '';
   return STORYBOARD_CONTENT.test(`${job.error || ''}${issues}`);
+}
+
+/** Hard gates failed and no passing board was left, or the plan was never produced. */
+export function canRegenerate(job: Job): boolean {
+  const review = job.progress?.review_status;
+  if (review === 'passed' || review === 'repaired' || review === 'auto_release' || job.progress?.auto_release) return false;
+  const code = job.progress?.error_code;
+  const error = job.error || '';
+  // Hard gates never cleared, or the plan was never produced. A content failure
+  // stays on the system sentence and does not get this button.
+  if (code === 'planning_not_produced' || code === 'release_recheck' || error === '这次没生成出来' || HARD_GATE_MISS.test(error)) return true;
+  if (job.progress?.structure_retries_exhausted || STRUCTURE_CHECK.test(error)) return true;
+  return false;
 }
 
 /** A failed request alone is not permission to repeat a provider submission. */
@@ -29,23 +44,35 @@ export function recoveryForJob(job?: Job): JobRecovery | null {
   // A content failure must not silently start the same planning loop again.
   // Older planning jobs have no classification and are treated conservatively.
   if (job.kind === 'plan') {
-    if (/结构不完整|未能满足已确认要求|容量仍未改善/.test(job.error || '')) return { kind: 'retry_planning', label: '继续处理' };
-    if (job.progress.error_code === 'planning_content_failed' && storyboardContentFailure(job)) {
-      return { kind: 'retry_planning', label: '继续处理' };
+    const issues = Array.isArray(job.progress?.issue_summary) ? job.progress.issue_summary.join('') : '';
+    const owned = `${job.error || ''}${issues}`;
+    // The merchant's own locked line still needs a choice. A model check does not.
+    if (/用户明确固定的台词|用户固定台词|已选无人声方向不能增加台词|无人声方向/.test(owned)) {
+      return { kind: 'edit_plan' };
+    }
+    if (canRegenerate(job)) return { kind: 'retry_existing', label: '重新生成' };
+    // A drafted plan that failed a content or storyboard check is not a missing
+    // plan. The system already retried. Do not offer another generation.
+    if (/结构不完整|未能满足已确认要求|容量仍未改善/.test(job.error || '')
+      || job.progress.error_code === 'planning_content_failed'
+      || storyboardContentFailure(job)) {
+      return { kind: 'unavailable' };
     }
     if (job.progress.error_code === 'planning_configuration_failed') return { kind: 'check_connection' };
     if (job.progress.error_code === 'planning_invalid_response'
       && job.progress.retry_action === 'retry_planning' && job.progress.retryable !== false) {
       return { kind: 'retry_planning', label: '继续处理' };
     }
-    // A saved storyboard was rejected by a later structure check. Resume replays
-    // that storyboard; only an exhausted replay starts again from the brief.
+    // A saved storyboard failed a structure check. The job already replays it once.
+    // A leftover failure is a system record, not another generation.
     if (job.progress.error_code === 'planning_invalid_response'
-      && job.progress.retry_action !== 'continue_conversation'
       && /视频段镜头时轴或素材结构无效|独立旁白方案的声音策略、内容或跨段对应无效/.test(job.error || '')) {
-      return { kind: 'retry_planning', label: '继续处理' };
+      return { kind: 'unavailable' };
     }
-    if (['planning_invalid_response', 'planning_review_incomplete', 'planning_request_limit'].includes(job.progress.error_code as string)) {
+    if (job.progress.error_code === 'planning_review_incomplete' || job.progress.error_code === 'planning_request_limit') {
+      return { kind: 'continue_conversation' };
+    }
+    if (job.progress.error_code === 'planning_invalid_response') {
       return { kind: 'continue_conversation' };
     }
     if ((job.progress.error_code === 'planning_request_failed'
@@ -53,7 +80,13 @@ export function recoveryForJob(job?: Job): JobRecovery | null {
       && job.progress.retry_action === 'retry_planning' && job.progress.retryable !== false) {
       return { kind: 'retry_planning', label: '继续处理' };
     }
-    return { kind: 'edit_plan' };
+    // A passed, repaired, or auto-released board is not a missing plan.
+    const review = job.progress.review_status;
+    if (review === 'passed' || review === 'repaired' || review === 'auto_release' || job.progress.auto_release) {
+      return { kind: 'unavailable' };
+    }
+    // The planning job failed before a board existed.
+    return { kind: 'retry_existing', label: '重新生成' };
   }
   // A 401 or 402 never accepted a task. After the account is fixed, the same
   // plan and pictures can be submitted again. A rejected request stays blocked.
@@ -68,10 +101,12 @@ export function recoveryForJob(job?: Job): JobRecovery | null {
   if (/请重新上传商品图|还没有可用的商品图/.test(job.error || '')) return { kind: 'upload_product', label: '重新上传商品图' };
   if (/请重新选择时长|所选时长不一致/.test(job.error || '')) return { kind: 'edit_plan', label: '重新选择时长' };
   if (job.progress.error_code === 'image_generation_failed') return { kind: 'edit_plan' };
+  if (canRegenerate(job)) return { kind: 'retry_existing', label: '重新生成' };
   if (/请修改方案/.test(job.error || '')) return { kind: 'edit_plan', label: '修改方案' };
-  if (job.progress.retryable === false) return {
-    kind: job.progress.error_code === 'reference_image_unreadable' ? 'check_materials' : 'unavailable',
-  };
+  if (job.progress.retryable === false) {
+    if (job.progress.error_code === 'reference_image_unreadable') return { kind: 'check_materials' };
+    return { kind: 'unavailable' };
+  }
   // Only the server can attest that these provider tasks reached terminal failure.
   // Existing-task continuation keeps the server's receipt reconciliation path.
   const failedIds = job.progress.failed_segment_ids;
@@ -131,6 +166,10 @@ export function cardMessage(job: Job, recovery: JobRecovery): string {
   }
   if (code === 'provider_auth') {
     return '生成账户的连接需要检查，已有方案和图片仍保留。账户修好后可以重新生成。';
+  }
+  if (recovery.kind === 'retry_existing' && recovery.label === '重新生成'
+    && code !== 'provider_balance' && code !== 'provider_auth') {
+    return '这次没生成出来';
   }
   if (recovery.kind === 'retry_planning' && storyboardContentFailure(job)) {
     return '这次分镜没有通过内容检查。继续处理会重新生成分镜，已保存的需求和方向仍保留。';

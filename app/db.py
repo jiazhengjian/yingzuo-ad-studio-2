@@ -238,6 +238,65 @@ class Store:
                       (encoded(plan), revision, now, project_id))
         return self.get_project(project_id)
 
+    def _plan_form_unchanged(self, row, plan):
+        brief = (plan.get("strategy") or {}).get("brief") if isinstance(plan, dict) else None
+        if isinstance(brief, dict) and brief.get("ad_form") != row["ad_form"]:
+            raise ValueError("方案须沿用当前广告倾向，请先按新偏好更新方案")
+
+    def save_repaired_plan(self, project_id, expected_revision, plan):
+        """Insert an automatic repair as the next revision. The previous row stays.
+
+        Status is left as it is so an in-flight confirmed generation can continue
+        on the repaired board. This is not a merchant edit.
+        """
+        with self._connection(True) as c:
+            row = self._dict(c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+            if row is None:
+                raise KeyError("项目不存在")
+            if row["revision"] != expected_revision:
+                raise StaleRevision("方案已修改，旧任务结果不会覆盖新版")
+            self._plan_form_unchanged(row, plan)
+            self._validate_plan_duration(row, plan)
+            revision, now = row["revision"] + 1, time.time()
+            c.execute("INSERT INTO revisions VALUES(?,?,?,?)", (project_id, revision, encoded(plan), now))
+            c.execute("UPDATE projects SET plan=?,revision=?,updated_at=? WHERE id=?",
+                      (encoded(plan), revision, now, project_id))
+        return self.get_project(project_id)
+
+    def save_released_plans(self, project_id, plans, expected_revision=None, expected_context_version=None):
+        """Save each board as its own revision. The last one is current.
+
+        Used when planning replaces a model board with a repaired one. The
+        pre-repair text stays readable at the earlier revision.
+        """
+        if not plans:
+            raise ValueError("没有可保存的方案")
+        with self._connection(True) as c:
+            row = self._dict(c.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+            if row is None:
+                raise KeyError("项目不存在")
+            if expected_revision is not None and row["revision"] != expected_revision:
+                raise StaleRevision("方案已修改，旧任务结果不会覆盖新版")
+            if expected_context_version is not None and row["context_version"] != expected_context_version:
+                raise StaleRevision("需求已更新，旧规划结果不会覆盖当前需求")
+            revision, now = row["revision"], time.time()
+            for plan in plans:
+                self._plan_form_unchanged(row, plan)
+                self._validate_plan_duration(row, plan)
+                revision += 1
+                c.execute("INSERT INTO revisions VALUES(?,?,?,?)", (project_id, revision, encoded(plan), now))
+            c.execute("UPDATE projects SET plan=?,revision=?,plan_context_version=context_version,status='awaiting_generate',updated_at=? WHERE id=?",
+                      (encoded(plans[-1]), revision, now, project_id))
+        return self.get_project(project_id)
+
+    def revision_plan(self, project_id, revision):
+        with self._connection() as c:
+            row = c.execute("SELECT plan FROM revisions WHERE project_id=? AND revision=?",
+                            (project_id, revision)).fetchone()
+        if row is None or not row["plan"]:
+            raise KeyError("方案版本不存在")
+        return json.loads(row["plan"])
+
     def create_job(self, project_id, kind, revision, payload=None):
         if kind not in ("plan", "generate", "recompose"):
             raise ValueError("不支持的任务类型")
@@ -302,6 +361,7 @@ class Store:
             payload["duration_seconds"] = p["duration_seconds"]
             if kind == "generate":
                 payload["video_submission_budget"] = len(payload["plan"]["segments"])
+                payload["merchant_confirmed_revision"] = revision
             jid, now = identifier("job"), time.time()
             c.execute("INSERT INTO jobs(id,project_id,revision,kind,status,phase,progress,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                       (jid, project_id, revision, kind, "queued", "queued", "{}", encoded(payload), now, now))
@@ -373,7 +433,8 @@ class Store:
             payload = {"plan": run_plan, "source_job_id": source_job_id, "accepted_revision": accepted_revision,
                        "base_render_id": base["id"], "context_version": p["context_version"],
                        "duration_seconds": p["duration_seconds"], "video_submission_budget": len(plan["segments"]),
-                       "pause_for_creative": True, "creative_confirmed": True, "design_asset_ids": scene_ids}
+                       "pause_for_creative": True, "creative_confirmed": True, "design_asset_ids": scene_ids,
+                       "merchant_confirmed_revision": revision}
             c.execute("INSERT INTO revisions VALUES(?,?,?,?)", (project_id, revision, encoded(plan), now))
             c.execute("UPDATE projects SET revision=?,plan=?,plan_context_version=context_version,status='queued',updated_at=? WHERE id=?", (revision, encoded(plan), now, project_id))
             c.execute("INSERT INTO jobs(id,project_id,revision,kind,status,phase,progress,payload,created_at,updated_at) VALUES(?,?,?,'generate','queued','queued',?,?,?,?)",
@@ -382,6 +443,24 @@ class Store:
             self._event(c, project_id, jid, "status", "已按连续性重新安排生成，复用确认过的图片", "waiting")
             self._message(c, project_id, "assistant", "已保留原版，将完整分镜和旁白合并为一次生成，改善跨段声音与画面衔接。", jid)
         return self.get_job(jid)
+
+    def extend_plan_duration(self, job_id, seconds):
+        """Grow the frozen duration for this planning turn. Does not bump context version."""
+        if type(seconds) is not int or not 10 <= seconds <= 60:
+            raise ValueError("时长须在10到60秒之间")
+        with self._connection(True) as c:
+            job, project = self._guard_job(c, job_id)
+            if seconds <= project["duration_seconds"]:
+                return job
+            now = time.time()
+            c.execute("UPDATE projects SET duration_seconds=?,updated_at=? WHERE id=?", (seconds, now, project["id"]))
+            payload = job["payload"]
+            payload["duration_seconds"] = seconds
+            frozen = payload.get("frozen")
+            if isinstance(frozen, dict) and isinstance(frozen.get("project"), dict):
+                frozen["project"]["duration_seconds"] = seconds
+            c.execute("UPDATE jobs SET payload=?,updated_at=? WHERE id=?", (encoded(payload), now, job_id))
+        return self.get_job(job_id)
 
     def get_job(self, job_id):
         with self._connection() as c:
@@ -419,10 +498,18 @@ class Store:
                              progress.get("issue_summary"), progress.get("retry_action")):
                 raise StaleRevision("本次方案需要调整，请通过输入框说明修改要求；已有成果仍保留")
             from .story_logic import planning_rerun_storyboard
+            # The worker already chose the next checkpoint. A click after two
+            # structure retries starts a new generation instead of replaying it.
+            if progress.get("structure_retries_exhausted"):
+                payload = {key: value for key, value in payload.items()
+                           if key not in ("planning_checkpoint", "structure_auto_retries",
+                                          "auto_retry_prepared", "content_auto_retries")}
+            elif payload.get("auto_retry_prepared"):
+                payload = {key: value for key, value in payload.items() if key != "auto_retry_prepared"}
             # A shot-level content failure, a voice mismatch, or a local template
             # is stored after the storyboard call already returned. Reopening only
             # the last dialogue rewrite would replay that board and skip review.
-            if planning_rerun_storyboard(job.get("error"), progress.get("issue_summary")):
+            elif planning_rerun_storyboard(job.get("error"), progress.get("issue_summary")):
                 if isinstance(checkpoint, dict):
                     resumed = drop_storyboard_checkpoint(checkpoint)
                     payload = {**payload, "planning_checkpoint": resumed} if resumed is not None else {
@@ -555,7 +642,8 @@ class Store:
                 raise StaleRevision("没有明确失败的片段，请恢复原任务查询或下载")
             for key in ("manifest", "resume_known_tasks_only", "failed_voice_script_hash"):
                 payload.pop(key, None)
-            payload.update(source_job_id=source_job_id, retry_segment_ids=failed,
+            payload.update(source_job_id=source_job_id, merchant_confirmed_revision=source["revision"],
+                           retry_segment_ids=failed,
                            frozen_video_requests=frozen_video_requests,
                            frozen_video_specs=frozen_video_specs, frozen_video_assets=frozen_video_assets,
                            video_submission_budget=len(failed))
@@ -594,6 +682,10 @@ class Store:
             code = (job.get("progress") or {}).get("error_code")
             if code == "voice_too_long":
                 raise StaleRevision("配音文案过长，请先精简文案后重新确认；直接恢复同样文案不能解决时长问题，已保存的图片会保留")
+            if code in ("planning_not_produced", "release_recheck") or (job.get("error") or "") == "这次没生成出来":
+                raise StaleRevision("这次没生成出来，重新生成会按已保存的需求再策划，不会提交图片或视频")
+            if code not in ACCOUNT_RETRY_CODES and (job.get("progress") or {}).get("retryable") is False:
+                raise StaleRevision("这次没生成出来，重新生成会按已保存的需求再策划，不会提交图片或视频")
             project = self._project(c, project_id)
             if project["revision"] != job["revision"]:
                 raise StaleRevision("这是旧版本任务，请使用当前方案")
@@ -1404,7 +1496,20 @@ class Store:
             else:
                 revision = p["revision"]
                 if kind == "plan":
-                    plan = decision["plan"]
+                    source = decision["plan"]
+                    plan = source
+                    from .release_gate import images_blocked_reason, stamp_honest_label
+                    if not plan.get("review_status"):
+                        stamp_honest_label(plan, plan.get("strategy"), project=p)
+                    blocked = images_blocked_reason(plan, strategy=plan.get("strategy"), project=p)
+                    if blocked:
+                        from .release_gate import MerchantLineChoice, settle_before_spend
+                        try:
+                            plan = settle_before_spend(plan, project=p, project_id=p["id"])
+                        except MerchantLineChoice as choice:
+                            prompt = choice.questions[0]["prompt"] if choice.questions else str(choice)
+                            raise ValueError(prompt) from choice
+                        decision["plan"] = plan
                     self._validate_plan_duration(p, plan)
                     for option in decision["creative_options"]:
                         self._validate_plan_duration(p, {"generation_strategy": plan.get("generation_strategy", "legacy_10s"), "segments": [option["segment"], *plan["segments"][1:]]})
@@ -1412,6 +1517,12 @@ class Store:
                     segments = plan["segments"] + [o["segment"] for o in decision["creative_options"]]
                     if any(not s["reference_asset_ids"] or not set(s["reference_asset_ids"]).issubset(originals) for s in segments):
                         raise ValueError("方案与创意必须引用本轮真实商品图")
+                    # A repair is a new version. The board that failed the gates stays
+                    # on the previous revision and can still be read.
+                    if plan is not source:
+                        self._validate_plan_duration(p, source)
+                        revision += 1
+                        c.execute("INSERT INTO revisions VALUES(?,?,?,?)", (p["id"], revision, encoded(source), now))
                     revision += 1
                     c.execute("INSERT INTO revisions VALUES(?,?,?,?)", (p["id"], revision, encoded(plan), now))
                     c.execute("UPDATE projects SET plan=?,revision=?,plan_context_version=context_version,status='awaiting_generate',updated_at=? WHERE id=?", (encoded(plan), revision, now, p["id"]))
@@ -1577,7 +1688,8 @@ class Store:
                 c.execute("INSERT INTO revisions VALUES(?,?,?,?)", (project_id, revision, encoded(plan), now))
                 c.execute("UPDATE projects SET plan=?,revision=?,plan_context_version=context_version,status='generating',updated_at=? WHERE id=?", (encoded(plan), revision, now, project_id))
                 payload = job["payload"]
-                payload.update(plan=copy.deepcopy(plan), creative_confirmed=True, selected_option_id=selected["id"], context_version=p["context_version"])
+                payload.update(plan=copy.deepcopy(plan), creative_confirmed=True, selected_option_id=selected["id"],
+                               context_version=p["context_version"], merchant_confirmed_revision=revision)
                 design_ids = scene_ids
                 payload["design_asset_ids"] = scene_ids
                 if design_ids:

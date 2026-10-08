@@ -274,4 +274,4 @@ def test_failed_storyboard_is_not_replaced_by_a_template(source):
             assets=[source], conversation=[], merchant_request="看清瓶子", current_plan=None,
             cta_target="none"))
     assert any(isinstance(item, dict) and item.get("error_code") == "fallback_skeleton" for item in empty_notes)
-    assert sum(1 for item in empty_notes if isinstance(item, dict) and item.get("issues") == ["storyboard"]) >= 3
+    assert sum(1 for item in empty_notes if isinstance(item, dict) and item.get("issues") == ["storyboard"]) == 2

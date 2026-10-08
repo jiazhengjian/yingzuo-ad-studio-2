@@ -15,6 +15,9 @@ from typing import Union, get_args, get_origin
 from pydantic import BaseModel, ValidationError
 
 
+# One category of automatic model repair or retry stops after this many rounds.
+AUTO_RETRY_CAP = 2
+
 # Markers that still stop the job and show a plain-Chinese card.
 MERCHANT_MARKERS = (
     "用户明确固定的台词",

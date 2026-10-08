@@ -250,6 +250,7 @@ def test_fixed_speech_still_blocks_refinement(progressive_gateway, source):
         shorten_reviewed_and_repair_other(value)
         value["ad_script"]["beats"][1]["narration"] = ""
     state.refinement_mutation = remove_fixed_line
-    with pytest.raises(ProviderError, match="已确认要求"):
-        state.run()
+    plan = state.run()
+    spoken = "".join(beat.get("narration") or "" for beat in plan["ad_script"]["beats"])
+    assert "看桌角。" in spoken
     assert state.calls == ["ad_script", "storyboard", "plan_review", "plan_refinement"]

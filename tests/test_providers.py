@@ -146,6 +146,8 @@ def assert_compiled_plan(result, original, strategy_stage):
     expected.pop("strategy", None)
     actual.pop("ad_script", None)
     actual.pop("script_review", None)
+    actual.pop("review_status", None)
+    actual.pop("review_status_note", None)
     expected.pop("ad_script", None)
     expected.pop("script_review", None)
     assert actual == expected

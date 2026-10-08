@@ -16,6 +16,18 @@ from __future__ import annotations
 import re
 
 SYSTEM_CARD = "这是系统问题，已记录；你的方案和图片都还在。"
+NOT_PRODUCED_CARD = "这次没生成出来"
+
+
+class NotProduced(ValueError):
+    """Repair and the conservative board both missed a hard gate. Nothing is submitted."""
+
+    error_code = "planning_not_produced"
+    retryable = True
+    retry_action = "retry_planning"
+
+    def __init__(self, message=NOT_PRODUCED_CARD):
+        super().__init__(message)
 BALANCE_CARD = "账户余额或额度不足，已有方案和图片仍保留。请补充额度后再制作。"
 AUTH_CARD = "生成账户的连接需要检查，已有方案和图片仍保留。账户修好后可以重新生成。"
 
@@ -50,12 +62,12 @@ def failure_class(text: str, error_code: str | None = None) -> int:
                 "planning_configuration_failed"}:
         return 2
     if code in {"planning_invalid_response", "planning_response_interrupted", "planning_request_failed",
-                "planning_review_incomplete"}:
+                "planning_review_incomplete", "planning_content_failed", "planning_not_produced"}:
         return 1
     raw = text or ""
     if any(pattern.search(raw) for pattern, _sentence in _MERCHANT_RULES):
         return 2
-    if code in {"planning_content_failed", "planning_request_limit"}:
+    if code in {"planning_request_limit"}:
         return 2
     if _TECHNICAL.search(raw) or not raw.strip():
         return 3

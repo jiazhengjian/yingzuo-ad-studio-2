@@ -22,7 +22,8 @@ def forbid_real_http(monkeypatch):
 
 def fixture_outputs(project, asset, decision):
     brief = {"product_name": "蓝色玻璃瓶", "category": "general", "audience": "关注外观的顾客",
-             "scenario": "商品展示", "facts": [{"id": "f1", "text": "蓝色玻璃瓶", "source_kind": "merchant", "source_id": "brief"}],
+             "scenario": "商品展示", "ad_form": "brand_tvc",
+             "facts": [{"id": "f1", "text": "蓝色玻璃瓶", "source_kind": "merchant", "source_id": "brief"}],
              "unknowns": ["功效未确认"], "assumptions": ["采用外观展示"]}
     direction = {"id": "appearance", "rule_id": "appearance_reveal", "label": "从轮廓看细节",
                  "audience": brief["audience"], "scenario": brief["scenario"], "angle": "外观展示",

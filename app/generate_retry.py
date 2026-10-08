@@ -26,6 +26,7 @@ _REFUSALS = {
     "unknown": "这次提交的受理结果还不清楚，不能再交一次，以免重复扣费。没有新的任务排队。",
     "voice": "台词比这一段更长，再交一次也过不了。请先缩短台词。没有新的任务排队。",
     "rejected": "这次请求被平台拒绝了，同一条不能直接重发。方案和图片还在。没有新的任务排队。",
+    "not_produced": "这次没生成出来。重新生成会按已保存的需求再策划，不会提交图片或视频。没有新的任务排队。",
     "image": "图片没有生成成功，再交一次也不会重画。请修改方案后再试。没有新的任务排队。",
     "paid_failure": "有的片段已经失败，不能整单重交。请使用重试失败片段。没有新的任务排队。",
     "other": "这一步不能直接重做。方案和图片还在。没有新的任务排队。",
@@ -102,6 +103,10 @@ def classify_generate_retry(job: dict, steps) -> tuple[str, str | None]:
         return "account", None
     if code == "provider_request_rejected":
         return "refuse", "rejected"
+    # The plan never became a board that can be submitted. A short "重新生成"
+    # must not post image or video work.
+    if code in ("planning_not_produced", "release_recheck") or (job.get("error") or "") == "这次没生成出来":
+        return "refuse", "not_produced"
     if code == "image_generation_failed":
         return "refuse", "image"
     failed = pending = uncertain = False

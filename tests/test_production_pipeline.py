@@ -26,11 +26,12 @@ def offline(monkeypatch):
 @pytest.fixture
 def cast_setup(tmp_path, plan_data):
     store = Store(tmp_path / "studio.sqlite", tmp_path / "media")
-    project = store.create_project("多层切面蛋糕，办公室下午茶", "product", duration_seconds=10)
+    project = store.create_project("多层切面蛋糕，办公室下午茶", "product", duration_seconds=10, ad_form="brand_tvc")
     path = store.media_root / "product.png"
     path.write_bytes(PNG)
     product = store.add_asset(project["id"], "product", "原图", path, "image/png")
     plan = copy.deepcopy(plan_data)
+    plan["strategy"]["brief"]["ad_form"] = "brand_tvc"
     plan["production"] = {"version": "1.0.0", "product_constraints": [{"text": "保持多层切面", "evidence_ids": ["layers"]}],
         "characters": [{"id": "char_worker", "name": "白领", "description": "浅灰衬衫"},
                        {"id": "char_coworker", "name": "同事", "description": "深色针织衫"}],

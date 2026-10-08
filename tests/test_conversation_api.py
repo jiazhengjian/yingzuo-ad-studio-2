@@ -59,13 +59,19 @@ def clarify(env):
 
 def plan_for(asset_id):
     return {"title": "商品广告", "script": "透明瓶身，光影之间看见细节。了解这款商品。", "cta": "了解详情", "language": "zh-CN", "aspect_ratio": "9:16", "facts": {"name": "玻璃瓶", "claims": []}, "audio_strategy": "voiceover", "segments": [
-        {"id": f"seg_0{i + 1}", "duration_seconds": 10, "purpose": "展示商品", "prompt": "保持商品真实外观，自然柔光，稳定慢推。", "shots": [{"start": 0, "end": 10, "description": "缓慢展示"}], "reference_asset_ids": [asset_id]} for i in range(2)]}
+        {"id": f"seg_0{i + 1}", "duration_seconds": 10, "purpose": "展示商品", "prompt": "保持商品真实外观，自然柔光，稳定慢推。", "shots": [{"start": 0, "end": 10, "description": f"缓慢展示第{i + 1}处"}], "reference_asset_ids": [asset_id]} for i in range(2)]}
 
 
 def ready_plan(env):
     _, app, pid, asset = env
     job = post_turn(env).json()["job"]
     store = app.state.store
+    # Downstream plan checks need a concrete ad type. Keep a type the test
+    # already set, so a later preference change is still a real change.
+    # The shared fixture stays on "auto" until a plan is actually saved.
+    if store.get_project(pid).get("ad_form") not in ("brand_tvc", "scene_story", "presenter_pitch"):
+        with store._connection(True) as connection:
+            connection.execute("UPDATE projects SET ad_form='brand_tvc' WHERE id=?", (pid,))
     store.claim_job(job["id"])
     plan = plan_for(asset["id"])
     options = [{"id": f"choice_{i}", "label": f"开场{i}", "description": f"以第{i}种构图开场", "segment": copy.deepcopy(plan["segments"][0])} for i in (1, 2)]
@@ -499,7 +505,7 @@ def duration_plan(asset_id, total):
         seconds = min(10, remaining)
         segment = copy.deepcopy(template)
         segment.update(id=f"seg_{len(plan['segments']) + 1:02d}", duration_seconds=seconds,
-                       shots=[{"start": 0, "end": seconds, "description": "展示真实商品"}])
+                       shots=[{"start": 0, "end": seconds, "description": f"展示真实商品第{len(plan['segments']) + 1}处"}])
         plan["segments"].append(segment)
         remaining -= seconds
     return plan
@@ -508,7 +514,7 @@ def duration_plan(asset_id, total):
 def duration_project(tmp_path, seconds):
     app = create_app(Settings(data_root=tmp_path / "data", deepseek_api_key="TEST_ONLY", tudou_api_key="TEST_ONLY", max_video_submissions=6), run_worker=False)
     c = TestClient(app)
-    response = c.post("/api/projects", json={"brief": "展示这款商品的真实外观", "duration_seconds": seconds})
+    response = c.post("/api/projects", json={"brief": "展示这款商品的真实外观", "duration_seconds": seconds, "ad_form": "brand_tvc"})
     assert response.status_code == 201
     p = response.json()
     data = io.BytesIO()

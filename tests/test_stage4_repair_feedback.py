@@ -105,8 +105,9 @@ def test_capacity_feedback_does_not_unlock_fixed_speech_or_other_content(progres
     state.brief = "台词逐字保留“看轮廓。”"
     state.first_review_mutation = reject_first_shot
     state.refinement_mutation = lambda value: value["ad_script"]["beats"][0].update(narration="改过的轮廓。")
-    with pytest.raises(ProviderError):
-        state.run()
+    plan = state.run()
+    spoken = "".join(beat.get("narration") or "" for beat in plan["ad_script"]["beats"])
+    assert "看轮廓。" in spoken and "改过的轮廓" not in spoken
     repair = state.contexts[-1]
     assert repair["repair_capacity"]
     assert repair["fixed_speech"] == ["看轮廓。"]

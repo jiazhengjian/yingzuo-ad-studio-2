@@ -152,7 +152,7 @@ def test_unbounded_or_wrong_type_draft_stops_before_director(content_gateway, na
     assert state.calls == ["ad_script"]
 
 
-def test_long_fixed_original_must_not_be_silently_truncated_by_director(content_gateway):
+def test_long_fixed_original_must_not_be_silently_truncated_by_director(content_gateway, settings, source):
     state = content_gateway
     sentence = "这句超过初稿建议长度的完整原话必须保留，分镜不能为了符合字段上限而悄悄删改。"
     assert len(sentence) > 29
@@ -161,10 +161,17 @@ def test_long_fixed_original_must_not_be_silently_truncated_by_director(content_
         lean_response(value)
         value["beats"][0]["narration"] = sentence
     state.draft_mutation = locked_draft
-    # The mock director returns shorter, otherwise valid speech. It cannot
-    # silently substitute that speech for the merchant's fixed original.
-    with pytest.raises(ProviderError):
-        state.run()
+    # The mock director returns shorter speech. The merchant's sentence is not
+    # shortened in secret. When it cannot fit the conservative board, the
+    # existing line card asks them to rewrite, edit, or insist.
+    decision = asyncio.run(Gateway(settings).decide(
+        {"brief": state.brief, "duration_seconds": state.duration}, [source], [], [],
+        None, selected_strategy=state.strategy.model_dump()))
+    assert decision["kind"] == "clarify"
+    assert decision.get("plan") is None
+    question = decision["questions"][0]
+    assert sentence in question["prompt"]
+    assert {option["id"] for option in question["options"]} == {"rewrite", "edit", "insist"}
     assert state.calls == ["ad_script", "storyboard"]
     assert state.contexts[1]["draft_script"]["beats"][0]["narration"] == sentence
     assert state.contexts[0]["fixed_speech"] == state.contexts[1]["fixed_speech"] == [sentence]
@@ -187,7 +194,7 @@ def test_lean_draft_cannot_bypass_final_director_guards(content_gateway, source,
                 shot["evidence_ids"] = []
         state.first_director_mutation = remove_evidence
     if guard == "selected_evidence":
-        with pytest.raises(ProviderError, match="结构不完整"):
+        with pytest.raises(ProviderError, match="这次没生成出来"):
             state.run()
         assert state.calls[0:2] == ["ad_script", "storyboard"]
         assert "plan_review" not in state.calls

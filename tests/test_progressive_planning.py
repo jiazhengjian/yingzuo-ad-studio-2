@@ -496,6 +496,19 @@ def test_renaming_failed_shots_cannot_reset_same_content_problem_count(progressi
     assert state.calls.count("plan_review") == (1 if rename_only else 2)
 
 
+def test_review_repair_stops_at_two_even_when_the_setting_asks_for_more(progressive_gateway, settings):
+    settings.planner_max_refinements = 9
+    state = progressive_gateway
+    state.first_review_mutation = lambda review: reject_shot(review, 0)
+    state.second_review_mutation = lambda review: reject_shot(review, 2)
+    state.third_review_mutation = lambda review: reject_shot(review, 1)
+    state.refinement_mutations = [simplify_shot(0), simplify_shot(2), simplify_shot(1), simplify_shot(1)]
+    plan = state.run()
+    assert plan["segments"]
+    assert state.calls.count("plan_refinement") == 2
+    assert state.calls.count("plan_review") == 3
+
+
 def test_two_round_budget_stops_even_if_remaining_issue_is_new(progressive_gateway):
     state = progressive_gateway
     state.first_review_mutation = lambda review: reject_shot(review, 0)
@@ -604,7 +617,11 @@ def test_alignment_that_never_settles_stops_and_compile_stays_off_the_loop(sourc
 
 def test_content_failure_exposes_only_owned_summary_and_is_not_retryable(source):
     from app.progressive_planning import ProgressivePlanningError, progressive_plan
+    from app.strategy import StrategyRecord
     strategy = chosen_strategy(source)
+    raw = strategy.model_dump()
+    raw["brief"]["ad_form"] = "brand_tvc"
+    strategy = StrategyRecord.model_validate(raw)
     raw = director_output(strategy)
     calls = []
     async def stage_call(system, context, assets):
@@ -627,7 +644,16 @@ def test_content_failure_exposes_only_owned_summary_and_is_not_retryable(source)
     assert recorded[-1]["error_code"] == "planning_content_failed"
     assert "PRIVATE_MODEL_RECEIPT" not in json.dumps(recorded, ensure_ascii=False)
     assert plan["plan_review"]["ready"] is False
-    assert plan["review_status"] == "not_ready"
+    # Soft review failure with the hard-gate table clear is an honest conservative
+    # label. The note names the failed review item. It does not claim the review never ran.
+    assert plan["review_status"] == "conservative_fallback"
+    assert plan["review_status_note"].startswith("综合检查没通过（")
+    assert "镜头" in plan["review_status_note"]
+    assert plan["review_status_note"].endswith("硬门已通过")
+    assert "没有完整的综合检查" not in plan["review_status_note"]
+    assert plan["auto_release"]["note"] == plan["review_status_note"]
+    assert "镜头" in plan["auto_release"]["failed_checks"]
+    assert plan["auto_release"]["repair_rounds"] >= 1
 
 
 @pytest.mark.parametrize("outside", ["beat", "shot", "global_message"])
@@ -663,9 +689,10 @@ def test_incomplete_independent_reviews_never_release_or_invent_passes(progressi
 def test_unknown_fact_stops_before_review_or_refinement(progressive_gateway):
     state = progressive_gateway
     state.first_director_mutation = lambda value: value["ad_script"]["beats"][0].update(evidence_ids=["invented"])
-    with pytest.raises(ProviderError, match="结构不完整"):
+    with pytest.raises(ProviderError, match="这次没生成出来"):
         state.run()
-    assert state.calls == ["ad_script", "storyboard"]
+    assert state.calls[0] == "ad_script" and "storyboard" in state.calls
+    assert state.calls.count("plan_refinement") <= 1
 
 
 def test_fixed_merchant_line_is_checked_before_independent_review(progressive_gateway):
@@ -773,7 +800,7 @@ def test_capacity_repair_cannot_shrink_estimates_without_changing_actual_actions
         value["ad_script"]["beats"][0]["timing"].update(visual_seconds=3,
             action_plan="重新估计本拍三秒可完成。")
     state.refinement_mutation = merely_lower_estimate
-    with pytest.raises(ProviderError, match="容量仍未改善"):
+    with pytest.raises(ProviderError, match="这次没生成出来"):
         state.run()
     assert state.calls == ["ad_script", "storyboard", "plan_refinement", "plan_refinement"]
 
@@ -782,7 +809,7 @@ def test_capacity_repair_stops_if_action_changes_do_not_reduce_overrun(progressi
     state = progressive_gateway
     state.first_director_mutation = overburden_first_beat
     state.refinement_mutation = simplify_shot(0)
-    with pytest.raises(ProviderError, match="容量仍未改善"):
+    with pytest.raises(ProviderError, match="这次没生成出来"):
         state.run()
     assert state.calls == ["ad_script", "storyboard", "plan_refinement"]
 
@@ -833,7 +860,7 @@ def test_deterministic_repair_cannot_bypass_capacity_or_stable_contract(progress
             assert plan["ad_script"]["core_message"] == "省去重复取放，直接辨认同一商品与桌角的关系。"
         assert state.calls == ["ad_script", "storyboard", "plan_refinement", "plan_review"]
     else:
-        with pytest.raises(ProviderError, match="容量仍未改善"):
+        with pytest.raises(ProviderError, match="这次没生成出来"):
             state.run()
         assert state.calls == ["ad_script", "storyboard", "plan_refinement"]
 
@@ -938,8 +965,10 @@ def test_voice_identity_mixup_is_not_marked_ready(progressive_gateway):
     raw = state.strategy.model_dump()
     raw["brief"]["ad_form"] = "brand_tvc"
     state.strategy = _lock_speech(StrategyRecord.model_validate(raw), "character_dialogue")
-    with pytest.raises(ProviderError, match="对不上"):
-        state.run()
+    plan = state.run()
+    from app.release_gate import images_blocked_reason
+    assert images_blocked_reason(plan, strategy=plan.get("strategy")) is None
+    assert plan["production"]["speech_mode"] != "character_dialogue"
     assert "plan_review" not in state.calls
 
 
@@ -948,8 +977,10 @@ def test_presenter_voiceover_is_not_marked_ready(progressive_gateway):
     raw = state.strategy.model_dump()
     raw["brief"]["ad_form"] = "presenter_pitch"
     state.strategy = StrategyRecord.model_validate(raw)
-    with pytest.raises(ProviderError, match="对不上"):
-        state.run()
+    plan = state.run()
+    from app.release_gate import images_blocked_reason
+    assert images_blocked_reason(plan, strategy=plan.get("strategy")) is None
+    assert plan["production"]["speech_mode"] != "voiceover"
     assert "plan_review" not in state.calls
 
 
@@ -1013,7 +1044,11 @@ def test_a_voiceover_story_without_the_speaker_in_frame_is_storyboarded_again(so
 
 def test_identical_shot_text_is_not_marked_ready(source):
     from app.progressive_planning import ProgressivePlanningError, is_degenerate_plan, progressive_plan
+    from app.strategy import StrategyRecord
     strategy = chosen_strategy(source)
+    raw_strategy = strategy.model_dump()
+    raw_strategy["brief"]["ad_form"] = "brand_tvc"
+    strategy = StrategyRecord.model_validate(raw_strategy)
     calls = []
 
     async def stage_call(system, data, assets, max_tokens=7000):
@@ -1027,13 +1062,15 @@ def test_identical_shot_text_is_not_marked_ready(source):
             return board
         return {}
 
-    with pytest.raises(ProgressivePlanningError, match="占位稿不是完成的方案"):
-        asyncio.run(progressive_plan(
-            stage_call=stage_call, on_progress=lambda _phase: None, record_failure=lambda _item: None,
-            strategy=strategy, draft=None, draft_issues=[], duration=20, generation_strategy="continuity_v1",
-            assets=[source], conversation=[], merchant_request="看清蛋糕", current_plan=None,
-            cta_target="none"))
-    assert "storyboard" in calls and "plan_review" in calls
+    plan = asyncio.run(progressive_plan(
+        stage_call=stage_call, on_progress=lambda _phase: None, record_failure=lambda _item: None,
+        strategy=strategy, draft=None, draft_issues=[], duration=20, generation_strategy="continuity_v1",
+        assets=[source], conversation=[], merchant_request="看清蛋糕", current_plan=None,
+        cta_target="none"))
+    from app.release_gate import images_blocked_reason
+    assert images_blocked_reason(plan, strategy=plan.get("strategy")) is None
+    assert not is_degenerate_plan(plan)
+    assert "storyboard" in calls
     board = director_output(strategy)
     for shot in board["shots"]:
         shot["description"] = "巧克力蛋糕放在画面中间，光线稳定。"
@@ -1133,8 +1170,12 @@ def test_stacked_brand_voiceover_is_not_marked_ready_when_it_cannot_be_rewritten
         lambda director, strategy, locked_lines=(), duration_seconds=None: (director, False))
     monkeypatch.setattr("app.line_quality.rewrite_director_if_needed", keep_stack)
     state.first_director_mutation = stack
-    with pytest.raises(ProviderError, match="堆卖点"):
-        state.run()
+    plan = state.run()
+    from app.release_gate import images_blocked_reason
+    assert images_blocked_reason(plan, strategy=plan.get("strategy")) is None
+    assert plan["review_status"] == "conservative_fallback"
+    spoken = "".join(beat.get("narration") or "" for beat in (plan.get("ad_script") or {}).get("beats") or [])
+    assert "负离子" not in spoken and "不吵" not in spoken
     assert "plan_review" not in state.calls
 
 
@@ -1164,7 +1205,10 @@ def test_fixed_line_is_also_protected_during_local_refinement(progressive_gatewa
     state.brief = "台词逐字保留“看轮廓。”"
     state.first_review_mutation = reject_first_shot
     state.refinement_mutation = lambda value: value["ad_script"]["beats"][0].update(narration="改过的轮廓。")
-    with pytest.raises(ProviderError): state.run()
+    plan = state.run()
+    spoken = json.dumps(plan, ensure_ascii=False)
+    assert "看轮廓。" in spoken
+    assert "改过的轮廓" not in spoken
     assert state.calls == ["ad_script", "storyboard", "plan_review", "plan_refinement"]
 
 

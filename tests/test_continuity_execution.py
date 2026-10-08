@@ -29,7 +29,7 @@ def offline(monkeypatch):
 @pytest.fixture
 def prepared(tmp_path, monkeypatch):
     store = Store(tmp_path / "studio.sqlite", tmp_path / "media")
-    project = store.create_project("蓝瓶与办公桌配色", "product", duration_seconds=20)
+    project = store.create_project("蓝瓶与办公桌配色", "product", duration_seconds=20, ad_form="brand_tvc")
     path = store.media_root / "product.png"
     path.write_bytes(PNG)
     product = store.add_asset(project["id"], "product", "原图", path, "image/png")
@@ -185,7 +185,7 @@ def test_continuity_validation_rejects_legacy_shape_without_changing_legacy(prep
 
 def test_new_31_second_plan_uses_two_semantic_groups_not_four_fixed_chunks(prepared):
     store, _, source, _, gateway, settings = prepared
-    project = store.create_project("31秒分组广告", "product", duration_seconds=31)
+    project = store.create_project("31秒分组广告", "product", duration_seconds=31, ad_form="brand_tvc")
     path = store.media_root / "long-product.png"
     path.write_bytes(PNG)
     asset = store.add_asset(project["id"], "product", "商品原图", path, "image/png")

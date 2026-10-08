@@ -804,12 +804,7 @@ def _line_logic_offenses(spoken, form):
 
 def _script_line_offenses(script, strategy, locked_lines, plan=None, duration_seconds=None):
     """Cross-line problems one rewrite should see. Locked lines stay untouched."""
-    form = None
-    if strategy is not None:
-        try:
-            form = script_form(strategy)
-        except (ValidationError, TypeError, ValueError, KeyError):
-            form = None
+    form = _brand_form(strategy)
     spoken = [beat for beat in _beats(script)
               if isinstance(beat, dict) and isinstance(beat.get("narration"), str) and beat["narration"].strip()
               and not _locked(beat["narration"], locked_lines)]
@@ -1030,9 +1025,16 @@ def _brand_form(strategy):
     if strategy is None:
         return None
     try:
-        return script_form(strategy)
+        found = script_form(strategy)
+        if found:
+            return found
     except (ValidationError, TypeError, ValueError, KeyError):
-        return None
+        found = None
+    brief = strategy.get("brief") if isinstance(strategy, dict) else getattr(strategy, "brief", None)
+    form = brief.get("ad_form") if isinstance(brief, dict) else getattr(brief, "ad_form", None)
+    if form in ("scene_story", "brand_tvc", "presenter_pitch"):
+        return form
+    return found
 
 
 def _earliest_tag(text):

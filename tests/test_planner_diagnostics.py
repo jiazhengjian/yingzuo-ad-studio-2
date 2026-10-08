@@ -114,7 +114,12 @@ def test_failed_planner_saves_only_last_response_and_safe_guard_locations(env, m
     files = list((app.state.settings.data_root / "diagnostics").glob("*.json"))
     assert len(files) == 1
     saved = json.loads(files[0].read_text())
-    assert saved == {"stage": "strategy", "model": app.state.settings.planner_model, "raw_output": response}
+    assert saved["stage"] == "strategy"
+    assert saved["model"] == app.state.settings.planner_model
+    assert saved["raw_output"] == response
+    reasons = saved.get("validation_errors") or []
+    assert reasons and any("商品原图" in item.get("msg", "") for item in reasons)
+    assert "REPLAYABLE" not in json.dumps(reasons, ensure_ascii=False)
     assert files[0].stat().st_mode & 0o777 == 0o600
     assert files[0].stat().st_size <= 200 * 1024
     assert "PRIVATE_REQUEST_NOT_FOR_DIAGNOSTIC" not in files[0].read_text()

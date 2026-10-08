@@ -30,6 +30,11 @@ def replace_speech_mode(setup, mode):
                 span["speaker_id"] = "char_worker"
     plan = Plan.model_validate(plan).model_dump()
     store.update_job(old_job["id"], status="canceled")
+    # 对口型对白属于剧情，不能再用产品展示的类型去放行。
+    if mode == "character_dialogue":
+        plan["strategy"]["brief"]["ad_form"] = "scene_story"
+        with store._connection(True) as connection:
+            connection.execute("UPDATE projects SET ad_form='scene_story' WHERE id=?", (project["id"],))
     project = store.update_plan(project["id"], plan)
     job = store.create_job(project["id"], "generate", project["revision"])
     return store, project, plan, settings, job

@@ -29,7 +29,11 @@ from app.planner_transport import planner_api_key, planner_label, planner_provid
 from app.schemas import ContinuityInput, CredentialsInput, CreativeConfirmInput, DirectionSelectInput, GenerateInput, MessageInput, NewProject, PlanInput, ProjectTitleInput, RetryInput, TurnInput
 
 
-PRIVATE_FIELDS = {"path", "source_path", "payload", "snapshot", "raw", "provider_url", "download_url", "lease_until"}
+PRIVATE_FIELDS = {
+    "path", "source_path", "payload", "snapshot", "raw", "provider_url", "download_url", "lease_until",
+    # Kept in storage and backend logs. The merchant API does not return them.
+    "review_status_note", "auto_release",
+}
 _WORKBENCH_ORIGINS = {
     "http://127.0.0.1:8787", "http://localhost:8787",
     "http://127.0.0.1:5173", "http://localhost:5173",
@@ -79,6 +83,8 @@ def public(value):
 
 
 def create_app(settings=None, gateway=None, run_worker=True):
+    from app.release_gate import configure_auto_release_log
+    configure_auto_release_log()
     settings = settings or Settings.from_env()
     store = Store(settings.database_path, settings.media_root)
     gateway = gateway or Gateway(settings)
@@ -328,7 +334,14 @@ def create_app(settings=None, gateway=None, run_worker=True):
         ids = {a["id"] for a in detail["assets"]}
         if any(not set(s.reference_asset_ids).issubset(ids) for s in body.plan.segments):
             raise HTTPException(422, "方案引用了不存在的素材")
-        return public(store.update_plan(project_id, body.plan.model_dump(), expected_revision=body.accepted_revision))
+        from app.release_gate import settle_manual_edit
+        submitted = body.plan.model_dump()
+        plan, error = settle_manual_edit(
+            detail["project"].get("plan"), submitted, detail["project"].get("duration_seconds", 20),
+            project=detail["project"])
+        if error:
+            raise HTTPException(422, error)
+        return public(store.update_plan(project_id, plan, expected_revision=body.accepted_revision))
 
     @app.post("/api/projects/{project_id}/generate")
     def generate(project_id: str, body: GenerateInput):
@@ -372,6 +385,20 @@ def create_app(settings=None, gateway=None, run_worker=True):
             require_planner()
             return {"job": public(store.retry_planning_job(project_id, job["id"]))}
         if job["kind"] == "generate":
+            from app.generate_retry import ACCOUNT_RETRY_CODES
+            code = (job.get("progress") or {}).get("error_code")
+            progress = job.get("progress") or {}
+            # Account and balance refusals retry the same confirmed, unpaid job.
+            # Every other "重新生成" on a generate job starts a text plan. The
+            # button is not a new permission to submit images or video.
+            text_only = code not in ACCOUNT_RETRY_CODES and (
+                code in ("planning_not_produced", "release_recheck")
+                or (job.get("error") or "") == "这次没生成出来"
+                or progress.get("retryable") is False)
+            if text_only:
+                require_planner()
+                idle(project_id)
+                return {"job": public(store.resume_saved_planning(project_id))}
             require_video()
             return {"job": public(store.retry_generate_job(project_id, job["id"]))}
         idle(project_id)

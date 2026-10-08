@@ -77,19 +77,25 @@ def assert_staged_plan(result, stage, compiled):
     actual = copy.deepcopy(result["plan"])
     actual.pop("ad_script", None)
     actual.pop("script_review", None)
+    actual.pop("review_status", None)
+    actual.pop("review_status_note", None)
+    for segment in actual.get("segments") or []:
+        if isinstance(segment, dict):
+            segment.pop("speech_characters_per_tenth", None)
     strategy = actual.pop("strategy")
     assert actual == expected
-    assert strategy["brief"] == stage["brief"]
+    bound = {**stage["brief"], "ad_form": strategy["brief"].get("ad_form")}
+    assert strategy["brief"] == bound
     assert strategy["directions"] == stage["directions"]
     assert strategy["selected_direction_id"] == stage["selected_direction_id"]
-    assert result["planning_brief"] == stage["brief"]
+    assert result["planning_brief"] == bound
     assert result["creative_options"] == []
 
 
 @pytest.fixture
 def setup(tmp_path):
     store = Store(tmp_path / "studio.sqlite", tmp_path / "media")
-    project = store.create_project("蓝色玻璃瓶，展示外形，不承诺功效", "product")
+    project = store.create_project("蓝色玻璃瓶，展示外形，不承诺功效", "product", ad_form="brand_tvc")
     store.add_message(project["id"], "user", project["brief"])
     path = store.media_root / "product.png"
     Image.new("RGB", (16, 16), "blue").save(path)
@@ -210,7 +216,10 @@ def test_answered_question_context_reaches_plan_decision(setup):
     assert any("抖音商品页" in m["content"] for m in gateway.contexts[-1]["messages"])
     expected = AgentDecision.model_validate(decision).model_dump()
     assert result["payload"]["creative_options"] == expected["creative_options"]
-    assert store.get_project(project["id"])["plan"] == expected["plan"]
+    saved = store.get_project(project["id"])["plan"]
+    saved.pop("review_status", None)
+    saved.pop("review_status_note", None)
+    assert saved == expected["plan"]
     assert not gateway.submissions
 
 
@@ -351,14 +360,14 @@ def test_long_voice_fails_after_images_and_cannot_resubmit_same_script(setup, fa
 @pytest.mark.parametrize("duration", [10, 15, 60])
 def test_image_confirmation_precedes_voice_for_selected_duration(setup, fake_media, duration):
     store, _, _, decision, settings = setup
-    project = store.create_project("TEST selected duration", "product", duration_seconds=duration)
+    project = store.create_project("TEST selected duration", "product", duration_seconds=duration, ad_form="brand_tvc")
     path = store.media_root / f"product_{duration}.png"
     Image.new("RGB", (16, 16), "blue").save(path)
     original = store.add_asset(project["id"], "product", "TEST original", path, "image/png")
     durations = [10] * (duration // 10) + ([duration % 10] if duration % 10 else [])
     first = decision["plan"]["segments"][0]
     decision["plan"]["segments"] = [{**copy.deepcopy(first), "id": f"s{i}", "duration_seconds": seconds,
-        "shots": [{"start": 0, "end": seconds, "description": "TEST shot"}],
+        "shots": [{"start": 0, "end": seconds, "description": f"TEST shot {i + 1}"}],
         "reference_asset_ids": [original["id"]]} for i, seconds in enumerate(durations)]
     for option in decision["creative_options"]:
         option["segment"] = {**copy.deepcopy(decision["plan"]["segments"][0]), "prompt": option["segment"]["prompt"]}
@@ -450,7 +459,7 @@ def test_scene_remains_publicly_associated_after_image_confirmation_changes_revi
 
 def test_expected_speech_timeline_keeps_short_tail_and_silent_shot(setup, fake_media):
     store, _, _, decision, settings = setup
-    project = store.create_project("TEST fifteen-second native scene", "product", duration_seconds=15)
+    project = store.create_project("TEST fifteen-second native scene", "product", duration_seconds=15, ad_form="brand_tvc")
     path = store.media_root / "TEST_NATIVE_ORIGINAL.png"
     Image.new("RGB", (16, 16), "blue").save(path)
     original = store.add_asset(project["id"], "product", "TEST original", path, "image/png")

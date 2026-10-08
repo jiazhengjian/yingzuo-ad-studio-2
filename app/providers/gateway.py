@@ -526,6 +526,48 @@ def save_failed_planner_output(settings, stage_result):
                 pass
 
 
+def _owned_check_reasons(reasons):
+    """Concrete check sentences safe to store. No rejected input and no secrets."""
+    saved = []
+    for item in reasons or ():
+        text = str(item).strip() if item is not None else ""
+        if (not text or "\n" in text or len(text) > 200 or re.search(r"[{}\[\]\"']", text)):
+            continue
+        if text not in saved:
+            saved.append(text[:120])
+        if len(saved) == 8:
+            break
+    return saved
+
+
+def save_check_reasons(settings, reasons, *, error_code=None, stage_result=None):
+    """Write the failed check sentences next to any raw model output.
+
+    A diagnostics file that only keeps the model body cannot explain which
+    rule rejected it. Structure checks and content checks both land here.
+    """
+    concrete = _owned_check_reasons(reasons)
+    if not concrete or settings is None:
+        return None
+    errors = [{"loc": ["check"], "type": "content_check", "msg": text} for text in concrete]
+    stage = "plan_check"
+    raw = {"check": "validation"}
+    if isinstance(stage_result, dict):
+        if isinstance(stage_result.get("stage"), str) and stage_result["stage"]:
+            stage = stage_result["stage"]
+        if "raw_output" in stage_result:
+            raw = stage_result["raw_output"]
+    record = {"stage": stage, "raw_output": raw, "validation_errors": errors}
+    if isinstance(error_code, str) and re.fullmatch(r"[a-z0-9_]{1,40}", error_code):
+        record["validation_reasons"] = [error_code]
+    saved = save_failed_planner_output(settings, record)
+    if saved is None and raw != {"check": "validation"}:
+        saved = save_failed_planner_output(settings, {
+            "stage": stage, "raw_output": {"check": "validation"}, "validation_errors": errors,
+            "validation_reasons": record.get("validation_reasons") or []})
+    return saved
+
+
 def save_craft_accept_diagnostic(settings, issues):
     """A directing check stayed after one automatic rewrite. No prompt or merchant error."""
     data_root = getattr(settings, "data_root", None)
@@ -2329,6 +2371,19 @@ class Gateway:
             return decision, candidates, strategy
 
         repair_attempted = False
+        strategy = None
+        # Strategy schema failures already retry once inside this request.
+        # Only a later plan-structure failure uses the plan retry message.
+        checking_plan = False
+        from app.release_gate import MerchantLineChoice, present_checked_plan
+
+        def _line_choice_decision(choice):
+            return AgentDecision.model_validate({
+                "kind": "clarify",
+                "message": (str(choice) or "这句台词需要你选一下。")[:3000],
+                "questions": list(choice.questions),
+            }).model_dump()
+
         try:
             if selected_strategy is not None:
                 strategy = StrategyRecord.model_validate(selected_strategy)
@@ -2539,18 +2594,33 @@ class Gateway:
                 }
 
                 def record_progressive_failure(candidate):
+                    reasons = candidate.get("failed_reasons") if isinstance(candidate, dict) else None
+                    if not reasons and isinstance(candidate, dict) and isinstance(candidate.get("plan_review"), dict):
+                        from app.plan_review import structured_review_reasons
+                        reasons = structured_review_reasons(candidate.get("plan_review"), candidate)
                     if isinstance(candidate, dict) and candidate.get("nonblocking") is True:
                         remember_plan_warning(self.settings, self._plan_warning_holder, candidate)
+                        if reasons:
+                            save_check_reasons(self.settings, reasons,
+                                               error_code=candidate.get("error_code"),
+                                               stage_result=last_stage_result)
                         return
+                    if reasons and isinstance(last_stage_result, dict):
+                        last_stage_result["validation_errors"] = [
+                            {"loc": ["check"], "type": "content_check", "msg": text}
+                            for text in _owned_check_reasons(reasons)]
                     if last_stage_result is None or last_stage_result.get("_diagnostic_saved"):
-                        if last_stage_result is not None and candidate is not None:
+                        if last_stage_result is not None and candidate is not None and not reasons:
                             last_stage_result["validation_candidate"] = copy.deepcopy(candidate)
+                        if reasons:
+                            save_check_reasons(self.settings, reasons, stage_result=last_stage_result)
                         return
-                    if candidate is not None:
+                    if candidate is not None and not reasons:
                         last_stage_result["validation_candidate"] = copy.deepcopy(candidate)
                     save_failed_planner_output(self.settings, last_stage_result)
                     last_stage_result["_diagnostic_saved"] = True
 
+                checking_plan = True
                 plan = await progressive_plan(stage_call=stage_call, on_progress=on_progress,
                     record_failure=record_progressive_failure, strategy=strategy, draft=draft,
                     draft_issues=draft_enum_issues, duration=duration, generation_strategy=generation_strategy,
@@ -2559,13 +2629,14 @@ class Gateway:
                     speech_only=speech_only,
                     max_refinements=getattr(self.settings, "planner_max_refinements", MAX_PLAN_REFINEMENTS),
                     refinement_format=getattr(self.settings, "planner_refinement_format", "sparse_or_full"),
-                    diagnostic_settings=self.settings, cta_target=project_cta_mode(project))
+                    diagnostic_settings=self.settings, cta_target=project_cta_mode(project),
+                    project_id=project.get("id") if isinstance(project, dict) else None)
                 plan["skill_trace"] = copy.deepcopy(skill_trace)
                 from app.progressive_planning import is_degenerate_plan
                 if is_degenerate_plan(plan):
                     raise ProgressivePlanningError(
                         "分镜没有完成，占位稿不是完成的方案。已有方案和素材已保留，尚未开始新的图片或视频生成",
-                        issue_summary=["占位稿不是完成的方案"])
+                        issue_summary=["占位稿不是完成的方案"], error_code="planning_not_produced")
                 ready_message = "广告方案已准备好，创意摘要和分镜见下方。需要修改，直接告诉我；确认后再准备图片。"
                 return AgentDecision.model_validate({"kind": "plan",
                     "message": ready_message,
@@ -2914,33 +2985,54 @@ class Gateway:
                 # Report the actual completed state; the card carries the recommendation.
                 if choice_enabled:
                     plan["skill_trace"] = copy.deepcopy(skill_trace)
+                from app.release_gate import stamp_honest_label
+                stamp_honest_label(plan, strategy, project=project)
                 return AgentDecision.model_validate({"kind": "plan", "message": "广告方案已准备好，创意摘要和分镜见下方。需要修改，直接告诉我；确认后再准备图片。",
-                    "plan": plan, "planning_brief": strategy.brief.model_dump(), "skill_trace": skill_trace if choice_enabled else None},
+                    "plan": plan, "planning_brief": strategy.brief.model_dump() if strategy is not None else None, "skill_trace": skill_trace if choice_enabled else None},
                     context={"require_shot_narration": True}).model_dump()
         except StaleRevision:
             raise
+        except MerchantLineChoice as choice:
+            return _line_choice_decision(choice)
         except PlannerSyntaxResponse:
             salvaged = current_plan if isinstance(current_plan, dict) and current_plan.get("segments") else None
             if salvaged is None:
                 raise
-            salvaged = copy.deepcopy(salvaged)
-            salvaged["review_status"] = salvaged.get("review_status") or "conservative_fallback"
-            salvaged["review_status_note"] = salvaged.get("review_status_note") or "策划回复没有收完，已按保守放行留下上一稿。这条已记下。"
-            brief = salvaged.get("strategy", {}).get("brief") if isinstance(salvaged.get("strategy"), dict) else None
+            try:
+                shown = present_checked_plan(
+                    salvaged, strategy, duration=duration, generation_strategy=generation_strategy,
+                    asset_ids=[item["id"] for item in sources], cta_target=project_cta_mode(project),
+                    project=project,
+                    note="策划回复没有收完，硬门已经核对过上一稿。这条已记下。")
+            except MerchantLineChoice as choice:
+                return _line_choice_decision(choice)
+            if shown is None:
+                raise
+            brief = shown.get("strategy", {}).get("brief") if isinstance(shown.get("strategy"), dict) else None
             decision = {
                 "kind": "plan",
                 "message": "广告方案已准备好，创意摘要和分镜见下方。需要修改，直接告诉我；确认后再准备图片。",
-                "plan": salvaged, "planning_brief": brief,
+                "plan": shown, "planning_brief": brief,
                 "skill_trace": skill_trace if choice_enabled else None,
             }
             try:
                 return AgentDecision.model_validate(decision, context={"require_shot_narration": True}).model_dump()
+            except MerchantLineChoice as choice:
+                return _line_choice_decision(choice)
             except (ValidationError, ValueError, KeyError, TypeError):
-                # A review that does not bind to this board is not the final check.
-                # The fallback stays recorded so images are not a silent pass.
-                salvaged.pop("plan_review", None)
-                salvaged["review_status"] = "conservative_fallback"
-                salvaged["review_status_note"] = "上一稿的检查对不上这一稿，已按保守放行留下分镜。这条已记下。"
+                shown.pop("plan_review", None)
+                shown.pop("review_status", None)
+                try:
+                    rebound = present_checked_plan(
+                        shown, strategy, duration=duration, generation_strategy=generation_strategy,
+                        asset_ids=[item["id"] for item in sources], cta_target=project_cta_mode(project),
+                        project=project,
+                        note="上一稿的检查对不上这一稿，已按硬门重新核对。这条已记下。")
+                except MerchantLineChoice as choice:
+                    return _line_choice_decision(choice)
+                if rebound is None:
+                    raise
+                decision["plan"] = rebound
                 return AgentDecision.model_validate(decision, context={"require_shot_narration": True}).model_dump()
         except PlanningSessionError as exc:
             error = ProviderError(str(exc))
@@ -2953,48 +3045,73 @@ class Gateway:
             if (exc.error_code == "planning_review_incomplete" and isinstance(salvaged, dict)
                     and salvaged.get("segments") and not is_degenerate_plan(salvaged)):
                 try:
-                    brief = salvaged.get("strategy", {}).get("brief") if isinstance(salvaged.get("strategy"), dict) else None
-                    if salvaged.get("review_status") not in ("passed", "repaired", "not_ready", "conservative_fallback"):
-                        review = salvaged.get("plan_review") if isinstance(salvaged.get("plan_review"), dict) else None
-                        if isinstance(review, dict) and review.get("checks") and review.get("ready") is not True:
-                            salvaged["review_status"] = "not_ready"
-                            salvaged["review_status_note"] = "综合检查没有通过，记录已留在方案上。"
-                        else:
-                            salvaged["review_status"] = "conservative_fallback"
-                            salvaged["review_status_note"] = "综合检查没有完成，已按保守放行留下可用分镜。这条已记下。"
+                    shown = present_checked_plan(
+                        salvaged, strategy, duration=duration, generation_strategy=generation_strategy,
+                        asset_ids=[item["id"] for item in sources], cta_target=project_cta_mode(project),
+                        project=project,
+                        note="综合检查没有完成，已按硬门核对留下可用分镜。这条已记下。")
+                    if shown is None:
+                        raise ValueError("no usable plan")
+                    brief = shown.get("strategy", {}).get("brief") if isinstance(shown.get("strategy"), dict) else None
                     return AgentDecision.model_validate({
                         "kind": "plan",
                         "message": "广告方案已准备好，创意摘要和分镜见下方。需要修改，直接告诉我；确认后再准备图片。",
-                        "plan": salvaged, "planning_brief": brief,
+                        "plan": shown, "planning_brief": brief,
                         "skill_trace": skill_trace if choice_enabled else None,
                     }, context={"require_shot_narration": True}).model_dump()
+                except MerchantLineChoice as choice:
+                    return _line_choice_decision(choice)
                 except (ValidationError, ValueError, KeyError, TypeError):
                     pass
             if (last_stage_result is not None and not last_stage_result.get("_diagnostic_saved")
                     and "validation_candidate" not in last_stage_result):
                 save_failed_planner_output(self.settings, last_stage_result)
                 last_stage_result["_diagnostic_saved"] = True
-            error = ProviderError(str(exc))
-            error.error_code, error.retryable = exc.error_code, False
-            from app.story_logic import planning_rerun_storyboard
-            if planning_rerun_storyboard(str(exc), getattr(exc, "issue_summary", ())):
-                error.retryable = True
+            from app.merchant_cards import NOT_PRODUCED_CARD, SYSTEM_CARD
+            from app.planner_recovery import needs_merchant
+            merchant = needs_merchant(str(exc), getattr(exc, "issue_summary", ()))
+            # A hard-gate miss with no passing board is not a content rewrite
+            # request. The merchant can start a new text plan. Their own locked
+            # line keeps the original sentence. Other model failures stay a record.
+            if exc.error_code == "planning_not_produced":
+                error = ProviderError(NOT_PRODUCED_CARD)
+                error.error_code, error.retryable = "planning_not_produced", True
                 error.retry_action = "retry_planning"
             else:
-                error.retry_action = "continue_conversation" if exc.error_code == "planning_review_incomplete" else "edit_plan"
+                error = ProviderError(str(exc) if merchant else SYSTEM_CARD)
+                error.error_code, error.retryable = exc.error_code, False
+                error.retry_action = "edit_plan" if merchant else None
             error.issue_summary = getattr(exc, "issue_summary", [])
             error.repair_attempts = getattr(exc, "repair_attempts", 0)
             raise error from None
         except ValidationError as exc:
             log_planner_validation(exc)
-            save_failed_planner_output(self.settings, last_stage_result)
+            details = []
+            for item in exc.errors(include_url=False, include_context=False, include_input=False)[:12]:
+                details.append({"loc": tuple(item.get("loc") or ()),
+                                "type": item.get("type", "validation_error"),
+                                "msg": item.get("msg", "")})
+            target = last_stage_result if isinstance(last_stage_result, dict) else {
+                "stage": "plan_validation", "raw_output": {"check": "structure"}}
+            target = {**target, "validation_errors": details}
+            save_failed_planner_output(self.settings, target)
             if repair_attempted and repairable_timing_issues(exc):
                 raise PlannerInvalidResponse("画面与旁白的时间对应仍未校正完成；已有方案和素材已保留，尚未开始图片或视频生成") from None
             # Field/type diagnostics remain in the private log, not the product UI.
-            raise PlannerInvalidResponse("规划结果未通过结构校验，已有成果仍保留；尚未开始图片或视频生成") from None
+            # The plan-structure sentence is what the job retries. An entrance
+            # reply that fails its own schema stays failed after its one repair.
+            if checking_plan:
+                raise PlannerInvalidResponse("规划结果未通过结构校验，已有成果仍保留；尚未开始图片或视频生成") from None
+            raise PlannerInvalidResponse("策划回复未通过结构校验；已有成果仍保留，尚未开始图片或视频生成") from None
         except (KeyError, IndexError, ValueError, TypeError, AttributeError) as exc:
             log_planner_guard_failure(exc)
-            save_failed_planner_output(self.settings, last_stage_result)
+            target = last_stage_result if isinstance(last_stage_result, dict) else {
+                "stage": "plan_validation", "raw_output": {"check": "guard"}}
+            reasons = _owned_check_reasons([str(exc)])
+            if reasons:
+                target = {**target, "validation_errors": [
+                    {"loc": ["check"], "type": "content_check", "msg": text} for text in reasons]}
+            save_failed_planner_output(self.settings, target)
             raise PlannerInvalidResponse("策划回复未通过结构或商品依据校验；已有成果仍保留，尚未开始制作") from None
 
     async def plan(self, project, assets, messages, *, on_progress=None, gates=()):
@@ -3006,10 +3123,10 @@ class Gateway:
     async def review_saved_plan(self, plan):
         """One fresh plan review for a saved film whose binding no longer matches.
 
-        The plan text is not rewritten. A review that is not ready, or a call
-        that cannot be checked, stays off the card as a recorded system issue.
+        The plan text is not rewritten. A review that is not ready stays on the
+        plan and generation continues. A call that cannot be checked drops the
+        stale review instead of asking the merchant to modify the plan.
         """
-        from app.merchant_cards import SYSTEM_CARD
         from app.plan_review import lower_failed_plan_verdicts, validate_plan_review
         from app.progressive_planning import PLAN_REVIEW_SYSTEM, saved_plan_review_request
         try:
@@ -3020,9 +3137,11 @@ class Gateway:
                                           require_review_policy=True)
         except Exception as exc:
             log_planner_guard_failure(exc)
-            raise ValueError(SYSTEM_CARD) from None
-        if not review.ready:
-            raise ValueError("方案检查没有通过，已有图片仍保留。请修改方案后再制作。")
+            updated = copy.deepcopy(plan)
+            updated.pop("plan_review", None)
+            updated.pop("review_status", None)
+            updated.pop("review_status_note", None)
+            return updated
         updated = copy.deepcopy(plan)
         updated["plan_review"] = review.model_dump()
         return updated

@@ -302,6 +302,10 @@ def test_answer_survives_restart_and_is_frozen_before_planner_runs(store, answer
 def test_preference_change_is_versioned_without_touching_old_plan_or_render(env):
     _, app, pid, _ = env
     store = app.state.store
+    # The saved plan is a voiceover board. Give it a concrete type first so
+    # “改成产品展示” is still a preference change, not a no-op.
+    with store._connection(True) as connection:
+        connection.execute("UPDATE projects SET ad_form='presenter_pitch' WHERE id=?", (pid,))
     saved, _ = ready_plan(env)
     old_plan = deepcopy(saved["plan"])
     old_version = saved["context_version"]

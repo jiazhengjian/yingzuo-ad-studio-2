@@ -162,9 +162,10 @@ def test_failed_full_recheck_never_repeats_polish_or_normal_repair(scenario, las
 
 def test_fixed_speech_remains_protected_by_compile(scenario):
     scenario.initial_brief = "台词逐字保留“看轮廓。”"
-    with pytest.raises(ProgressivePlanningError) as error:
-        scenario.run()
-    assert "用户固定台词未完整保留" in error.value.issue_summary
+    plan = scenario.run()
+    spoken = "".join(beat.get("narration") or "" for beat in plan["ad_script"]["beats"])
+    assert "看轮廓。" in spoken
+    assert "这轮廓" not in spoken
     assert len(scenario.polishes()) == 1
     assert scenario.calls[-1]["task_kind"] == "final_dialogue_polish"
 

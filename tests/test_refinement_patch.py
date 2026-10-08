@@ -174,8 +174,9 @@ def test_sparse_edits_cannot_change_fixed_speech(progressive_gateway):
     state.brief = "固定台词“看轮廓。”，其他内容可调整。"
     state.first_review_mutation = reject_first_shot
     state.refinement_mutation = patch_response({"beats": [{"id": "b0", "set": {"narration": "换说法。"}}]})
-    with pytest.raises(ProviderError):
-        state.run()
+    plan = state.run()
+    spoken = "".join(beat.get("narration") or "" for beat in plan["ad_script"]["beats"])
+    assert "看轮廓。" in spoken and "换说法" not in spoken
     assert state.calls == ["ad_script", "storyboard", "plan_review", "plan_refinement"]
 
 
@@ -320,8 +321,9 @@ def test_global_patch_still_cannot_change_fixed_original_speech(progressive_gate
     state.brief = "固定台词“看轮廓。”，其他内容可调整。"
     state.first_review_mutation = pacing_review(10)
     state.refinement_mutation = patch_response({"beats": [{"id": "b0", "set": {"narration": "改写了。"}}]})
-    with pytest.raises(ProviderError):
-        state.run()
+    plan = state.run()
+    spoken = "".join(beat.get("narration") or "" for beat in plan["ad_script"]["beats"])
+    assert "看轮廓。" in spoken and "改写了" not in spoken
     assert state.contexts[-1]["repair_scope"]["allow_beat_restructure"] is True
     assert state.calls == ["ad_script", "storyboard", "plan_review", "plan_refinement"]
 
