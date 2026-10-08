@@ -96,11 +96,11 @@
 
 第三阶段将分类展开方法放在共用参考 `shared/script-expression.md`，仅注入 `ad_script / storyboard / plan_refinement / plan_review`。产品展示用产品与视觉关系推进，剧情/场景通过商品参与的人物选择与变化推进，人物讲解由角色向观众解释或演示；这不是三个固定镜头模板。声音按已选约定补信息、解释选择、推进关系或完成必要教学、强调和反差，不把所有带动作动词的话机械判为无效，也不因类型名称自动切换声音身份。共用参考同请求加载并记录版本，不增加一次模型调用。
 
-`ad_script` 同次使用 Script Planning 与 Dialogue Writing，产出核心表达、受众收获、商品作用和有序内容段落。每段区分目的、信息、画面职责、完整台词与 `timing`；后者估计动作/辨认时间、语音能否并行及前后状态。初稿还可协调，不固定句数、镜头数或临时秒点。
+`ad_script` 使用脚本规划（已并入原台词方法），产出核心表达、受众收获、商品作用和有序内容段落。每段区分目的、信息、画面职责、完整台词与 `timing`；后者估计动作/辨认时间、语音能否并行及前后状态。初稿还可协调，不固定句数、镜头数或临时秒点。
 
-`JOINT_PLANNING_ENABLED=true` 且采用当前方向选择/渐进策划时，直接以事实、所选方向、固定要求和声音约定起草，不请求前置 `ad_script`。Storyboard Direction、Dialogue Writing 主文件/示例及一次共用表达参考同请求工作；`authoring_mode=joint` 仅标记初稿，局部修订仍严格使用 `draft_storyboard` 和 `repair_scope`。这是尚未通过速度验收的试验路径：初次真实样例暴露容量超限、多轮返修及失败，本地与示例配置均关闭。关闭开关保留原三阶段，用户确认位置、原稿和媒体不变。
+`JOINT_PLANNING_ENABLED=true` 且采用当前方向选择/渐进策划时，直接以事实、所选方向、固定要求和声音约定起草，不请求前置 `ad_script`。Storyboard Direction、脚本规划主文件/台词示例及一次共用表达参考同请求工作；`authoring_mode=joint` 仅标记初稿，局部修订仍严格使用 `draft_storyboard` 和 `repair_scope`。这是尚未通过速度验收的试验路径：初次真实样例暴露容量超限、多轮返修及失败，本地与示例配置均关闭。关闭开关保留原三阶段，用户确认位置、原稿和媒体不变。
 
-`CONTENT_DRAFT_ENABLED=true` 是另一条默认关闭的初稿试验，只在方向选择、渐进策划有效且 joint 关闭时生效。保留 `ad_script → storyboard → plan_review` 三次调用；第一步只生成 `ContentDraft.beats` 的实际话语、可见内容与事实引用，不伪造摘要、目的、时长或动作容量。内部 Skill 分支为 `content_draft`，传输及进度阶段仍为 `ad_script`。既有导演阶段首次填写完整 `AdScript`、动作状态、时间需求和镜头，后续编译、固定要求、容量及综合审核全部保留。有效开关进入会话身份，禁止两种草稿的检查点混用。
+`CONTENT_DRAFT_ENABLED=true` 是另一条默认关闭的初稿试验，只在方向选择、渐进策划有效且 joint 关闭时生效。保留 `ad_script → storyboard → plan_review` 三次调用；第一步只生成 `ContentDraft.beats` 的实际话语、可见内容与事实引用，不伪造摘要、目的、时长或动作容量。传输及进度阶段仍为 `ad_script`。它不再单独加载 content-draft 附录，技能资源与脚本规划的 `ad_script` 相同。既有导演阶段首次填写完整 `AdScript`、动作状态、时间需求和镜头，后续编译、固定要求、容量及综合审核全部保留。有效开关进入会话身份，禁止两种草稿的检查点混用。
 
 轻量路径的作者输入不再把已选方向前的 `brief.assumptions` 当作新要求；这只作用于带 `draft_format=content_only` 且存在已选 production 的模型输入。原始用户消息、带来源事实、unknowns、创意含义及制作约定保留，存档和完整检查点签名不删该字段。已选方向约束意义与必要信息，只有用户明确固定原句才锁文字。
 
@@ -194,7 +194,7 @@ SQLite 任务记录和租约承担持久执行状态。`fcntl` 文件锁防止�
 
 ## 历史四阶段兼容
 
-普通产品使用新的三核心阶段；未提供 `progressive_planning_enabled` 字段的旧自定义适配器保留选择后的 `ad_script → script_review → storyboard → alignment_review` 四阶段协议。旧 `ScriptReview` 可读，旧脚本/声画 Skill 分支按原阶段加载；旧分镜及结构修复通过 `legacy_storyboard` 加载固定时轴资源，避免与新 DirectorDraft 合同混用。执行追溯保留这一实际兼容资源阶段，这不是常规新流程的额外审核。
+普通产品使用新的三核心阶段；未提供 `progressive_planning_enabled` 字段的旧自定义适配器保留选择后的 `ad_script → script_review → storyboard → alignment_review` 四阶段协议。旧 `ScriptReview` 记录仍可读。这些旧资源阶段不再单独注册：写稿试验和旁白初稿改加载脚本规划的 `ad_script` 资源，旧分镜改加载当前分镜资源，旧脚本审核和旧对齐审核改加载方案审核资源。这不是把参考检索或成片质检接进默认流程。
 
 旧路径的 `storyboard_repair` 仍只处理原合同允许的时间或引用问题，并保留其原有次数、固定内容及取消/版本保护。新路径的最终时间由程序派生，不叠加这次旧修复请求；新路径的容量与局部内容修正合计最多两次 `plan_refinement`，无改善可提前停止。传输错误、解析错误、未知事实、非法引用或缺项不能伪装成可以自动修好的审核失败。
 

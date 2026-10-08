@@ -25,6 +25,15 @@ def enrich_planner_stage(data, *, legacy_storyboard=False):
         skill_stage = "storyboard"
     if skill_stage == "storyboard" and legacy_storyboard:
         skill_stage = "legacy_storyboard"
+    # Retired resource branches keep their protocol stages. Callers still run;
+    # they load the skill that now owns the method.
+    skill_stage = {
+        "content_draft": "ad_script",
+        "speech_draft": "ad_script",
+        "legacy_storyboard": "storyboard",
+        "script_review": "plan_review",
+        "alignment_review": "plan_review",
+    }.get(skill_stage, skill_stage)
     playbook_form = (resolve_playbook_form(data.get("ad_form"), structure_from_stage_data(data))
                      if "ad_form" in data else None)
     data["tagline_policy"] = tagline_policy()
@@ -45,9 +54,6 @@ def enrich_planner_stage(data, *, legacy_storyboard=False):
     if stage in ("ad_script", "script_review") and isinstance(data.get("creative_strategy"), dict):
         data["creative_strategy"].pop("selected_direction", None)
     data["output_style"] = "字段简洁完整；共享人物外观、商品形态和场所不逐段复述。动作状态只写理解接续所必需的变化；审核只给可定位结论，不重述整份方案。"
-    if stage == "strategy":
-        data["orchestrator_skills"] = stage_skill_context("orchestrator")
-        bundles.insert(0, data["orchestrator_skills"])
     for key in ("runtime_skill", "ad_expression_skill"):
         if isinstance(data.get(key), dict):
             data[key] = {k: v for k, v in data[key].items() if k != "content"}

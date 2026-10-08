@@ -738,7 +738,8 @@ def test_decision_prompt_does_not_offer_unverified_product_claims(setup, monkeyp
         assert "候选的rule_id各不相同" in system and "不能只是换标题或运镜" in system
         assert "资料受限时允许只给一个方向" in system
         assert "没有新增确认门、营销报告、独立结尾字卡或强制购买引导" in system
-        assert "不承诺高转化、自然音色或已验证声画同步" in system
+        assert "不承诺高转化或自然音色" in system
+        assert "已验证声画同步" not in system
         return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(CLARIFY)}}]})
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: real_client(*a, transport=httpx.MockTransport(handle), **kw))
     result = asyncio.run(Gateway(settings).decide(project, [asset], [], [], None))

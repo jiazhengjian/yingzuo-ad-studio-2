@@ -106,7 +106,9 @@ def test_enabled_content_draft_is_only_a_first_stage_before_complete_plan_review
         assert content["selected_direction"][key] == selected.model_dump()[key]
     assert content["brief"]["facts"] == director["brief"]["facts"] == [f.model_dump() for f in state.strategy.brief.facts]
     assert plan["strategy"] == state.strategy.model_dump()
-    assert any(item["stage"] == "content_draft" for item in plan["skill_trace"])
+    assert content["stage_skills"]["stage"] == "ad_script"
+    assert content["stage_skills"]["skills"][0]["id"] == "ads-video-script-planning"
+    assert all(item["stage"] != "content_draft" for item in plan["skill_trace"])
     assert review["execution_windows"]
     assert Plan.model_validate(plan).plan_review["ready"] is True
     assert all(beat["timing"] and beat["purpose"] and beat["message"] for beat in plan["ad_script"]["beats"])

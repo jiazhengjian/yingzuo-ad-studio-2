@@ -93,7 +93,7 @@ def test_empty_review_retries_exact_same_stage_once_without_reloading_skills(env
     assert "上一轮没有返回正文" in json.dumps(review_bodies[1], ensure_ascii=False)
     assert progresses.count("retrying_planner") == 1
     assert Counter(trace["stage"] for trace in traces) == {
-        "orchestrator": 1, "strategy": 1, "direction_review": 1}
+        "strategy": 1, "direction_review": 1}
     assert result.get("plan") is None
     assert [asset["kind"] for asset in env[1].state.store.project_detail(env[2])["assets"]] == ["product"]
 

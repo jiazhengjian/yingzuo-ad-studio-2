@@ -68,9 +68,11 @@ def test_only_the_matching_playbook_is_injected():
     assert len(set(hashes.values())) == 3
     assert _ids("strategy", "auto") == ["product-evidence", "ad-form-contract", "ad-form-playbook-index"]
     assert "ad-form-playbook-brand-tvc" not in _ids("ad_script", "auto")
-    brand_copy = stage_skill_context("speech_draft", playbook_form="brand_tvc")
-    assert [item["id"] for item in brand_copy["shared_references"]] == ["ad-form-playbook-brand-tvc"]
-    assert stage_skill_context("speech_draft")["shared_references"] == []
+    with pytest.raises(ValueError, match="尚未绑定"):
+        stage_skill_context("speech_draft", playbook_form="brand_tvc")
+    brand_script = stage_skill_context("ad_script", playbook_form="brand_tvc")
+    assert [item["id"] for item in brand_script["shared_references"]] == [
+        "script-expression", "ad-form-playbook-brand-tvc"]
 
 
 def test_auto_uses_the_selected_structure_after_a_direction_exists():

@@ -22,8 +22,11 @@ def test_same_shared_method_reaches_three_actual_requests_and_provenance(progres
         assert context["speech_requirements"]["speech_mode"] == "voiceover"
     assert methods[0] == methods[1] == methods[2]
     assert plan["plan_review"]["ready"]
-    for stage in ("strategy", "direction_review", "legacy_storyboard", "script_review"):
+    for stage in ("strategy", "direction_review"):
         assert "script-expression" not in [item["id"] for item in stage_skill_context(stage)["shared_references"]]
+    for stage in ("legacy_storyboard", "script_review"):
+        with pytest.raises(ValueError, match="尚未绑定"):
+            stage_skill_context(stage)
 
 
 def test_final_review_sees_actual_lines_and_pictures_not_claimed_speech_purpose(progressive_gateway):

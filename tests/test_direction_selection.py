@@ -474,7 +474,7 @@ def test_real_gateway_pauses_then_uses_only_selected_direction(env, monkeypatch,
         calls.append(stage)
         assert context["stage_skills"]["skills"]
         if stage == "strategy":
-            assert context["orchestrator_skills"]["stage"] == "orchestrator"
+            assert "orchestrator_skills" not in context
             assert context["allowed_decisions"] == ["reply", "clarify", "directions"]
             required = context["schema"]["$defs"]["CreativeDirection"]["required"]
             assert {"product_expression", "consumer_insight", "hook_type", "brand_world", "film_concept", "hook", "payoff", "reason"} <= set(required)
@@ -613,7 +613,7 @@ def test_real_gateway_pauses_then_uses_only_selected_direction(env, monkeypatch,
     else:
         assert plan["script_review"]["ready"] and plan["alignment_review"]["ready"]
         assert plan.get("plan_review") is None
-    assert plan["skill_trace"][0]["stage"] == ("ad_script" if historical_choice else "orchestrator")
+    assert plan["skill_trace"][0]["stage"] == ("ad_script" if historical_choice else "strategy")
     assert next(d for d in plan["strategy"]["directions"] if d["id"] == "direction_1") == selected_direction
     assert all("content" not in trace for trace in plan["skill_trace"])
     assert app.state.store.pending_gate(pid) is None

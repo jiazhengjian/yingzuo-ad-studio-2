@@ -32,9 +32,10 @@ def test_fresh_direction_schema_stays_smaller_than_the_essay_contract():
     # Essay contract was 11425, then the one-line card was 9842.
     # The picture card is 10109. Skeleton fields, then plain-language card descriptions.
     # Gender is one optional field. The direction description no longer asks for clothes.
+    # side_proof 的说明不再重复「价格」，校验仍拒绝价格。
     typed = packed("brand_tvc")
-    assert len(typed) == 10775
-    assert len(packed()) == 10993
+    assert len(typed) == 10772
+    assert len(packed()) == 10990
     direction = strategy_decision_schema(new_directions=True, ad_form="brand_tvc")["$defs"]["CreativeDirection"]["properties"]
     film = strategy_decision_schema(new_directions=True, ad_form="brand_tvc")["$defs"]["FilmConcept"]["properties"]
     assert "key_visual" in film and "memory_anchor" not in film

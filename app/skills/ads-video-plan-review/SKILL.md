@@ -9,7 +9,6 @@ description: 按当前模式独立检查方向或实际最终方案，给出证�
 
 - `direction_review`：[方向审核](references/direction-review.md)，使用本阶段共享的商品依据与广告形式合同。
 - `plan_review`：[最终方案综合审核](references/plan-review.md)，检查程序排时后的完整方案，区分必须阻断的问题与不阻断的改进建议，不悄悄改稿后自行放行。
-- 仅兼容旧任务的 `script_review`、`alignment_review` 分别使用 [脚本审核](references/script-review.md)、[声画审核](references/alignment-review.md)；不混入新流程。
 
 作者目的、自述已修好、事实 ID 与结构校验均不能代替内容证据。一次报告可确认的问题与位置，缺输入如实说明。最终方案中的事实、明确要求、必要声画关系和可执行性未满足时必须阻断；普通表达、审美不足，以及相对类型 playbook 的开场、节拍、台词密度、镜头、出镜或定格偏差，按对应方法列建议。程序附加的 shot_craft，以及「台词是否对焦商品、前后连贯」（kind 为 line_focus），同样只是建议。不因此判硬项失败，也不以建议掩盖无法确认的必要条件。六项 checks 保持不变。修订后仍完整检查实际产物，不只检查上次失败项。
 

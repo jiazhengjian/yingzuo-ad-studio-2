@@ -6,7 +6,7 @@
 
 由 Python 工作流选择阶段，[runtime_skills.py](../app/runtime_skills.py) 按注册表加载该阶段允许的文件，[Gateway.decide](../app/providers/gateway.py) 将内容放入同一次模型请求的上下文。模型在入口可提出 `reply / clarify / directions / plan` 等允许的决定，不能自行读取任意 Skill、增加审核轮次或提交媒体。
 
-`ads-video-orchestrator` 是入口的意图、澄清和反馈解释方法，与策略 Skill 合并使用；它不是额外运行的主 Agent，也不负责调用其他模型。修改其文字不会改变程序的确认、预算和状态机。
+入口的意图、澄清、反馈解释和商品理解写在策略主提示里，与声音方向同一次使用。它不是额外运行的主 Agent，也不负责调用其他模型。修改这些文字不会改变程序的确认、预算和状态机。
 
 ## 四层职责
 
@@ -25,9 +25,9 @@
 | --- | --- | --- |
 | [product-evidence.md](../app/skills/shared/product-evidence.md) | 商品主张、图片观察与创作假设的依据边界；本轮广告必需内容与可选资料的区别及逐候选覆盖 | `strategy`、`direction_review` |
 | [ad-form-contract.md](../app/skills/shared/ad-form-contract.md) | 三种主要表达方式及创作意图/影片概念的共同约定 | `strategy`、`direction_review` |
-| [script-expression.md](../app/skills/shared/script-expression.md) | 沿已选类型展开脚本；画面与声音分工、有效同述与机械动作播报、角色及局部出镜的表达方法 | `ad_script`、`storyboard`、`plan_refinement`、`plan_review`、`content_draft` |
+| [script-expression.md](../app/skills/shared/script-expression.md) | 沿已选类型展开脚本；画面与声音分工、有效同述与机械动作播报、角色及局部出镜的表达方法。不编价格只写在这里 | `ad_script`、`storyboard`、`plan_refinement`、`plan_review` |
 | [ad-form-playbooks/index.md](../app/skills/shared/ad-form-playbooks/index.md) | 推荐类型时的三种骨架短索引 | 仅 `ad_form=auto` 的 `strategy`、`direction_review` |
-| [brand-tvc.md](../app/skills/shared/ad-form-playbooks/brand-tvc.md) | 产品展示的开场、节拍、短旁白、镜头和英雄定格 | 该类型的策略、写稿、分镜、审核；另含 `speech_draft` |
+| [brand-tvc.md](../app/skills/shared/ad-form-playbooks/brand-tvc.md) | 产品展示的开场、节拍、短旁白、镜头和英雄定格。产品片句数只写在这里 | 该类型的策略、写稿、分镜、审核 |
 | [scene-story.md](../app/skills/shared/ad-form-playbooks/scene-story.md) | 剧情／场景的处境、一个包袱、短对白和定格 | 该类型的策略到综合审核 |
 | [presenter-pitch.md](../app/skills/shared/ad-form-playbooks/presenter-pitch.md) | 人物讲解的直视开场、讲加演示和更高台词密度 | 该类型的策略到综合审核 |
 
@@ -37,19 +37,18 @@
 
 | 程序阶段 | 实际模型指令 | 说明 |
 | --- | --- | --- |
-| 入口 `strategy` | Orchestrator + Sound Direction + Product Understanding + Creative Strategy；两份共用参考 | 一次请求，可回复/澄清，或先写六个短概念再展开三个有效方向；程序只记录贪心选择 |
+| 入口 `strategy` | 主提示里的入口判断与商品理解 + Sound Direction（含原创意策略、`film-concept.md`、`direction-comparison.md`）；商品依据与广告形式合同。类型未定时加短索引 | 一次请求，可回复/澄清，或先写六个短概念再展开三个有效方向；程序只记录贪心选择 |
 | `direction_review` | Plan Review 主文件 + `direction-review.md`；两份共用参考 | 一次独立审核，只修没有依据的主张，不改写创意身份 |
-| `ad_script` | Script Planning + Dialogue Writing 及其声音参考；`script-expression` 共用参考 | 同一次请求联合完成分类内容稿和台词 |
-| `content_draft`（试验内部资源分支，传输仍为 `ad_script`） | Script Planning 主入口 + `content-draft.md`；Dialogue 主文件/示例；共用表达方法 | 只写实际台词与画面内容，完整动作、状态和估时交既有分镜阶段 |
-| `speech_draft`（默认关闭的候选，传输仍为 `ad_script`） | 独立 Voiceover Draft 短方法；仅已选产品视觉展示与画外音 | 原始事实先写整段旁白；替换原起稿，导演仍拿完整策略，不添加模型请求。人工简报样本不等于自动路径已验证 |
-| `line_rewrite`（只在台词检查命中时发生，传输阶段仍是 `ad_script`） | Dialogue Writing 主文件与台词示例 | 只重写策划腔、绝对化或购买引导的句子；不加载整份脚本规划、时长参考或类型 playbook |
-| `storyboard` | Storyboard Direction + `coordinated-storyboard.md`、Dialogue Writing 主文件与台词示例；`script-expression` 一次共用参考 | 可直接联合起稿，或协调既有内容稿；时轴由程序派生 |
-| `plan_refinement` | Storyboard Direction + `coordinated-storyboard.md`；`script-expression` 共用参考 | 仅按实际失败稿与程序范围修正，不重写联合初稿 |
-| `plan_review` | Plan Review + `plan-review.md`；`script-expression` 共用参考 | 独立审查程序排时后的完整最终方案，只审不改 |
-| 旧 `legacy_storyboard` | Storyboard Direction + `legacy-storyboard.md` | 兼容固定已审稿和旧时轴，当前默认流程不加载此参考 |
-| 旧 `script_review`、`alignment_review` | Plan Review + 对应旧参考 | 旧适配器分拆审核，当前默认流程不加载 |
+| `ad_script` | Script Planning（含原台词的时长、声画和示例）+ `script-expression` | 同一次请求完成内容稿和台词 |
+| `line_rewrite`（只在台词检查命中时发生，传输阶段仍是 `ad_script`） | Script Planning 主文件与台词示例 | 只重写列出的句子；不加载 `timed-script.md`、时长参考、声画参考或类型 playbook |
+| `storyboard` | Storyboard Direction + `coordinated-storyboard.md`，以及 Script Planning 主文件与台词示例；`script-expression` 一次 | 可直接联合起稿，或协调既有内容稿；时轴由程序派生 |
+| `plan_refinement` | Storyboard Direction + `coordinated-storyboard.md`；`script-expression` | 仅按实际失败稿与程序范围修正 |
+| `shot_craft_rewrite` | Storyboard Direction + `shot-literal.md` | 只改点名镜头的字面写法 |
+| `plan_review` | Plan Review + `plan-review.md`；`script-expression` | 独立审查程序排时后的完整最终方案，只审不改 |
 
 开启联合起稿时，方向选择后为文案与分镜同稿 → 程序排时 → 综合审核，正常两次模型请求；关闭开关保留内容稿 → 分镜协调 → 综合审核。正常新方向仍是生成与方向审核两次请求；没有因为拆参考增加调用。有限返修、窄台词收尾和审核记录恢复的次数由程序约束，具体运行结果见 [VALIDATION.md](VALIDATION.md)，不在各 Skill 重复维护预算数字。
+
+`content_draft`、`speech_draft`、`legacy_storyboard`、`script_review`、`alignment_review` 已从加载表删除，对应附录也不再保留。默认关闭的内容初稿、旁白初稿，以及旧适配器的分镜和分拆审核如果仍被调用，会改用上表现有阶段的资源：初稿用 `ad_script`，旧分镜用 `storyboard`，旧审核用 `plan_review`。直接按这些旧名字取 Skill 会失败。Reference Research 与 Video Review 仍不进入默认流程。
 
 ## 编译模板与尚未接入能力
 
@@ -80,7 +79,7 @@
 
 人物声音延续的执行权限由 Python 合同维护：`production.speech_delivery` 缺省或为 `visible_only` 时仍要求说话全程可见；只有显式 `on_and_off_screen` 才允许已确认的同一 `speaker_id` 延续到商品或局部画面。综合审核逐句检查所有相交镜头的 `shot_visibility`，整片至少有一处同一人物可见开口，未知可见性不得通过。`appearance=partial_only` 明确只露手、头发或身体局部，仍是角色，不能充当 `character_dialogue` 的唯一说话者；旧记录不回填这两个字段。
 
-声音和出镜方法由 Sound Direction、Script Planning、Storyboard Direction 与 Plan Review 分别执行；视频编译器保留同一人延续及局部不露脸要求，仍不声称已验证声纹、口型或生成画面。第三阶段的工程检查与真实文本检查分开记录，见 [STAGE3_ACCEPTANCE.md](STAGE3_ACCEPTANCE.md) 和 [VALIDATION.md](VALIDATION.md)，不能把接线完成标成三类内容或成片全部通过。
+谁说话、画外和内心独白只在 Sound Direction 决定。脚本、分镜和审核沿用已选形式。角色参考的横版版式只在图片提示词；视频提示词仍能认出旧的 2×2 四格。第三阶段的工程检查与真实文本检查分开记录，见 [STAGE3_ACCEPTANCE.md](STAGE3_ACCEPTANCE.md) 和 [VALIDATION.md](VALIDATION.md)，不能把接线完成标成三类内容或成片全部通过。
 
 ## 来源与改编
 

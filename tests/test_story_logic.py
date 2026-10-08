@@ -1277,8 +1277,9 @@ def test_a_line_said_alone_drops_lip_sync_even_when_someone_else_is_awake():
     assert "再进一点点。" in prompt
     playbook = Path("app/skills/shared/ad-form-playbooks/scene-story.md").read_text()
     review = Path("app/skills/ads-video-plan-review/references/plan-review.md").read_text()
+    sound = Path("app/skills/ads-video-sound-direction/SKILL.md").read_text()
     assert "再进一点点。" in playbook and "再进一点点。" in review
-    assert "这一镜里没有另一个醒着的人" in playbook
+    assert "这一镜里没有另一个醒着的人" in sound
 
 
 def test_bare_wear_is_stripped_and_shot_gender_is_locked():

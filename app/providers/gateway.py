@@ -2683,7 +2683,7 @@ class Gateway:
                 if on_progress:
                     on_progress("refining_script" if script_feedback else "reviewing_script")
                 review_input = script_context(strategy, duration, script=None if draft_enum_issues else draft, generation_strategy=generation_strategy,
-                    skill_stage="script_review" if choice_enabled else None, cta_target=project_cta_mode(project))
+                    skill_stage="plan_review" if choice_enabled else None, cta_target=project_cta_mode(project))
                 if draft_enum_issues:
                     review_input.update(draft_script=copy.deepcopy(draft), draft_validation_issues=draft_enum_issues,
                         draft_schedule_status="unavailable_until_schema_repaired",

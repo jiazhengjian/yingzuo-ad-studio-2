@@ -71,9 +71,8 @@ def test_other_speech_modes_require_existing_authoring_path(source):
         speech_draft_context(strategy, 20, "", "", [], [])
 
 
-def test_copy_skill_is_only_loaded_for_explicit_copy_stage():
-    copy_stage = stage_skill_context("speech_draft")
-    assert [s["id"] for s in copy_stage["skills"]] == ["ads-video-voiceover-draft"]
-    assert copy_stage["shared_references"] == []
-    for stage in ("strategy", "ad_script", "content_draft", "storyboard", "plan_review"):
+def test_copy_skill_is_not_a_registered_stage():
+    with pytest.raises(ValueError, match="尚未绑定"):
+        stage_skill_context("speech_draft")
+    for stage in ("strategy", "ad_script", "storyboard", "plan_review"):
         assert "ads-video-voiceover-draft" not in {s["id"] for s in stage_skill_context(stage)["skills"]}

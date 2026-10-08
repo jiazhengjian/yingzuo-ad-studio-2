@@ -60,7 +60,8 @@ def test_speech_draft_replaces_first_call_without_inventing_beats(speech_gateway
     assert content["speech_draft_version"] == director["speech_draft_version"] == SPEECH_DRAFT_VERSION
     assert set(content["schema"]["properties"]) == {"narration", "hook_options", "closing_options"}
     assert content["schema"]["required"] == ["narration"]
-    assert content["stage_skills"]["stage"] == "speech_draft"
+    assert content["stage_skills"]["stage"] == "ad_script"
+    assert content["stage_skills"]["skills"][0]["id"] == "ads-video-script-planning"
     assert "source_context" not in content
     assert director["draft_speech"] == {"narration": "给忙碌的桌角，留一点自己的喜欢。"}
     assert not {"draft_script", "draft_capacity", "draft_capacity_basis"}.intersection(director)
@@ -71,7 +72,8 @@ def test_speech_draft_replaces_first_call_without_inventing_beats(speech_gateway
     assert plan["strategy"] == before == state.strategy.model_dump()
     assert Plan.model_validate(plan).plan_review["ready"]
     assert "draft_speech" not in review
-    assert any(trace["stage"] == "speech_draft" for trace in plan["skill_trace"])
+    assert any(trace["id"] == "ads-video-script-planning" and trace["stage"] == "ad_script" for trace in plan["skill_trace"])
+    assert all(trace["stage"] != "speech_draft" for trace in plan["skill_trace"])
 
 
 @pytest.mark.parametrize("excluded", ["off", "content", "joint", "scene", "presenter",

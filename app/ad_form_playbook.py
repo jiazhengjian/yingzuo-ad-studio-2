@@ -260,7 +260,7 @@ def ending_policy(form: str | None, cta_target: str | None = None) -> dict:
     """
     from .cta import is_explicit_cta, spoken_cta_line
 
-    hold = "结尾留出至少2秒不说话，商品停在画面里。不编链接、地址、门牌或价格。"
+    hold = "结尾留出至少2秒不说话，商品停在画面里。不编链接、地址或门牌。"
     if form == "scene_story":
         instruction = (
             "剧情片尾停在故事里。家用物品留在它该在的位置，例如放回台面或支架，不要跟着人出门。"

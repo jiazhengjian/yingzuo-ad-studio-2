@@ -167,7 +167,7 @@ def _reference_lines(segment, spoken=""):
             referenced_characters.add(cid)
             character = characters[cid]
             if role.get("sheet_layout") == "horizontal_16x9":
-                sheet = "左侧是脸部和上胸特写，右侧同一排依次是正面、侧面、背面全身；版式不进入视频。"
+                sheet = "版式不进入视频。"
             else:
                 # Saved 2×2 sheets predate the horizontal contact sheet.
                 sheet = "统一其外貌与服装；四格版式不进入视频。"
