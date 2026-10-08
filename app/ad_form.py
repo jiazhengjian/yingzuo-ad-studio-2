@@ -207,6 +207,18 @@ def answer_ad_form(answer):
     return explicit_ad_form(answer.get("text", ""))
 
 
+_PRODUCT_NAME_ASK = re.compile(
+    r"产品名称|商品名称|产品名|商品名|叫什么名字|叫什么名|名称是什么|名字是什么|产品叫什么|商品叫什么"
+)
+
+
+def asks_product_name(question):
+    """A merchant is not asked to name the product. The category stays internal."""
+    if not isinstance(question, dict):
+        return False
+    return bool(_PRODUCT_NAME_ASK.search(str(question.get("prompt") or "")))
+
+
 def pack_clarification_questions(model_questions, project, messages=(), gates=(), *, planning_requested=False):
     """Fixed questions take the card first. The model fills only the slots left.
 
@@ -242,6 +254,8 @@ def pack_clarification_questions(model_questions, project, messages=(), gates=()
         if fixed and spec_question(item):
             continue
         if ask_audience and displaced_audience(item):
+            continue
+        if asks_product_name(item):
             continue
         rest.append(item)
     return [*fixed, *rest[: 4 - len(fixed)]]
@@ -378,13 +392,15 @@ def intake_strategy_response(raw, project, *, ask_preference=True, messages=(), 
         authored_questions = result.get("questions", [])
         if not isinstance(authored_questions, list) or any(not isinstance(q, dict) for q in authored_questions):
             raise ValueError("澄清问题须为对象列表")
-        questions = [q for q in authored_questions if q.get("id") != "ad_form"]
-        if form is not None and not questions:
+        questions = [q for q in authored_questions if q.get("id") != "ad_form" and not asks_product_name(q)]
+        if form is not None and not questions and not any(asks_product_name(q) for q in authored_questions):
             # A redundant form-only clarification should not force a user to
             # answer again. The existing one-shot correction can reroute it.
             raise ValueError("广告倾向已确认，不应重复提问；根据已有信息回复或继续策划")
         result["questions"] = pack_clarification_questions(
             questions, project, messages, gates, planning_requested=planning_requested)
+        if not result["questions"]:
+            raise ValueError("不要向商家询问产品名称；根据已有品类继续策划")
     elif ask_preference and kind in ("directions", "plan"):
         # A fresh offer still asks a missing selling point or audience, even
         # when the model skipped clarify and returned directions. Editing or

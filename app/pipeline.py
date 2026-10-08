@@ -70,21 +70,10 @@ def video_submission_spec(plan, segment, assets=None):
         spec["facts"] = {"name": facts["name"].strip()}
     if assets is not None:
         spec["reference_asset_ids"] = [asset["id"] for asset in assets]
-        visible = [asset for asset in assets if asset["kind"] in ("product", "scene", "character") or (
-            asset["kind"] == "start_frame" and (asset.get("metadata") or {}).get("state_reference"))]
+        visible = [asset for asset in assets if asset["kind"] in ("product", "scene", "character")]
         spec["reference_roles"] = []
         for index, asset in enumerate(visible, 1):
-            meta = asset.get("metadata") or {}
-            if asset["kind"] == "start_frame":
-                role = {"index": index, "role": "state", "phase": meta.get("phase"),
-                        "shot_id": meta.get("shot_id"), "label": meta.get("state_label")}
-                if isinstance(meta.get("character_id"), str) and meta.get("character_id"):
-                    role["character_id"] = meta["character_id"]
-                state_layout = meta.get("sheet_layout")
-                if state_layout in ("horizontal_16x9", "grid_2x2"):
-                    role["sheet_layout"] = state_layout
-            else:
-                role = {"index": index, "role": asset["kind"]}
+            role = {"index": index, "role": asset["kind"]}
             if asset["kind"] == "character":
                 role["character_id"] = asset["metadata"]["character_id"]
                 role["name"] = asset["metadata"].get("character_name", asset["name"])
@@ -818,11 +807,8 @@ class Pipeline:
                 self._guard(job["id"], require_current=True)
                 self.store.add_event(job["project_id"], job["id"], "step", label, "running")
             stream_callbacks["on_planner_stream"] = note_planner_stream
-            payload = job["payload"]
-            cache = payload.get("stage_result_cache")
-            selected_id = (payload.get("selected_strategy") or {}).get("selected_direction_id")
-            if isinstance(cache, dict) and payload.get("stage_result_cache_direction_id") == selected_id:
-                stream_callbacks["stage_result_cache"] = cache
+            # Script and storyboard are written on this job after the merchant
+            # clicks. A cache prepared while the cards were waiting is not replayed.
         if (not job["payload"].get("conversation") and getattr(self.gateway, "supports_direction_selection", False)
                 and getattr(self.settings, "direction_selection_enabled", False)):
             detail = self.store.project_detail(job["project_id"])

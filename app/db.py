@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 ACTIVE = ("queued", "running", "cancel_requested")
-PHASE_LABELS = {"resuming_plan": "正在接续已保存的策划进度", "reviewing_plan": "正在综合检查商品表达、动作与声画计划", "refining_script": "正在精简动作并重排脚本时间", "refining_storyboard": "正在依据检查结果调整画面与动作", "retrying_planner": "策划服务未返回内容，正在重试当前步骤", "retrying_planner_request": "策划服务暂时中断，正在继续当前步骤", "using_backup_planner": "改用备用策划服务，继续这一步", "recovering_strategy": "系统仍在处理这一步，需求已保留", "reviewing_directions": "正在检查创意故事与商品关系", "writing_script": "正在策划广告内容", "reviewing_script": "正在检查商品表达与台词", "storyboarding": "正在安排画面和台词", "repairing_storyboard": "正在校正画面与旁白的时间对应", "checking_plan": "正在核对脚本与分镜时间", "checking_alignment": "正在检查画面与旁白是否对应", "queued": "任务已排队", "understanding": "正在读取需求与商品素材", "deciding": "正在判断是否需要补充信息", "planning": "正在准备广告方案", "plan_ready": "广告方案已准备好", "synthesizing_voice": "正在准备中文配音", "creating_designs": "正在生成参考图", "submitting_video": "正在提交视频任务", "waiting_provider": "正在等待供应商生成视频", "downloading_video": "正在取回视频", "segments_ready": "视频片段已取回", "composing": "正在合成广告视频", "complete": "成片已保存", "needs_reconcile": "提交结果需要核对"}
+PHASE_LABELS = {"resuming_plan": "正在接续已保存的策划进度", "reviewing_plan": "正在综合检查商品表达、动作与声画计划", "refining_script": "正在精简动作并重排脚本时间", "refining_storyboard": "正在依据检查结果调整画面与动作", "retrying_planner": "策划服务未返回内容，正在重试当前步骤", "retrying_planner_request": "策划服务暂时中断，正在继续当前步骤", "using_backup_planner": "改用备用策划服务，继续这一步", "recovering_strategy": "系统仍在处理这一步，需求已保留", "reviewing_directions": "正在想方向", "writing_script": "正在策划广告内容", "reviewing_script": "正在检查商品表达与台词", "storyboarding": "正在安排画面和台词", "repairing_storyboard": "正在校正画面与旁白的时间对应", "checking_plan": "正在核对脚本与分镜时间", "checking_alignment": "正在检查画面与旁白是否对应", "queued": "任务已排队", "understanding": "正在读取需求与商品素材", "deciding": "正在判断是否需要补充信息", "planning": "正在准备广告方案", "plan_ready": "广告方案已准备好", "synthesizing_voice": "正在准备中文配音", "creating_designs": "正在生成参考图", "submitting_video": "正在提交视频任务", "waiting_provider": "正在等待供应商生成视频", "downloading_video": "正在取回视频", "segments_ready": "视频片段已取回", "composing": "正在合成广告视频", "complete": "成片已保存", "needs_reconcile": "提交结果需要核对"}
 
 
 class StaleRevision(ValueError):
@@ -1373,14 +1373,16 @@ class Store:
             elif body["answers"]:
                 raise ValueError("答案必须关联当前问题")
             elif pending:
-                if not content and chosen_form is None:
+                rows = c.execute("SELECT * FROM assets WHERE project_id=?", (project_id,)).fetchall()
+                asset_rows = [self._dict(row) for row in rows]
+                brief = pending_candidates.get("brief") if isinstance(pending_candidates, dict) else None
+                new_images = product_images_are_new(asset_rows, brief=brief, since=pending.get("created_at"))
+                if not content and chosen_form is None and not new_images:
                     raise ValueError("请回答问题或补充你的需求")
                 if pending["kind"] == "direction" and chosen_form is None and not confirm_form and not withdraw_form:
-                    rows = c.execute("SELECT * FROM assets WHERE project_id=?", (project_id,)).fetchall()
-                    brief = pending_candidates.get("brief") if isinstance(pending_candidates, dict) else None
                     retain_offer = keeps_selected_direction(
                         [{"role": "user", "content": content}],
-                        has_new_image=product_images_are_new([self._dict(row) for row in rows], brief=brief, since=pending.get("created_at")))
+                        has_new_image=new_images)
                 if not retain_offer:
                     if pending["kind"] == "direction" and pending_job:
                         self._abandon_speculative_plan(c, pending_job)
@@ -1597,7 +1599,8 @@ class Store:
             c.execute("UPDATE projects SET context_version=context_version+1,updated_at=? WHERE id=?", (now, project_id))
             self._event(c, project_id, source["id"], "gate", "创意方向已选择", "done")
             from app.speculative_plan import direction_selection_text
-            self._message(c, project_id, "user", direction_selection_text(selected.label), source["id"])
+            sentence = selected.product_expression or selected.story_summary or ""
+            self._message(c, project_id, "user", direction_selection_text(selected.label, sentence), source["id"])
             p = self._project(c, project_id)
             trace = source["payload"].get("decision", {}).get("skill_trace")
             source_payload = source["payload"]
@@ -1608,10 +1611,8 @@ class Store:
             follow = (source["payload"].get("decision") or {}).get("model_next_steps")
             if isinstance(follow, list) and follow:
                 extra["model_next_step"] = list(follow)
-            if (spec and spec.get("abandoned") is not True and spec.get("direction_id") == selected.id
-                    and isinstance(spec.get("entries"), dict) and spec["entries"]):
-                extra["stage_result_cache"] = copy.deepcopy(spec["entries"])
-                extra["stage_result_cache_direction_id"] = selected.id
+            # A cache written before the click is not the plan. The continuation
+            # writes the script after this message is already in the conversation.
             jid = self._new_conversation_job(c, p, extra)
             source_payload["direction_continuation_job_id"] = jid
             if spec is not None:

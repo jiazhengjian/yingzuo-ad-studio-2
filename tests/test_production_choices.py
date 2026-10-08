@@ -336,59 +336,27 @@ def test_state_sheet_request_uses_the_character_sheet_and_not_the_scene(settings
     monkeypatch.setattr(gateway, "download_video", download)
     monkeypatch.setattr("app.providers.gateway.data_url", tagged)
     saved = asyncio.run(gateway.create_designs({}, [source], plan, tmp_path / "designs"))
-    assert [item["kind"] for item in saved] == ["scene", "start_frame", "start_frame"]
-    state_requests = [item for item in requests if "状态四视图" in item["prompt"]]
-    assert len(state_requests) == 2
-    assert "images" not in state_requests[0]
-    result_labels = [base64.b64decode(url.split(",", 1)[1]).decode() for url in state_requests[1]["images"]]
-    assert result_labels and all(label.startswith("start_frame:char_a") for label in result_labels)
-    for item in state_requests:
-        assert item["size"] == "16:9"
-        assert "左侧约40%" in item["prompt"]
-        assert "白或浅灰无缝背景" in item["prompt"]
-        assert "灰色连帽卫衣" in item["prompt"]
-        assert "合住卧室" not in item["prompt"]
-        assert "床边" not in item["prompt"]
-        assert "场景图" not in item["prompt"] or "不要场景图" in item["prompt"]
-    appearance = (
-        "外观原文照抄，脸、五官、肤色、身材、头发长度和发色、衣服、鞋子都按这句："
-        "默认出镜为中国人，East Asian Chinese appearance，日常大陆长相。灰色连帽卫衣，黑长发"
-    )
-    assert appearance in state_requests[0]["prompt"]
-    assert appearance in state_requests[1]["prompt"]
-    assert "image" not in state_requests[0]
-    assert "湿" in state_requests[0]["prompt"]
-    assert "吹风机" not in state_requests[0]["prompt"]
-    assert "改图" in state_requests[1]["prompt"] and "不是重画一个人" in state_requests[1]["prompt"]
-    assert "起始状态四视图" in state_requests[1]["prompt"]
-    assert state_requests[1]["images"] == [state_requests[1]["image"]]
-    assert len(state_requests[1]["images"]) == 1
-    assert base64.b64decode(state_requests[1]["image"].split(",", 1)[1]).decode().startswith("start_frame:char_a")
-    for item in state_requests:
-        assert "双手空手，不要商品，不要道具，背景只用白或浅灰。" in item["prompt"]
-    sheets = [item for item in saved if item["metadata"].get("state_reference")]
-    assert len(sheets) == 2
-    assert all(item["metadata"]["sheet_layout"] == "horizontal_16x9" for item in sheets)
-    assert all(item["metadata"]["template_version"] == "chinese-horizontal-v1" for item in sheets)
-    assert all(item["metadata"]["character_id"] == "char_a" for item in sheets)
-    scene_request = next(item for item in requests if item.get("images") and "改图" not in item["prompt"])
+    assert [item["kind"] for item in saved] == ["scene", "character"]
+    assert all(not item["metadata"].get("state_reference") for item in saved)
+    character_requests = [item for item in requests if "不要另出状态参考图" in item["prompt"]]
+    assert len(character_requests) == 1
+    character_prompt = character_requests[0]["prompt"]
+    assert "起始状态：湿" in character_prompt and "结果状态：干顺" in character_prompt
+    assert "一张角色参考可以有多个状态" in character_prompt
+    assert character_requests[0]["size"] == "16:9"
+    scene_request = next(item for item in requests if item.get("images"))
     assert scene_request["images"] and all(not base64.b64decode(url.split(",", 1)[1]).decode().startswith("scene:") for url in scene_request["images"])
-    scene, start, result_sheet = saved
+    scene, character = saved
     assert scene["metadata"]["image_prompt"] == scene_request["prompt"]
     assert scene["metadata"]["model"] == settings.image_model
     assert scene["metadata"]["image_inputs"] == [{"role": "product", "label": "商品原图", "asset_id": source["id"]}]
-    assert start["metadata"]["image_prompt"] == state_requests[0]["prompt"]
-    assert start["metadata"]["image_inputs"] == []
-    assert result_sheet["metadata"]["image_prompt"] == state_requests[1]["prompt"]
-    assert result_sheet["metadata"]["image_inputs"] == [{"role": "state_start", "label": "起始状态参考"}]
-    receipts = [json.loads(path.read_text()) for path in (tmp_path / "designs").glob("*_task.json")]
-    result_receipt = next(item for item in receipts if "改图" in (item.get("image_prompt") or ""))
-    assert result_receipt["image_prompt"] == state_requests[1]["prompt"]
-    assert result_receipt["image_inputs"] == [{"role": "state_start", "label": "起始状态参考"}]
+    assert character["metadata"]["image_prompt"] == character_prompt
+    assert character["metadata"]["character_id"] == "char_a"
+    assert character["metadata"]["sheet_layout"] == "horizontal_16x9"
+    assert character["metadata"]["image_inputs"] == []
     again = asyncio.run(gateway.create_designs({}, [source], plan, tmp_path / "designs"))
-    assert len(requests) == 3
-    assert again[2]["metadata"]["image_prompt"] == state_requests[1]["prompt"]
-    assert again[2]["metadata"]["image_inputs"] == [{"role": "state_start", "label": "起始状态参考"}]
+    assert len(requests) == 2
+    assert [item["kind"] for item in again] == ["scene", "character"]
 
 
 def test_state_sheet_inputs_skip_the_scene_image(tmp_path):
@@ -502,22 +470,13 @@ def test_result_state_uses_the_matching_start_and_images_share_a_wave(settings, 
     monkeypatch.setattr("app.providers.gateway.data_url", tagged)
     saved = asyncio.run(gateway.create_designs({}, [source], plan, tmp_path / "designs", on_asset=remember))
     assert in_flight["max"] >= 2
-    result_begins = [index for index, item in enumerate(phases) if item == ("begin", "result")]
-    start_ends = [index for index, item in enumerate(phases) if item == ("end", "start")]
-    assert result_begins and start_ends and min(result_begins) > max(start_ends)
-    hair = next(item for item in saved if item["metadata"].get("state_label") == "头发干顺·结果")
-    assert hair["metadata"]["image_inputs"] == [{
-        "role": "state_start", "label": "起始状态参考",
-        "asset_id": "asset-" + hair["metadata"]["state_change_id"] + "-start",
-    }]
-    assert hair["metadata"]["source_asset_ids"] == ["asset-" + hair["metadata"]["state_change_id"] + "-start"]
-    hair_request = next(item for item in requests if "干顺，蓬松披肩" in item["prompt"])
-    decoded = base64.b64decode(hair_request["image"].split(",", 1)[1]).decode()
-    assert decoded.startswith(hair["metadata"]["state_change_id"] + ":start:")
-    assert "半湿" not in hair_request["prompt"]
+    girl = next(item for item in saved if item["metadata"].get("character_id") == "girl")
+    assert "起始状态：湿，发梢成缕" in girl["metadata"]["image_prompt"]
+    assert "结果状态：干顺，蓬松披肩" in girl["metadata"]["image_prompt"]
+    assert "不要另出状态参考图" in girl["metadata"]["image_prompt"]
     kinds = [item["kind"] for item in saved]
-    assert kinds[0] == "scene" and kinds.count("start_frame") == 4
-    assert "character" in kinds
+    assert kinds[0] == "scene" and kinds.count("start_frame") == 0
+    assert kinds.count("character") == 2
 
 
 def test_image_rate_limit_finishes_the_rest_one_at_a_time(settings, source, tmp_path, monkeypatch):
@@ -558,5 +517,6 @@ def test_image_rate_limit_finishes_the_rest_one_at_a_time(settings, source, tmp_
     assert calls["parallel_max"] >= 2
     assert calls["limited"] is True
     assert calls["serial_max"] <= 1
-    assert [item["kind"] for item in saved].count("start_frame") == 4
+    assert [item["kind"] for item in saved].count("start_frame") == 0
+    assert [item["kind"] for item in saved].count("character") == 2
     assert (tmp_path / "limited" / "scene_task.json").is_file()

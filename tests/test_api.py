@@ -39,6 +39,20 @@ def test_project_upload_and_missing_credentials(tmp_path):
     assert not app.state.store.active_jobs()
 
 
+def test_transparent_png_keeps_its_alpha(tmp_path):
+    c, app = client(tmp_path)
+    pid = create(c)
+    out = io.BytesIO()
+    Image.new("RGBA", (8, 8), (255, 255, 255, 0)).save(out, "PNG")
+    upload = c.post(f"/api/projects/{pid}/assets", files={"file": ("bottle.png", out.getvalue(), "image/png")})
+    assert upload.status_code == 201
+    asset = app.state.store.project_detail(pid)["assets"][0]
+    assert asset["mime"] == "image/png"
+    with Image.open(asset["path"]) as saved:
+        assert saved.mode == "RGBA"
+        assert saved.getpixel((0, 0))[3] == 0
+
+
 def test_invalid_image_and_unknown_path_rejected(tmp_path):
     c, _ = client(tmp_path)
     pid = create(c)

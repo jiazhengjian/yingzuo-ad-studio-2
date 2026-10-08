@@ -1,15 +1,15 @@
-"""Precompute the recommended direction's text plan while the user is choosing.
+"""Direction cards wait for a click before any script or storyboard is written.
 
-This calls the same text planner as a normal continuation and never submits
-image or video work. The result is a stage cache. Choosing that direction
-replays matching text stages; choosing another direction abandons the cache.
+Precomputing the recommended direction made that card's plan appear in the
+same second the merchant selected it. schedule_speculation and kick_speculation
+therefore do nothing. Selection still queues one continuation, and that job
+writes the script only after the choice is stored.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 
-from app.planner_transport import planner_api_key
 from app.strategy import DirectionCandidates
 
 
@@ -17,9 +17,13 @@ logger = logging.getLogger(__name__)
 _TASKS = {}
 
 
-def direction_selection_text(label):
-    """The same user line select_direction stores before the continuation."""
-    return "选择创意方向：" + label
+def direction_selection_text(label, sentence=""):
+    """The user line select_direction stores before any script is written."""
+    text = "选择创意方向：" + str(label or "").strip()
+    sentence = str(sentence or "").strip()
+    if sentence and sentence != str(label or "").strip():
+        text += "。" + sentence
+    return text
 
 
 def cancel_speculation(project_id):
@@ -103,29 +107,12 @@ async def _run(store, gateway, settings, job_id):
 
 
 def schedule_speculation(store, gateway, settings, job_id):
-    if not getattr(settings, "planner_speculate_recommended", False):
-        return None
-    if not planner_api_key(settings):
-        return None
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return None
-    task = loop.create_task(_run(store, gateway, settings, job_id))
-    _remember(store.get_job(job_id)["project_id"], task)
-    return task
+    """Direction cards do not prewrite a script. The argument list stays for callers."""
+    del store, gateway, settings, job_id
+    return None
 
 
 def kick_speculation(store, gateway, settings):
-    """Resume an unfinished recommended-direction text plan after a restart."""
-    if not getattr(settings, "planner_speculate_recommended", False) or not planner_api_key(settings):
-        return
-    for job in store.jobs_awaiting_direction():
-        spec = (job.get("payload") or {}).get("speculative_plan") or {}
-        if spec.get("abandoned") is True or spec.get("status") in ("ready", "failed", "canceled"):
-            continue
-        project_id = job["project_id"]
-        current = _TASKS.get(project_id)
-        if current is not None and not current.done():
-            continue
-        schedule_speculation(store, gateway, settings, job["id"])
+    """A restart does not resume a script that was never supposed to start."""
+    del store, gateway, settings
+    return None

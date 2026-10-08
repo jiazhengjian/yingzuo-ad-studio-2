@@ -13,6 +13,21 @@ const readableDuration = (seconds: number) => {
   return value < 60 ? `${value}s` : value < 3600 ? `${Math.floor(value / 60)}m ${value % 60}s` : `${Math.floor(value / 3600)}h ${Math.floor((value % 3600) / 60)}m`;
 };
 const timeLabel = (seconds: number) => Number.isFinite(seconds) ? new Date(seconds * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : '';
+const SKILL_LOAD = /已载入(?:共用参考|阶段指令)/;
+const HIDDEN_OUTSIDE = /请修改|没通过|硬门/;
+const OUTSIDE_PHASE: Record<string, string> = {
+  reviewing_directions: '正在想方向', deciding: '正在判断是否需要补充信息', understanding: '正在读取需求与商品素材',
+  writing_script: '正在策划广告内容', reviewing_script: '正在检查商品表达与台词', storyboarding: '正在安排画面和台词',
+  repairing_storyboard: '正在校正画面与旁白的时间对应', refining_storyboard: '正在依据检查结果调整画面与动作',
+  reviewing_plan: '正在综合检查商品表达、动作与声画计划', checking_plan: '正在核对脚本与分镜时间',
+  checking_alignment: '正在检查画面与旁白是否对应', creating_designs: '正在生成参考图',
+  resuming_plan: '正在接续已保存的策划进度', planning: '正在准备广告方案',
+};
+/** The line outside the execution list. Skill ids stay inside that list. */
+export function merchantFacingStatus(phase: string, label?: string): string {
+  if (label && !SKILL_LOAD.test(label) && !HIDDEN_OUTSIDE.test(label)) return label;
+  return OUTSIDE_PHASE[phase] || '';
+}
 const statusLabel = (job: Job) => {
   if (job.status === 'running') return '正在工作';
   if (job.status === 'queued') return '等待开始';
@@ -90,7 +105,7 @@ export default function RunTimeline({ job, events, notes = [], hideError = false
 
   return <section className={`run-timeline ${waiting ? 'run-is-waiting' : ''} ${failed ? 'run-has-error' : ''}`} aria-label={`本轮任务：${statusLabel(job)}`}>
     <div className="run-timeline-heading"><span>{running ? <LoaderCircle size={14} className="run-event-spinner" /> : waiting ? <MessageSquare size={14} /> : failed ? <TriangleAlert size={14} /> : stopped ? <Square size={12} /> : terminal ? <Check size={14} /> : <Clock3 size={14} />}{statusLabel(job)}</span>{duration && <time title="本次执行用时，不包含失败后的等待时间">{duration}</time>}</div>
-    {latest?.label && <p className="run-current-label" role="status">{latest.label}</p>}
+    {merchantFacingStatus(job.phase, latest?.label) && <p className="run-current-label" role="status">{merchantFacingStatus(job.phase, latest?.label)}</p>}
     {!latest && <p className="run-empty-label">{waiting ? job.phase === 'awaiting_direction' ? '请在下方选择一个方向，再展开脚本与分镜。' : '请在下方确认卡中补充信息。' : job.status === 'queued' ? '请求已排队，等待执行记录。' : terminal ? '这条历史任务没有逐步执行记录。' : '尚未收到执行记录。'}</p>}
     {(rows.length > 0 || notes.length > 0 || mediaSkills.length > 0) && <>
       <button type="button" className="run-timeline-toggle" onClick={() => setExpanded(value => !value)} aria-expanded={expanded} aria-controls={`run-events-${eventListId}`}><span>{[notes.length > 0 ? '策划过程' : '', rows.length > 0 ? `${rows.length} 条执行记录` : '', mediaSkills.length > 0 ? `${mediaSkills.length} 个提示词模板` : ''].filter(Boolean).join(' · ')}</span><ChevronDown size={14} className={expanded ? 'expanded' : ''} /></button>

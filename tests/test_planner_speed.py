@@ -17,7 +17,7 @@ from app.pipeline import Pipeline
 from app.planner_transport import parse_fallback_on, parse_stage_routes, planner_request_timing, stage_route
 from app.providers import gateway as gateway_module
 from app.providers.gateway import Gateway, PlannerInterruptedResponse, PlannerRequestError
-from app.speculative_plan import direction_selection_text, schedule_speculation
+from app.speculative_plan import schedule_speculation
 from test_conversation_api import env
 from test_direction_selection import offer, select
 from test_planner_transport import completion, isolated_environment, settings, transport
@@ -461,58 +461,37 @@ def test_stage_result_cache_replays_text_stages_without_another_http_call(progre
     assert second["plan"]["plan_review"]["ready"] is True
 
 
-def test_speculative_text_plan_is_reused_only_for_the_recommended_direction(env):
+def test_direction_cards_do_not_prewrite_the_recommended_script(env):
     gate, source_job = offer(env)
     store = env[1].state.store
     project_id = env[2]
     settings = env[1].state.settings
     settings.planner_speculate_recommended = True
-    recommended = "direction_0"
 
     class TextOnly:
         def __init__(self):
-            self.submits = 0
-            self.plans = 0
+            self.decides = 0
 
-        async def decide(self, project, assets, messages, gates, current_plan, **kwargs):
-            assert messages[-1]["content"] == direction_selection_text("轮廓之美")
-            assert kwargs["on_checkpoint"] is not None
-            kwargs["stage_cache_sink"]("cached-storyboard", "storyboard", {"cached": True})
-            return {"kind": "plan"}
-
-        async def _submit(self, *args, **kwargs):
-            self.submits += 1
-            raise AssertionError("speculation must not submit paid work")
-
-        async def plan(self, *args, **kwargs):
-            self.plans += 1
-            raise AssertionError("speculation must not enter the legacy plan path")
+        async def decide(self, *args, **kwargs):
+            self.decides += 1
+            raise AssertionError("direction cards must not write a script before a click")
 
     gateway = TextOnly()
-
-    async def run():
-        task = schedule_speculation(store, gateway, settings, source_job["id"])
-        assert task is not None
-        await task
-
-    asyncio.run(run())
-    spec = store.get_job(source_job["id"])["payload"]["speculative_plan"]
-    assert spec["status"] == "ready" and spec["direction_id"] == recommended
-    assert gateway.submits == 0 and gateway.plans == 0
+    assert schedule_speculation(store, gateway, settings, source_job["id"]) is None
+    assert "speculative_plan" not in (store.get_job(source_job["id"])["payload"] or {})
+    assert gateway.decides == 0
     assert store.get_project(project_id)["plan"] is None
 
     other = select(env, gate, direction_id="direction_1", request_id="other-direction")
     assert other.status_code == 200
     assert "stage_result_cache" not in store.get_job(other.json()["job"]["id"])["payload"]
-    assert store.get_job(source_job["id"])["payload"]["speculative_plan"]["abandoned"] is True
-    late = store.merge_speculative_plan(source_job["id"], {
-        "direction_id": recommended, "status": "ready",
-        "entries": {"late": {"stage": "ad_script", "result": {"late": True}}}})
-    assert "late" not in late["payload"]["speculative_plan"]["entries"]
     assert store.get_project(project_id)["plan"] is None
+    messages = store.project_detail(project_id)["messages"]
+    assert messages[-1]["role"] == "user"
+    assert messages[-1]["content"].startswith("选择创意方向：")
 
 
-def test_matching_direction_copies_the_cache_and_streams_a_static_label(env):
+def test_selecting_the_recommended_direction_does_not_replay_a_prepared_script(env):
     gate, source_job = offer(env)
     store = env[1].state.store
     store.merge_speculative_plan(source_job["id"], {
@@ -521,9 +500,12 @@ def test_matching_direction_copies_the_cache_and_streams_a_static_label(env):
     chosen = select(env, gate, direction_id="direction_0", request_id="recommended")
     assert chosen.status_code == 200
     payload = store.get_job(chosen.json()["job"]["id"])["payload"]
-    assert payload["stage_result_cache_direction_id"] == "direction_0"
-    assert payload["stage_result_cache"]["digest"]["result"] == {"cached": True}
+    assert "stage_result_cache" not in payload
+    assert "stage_result_cache_direction_id" not in payload
     assert store.get_project(env[2])["plan"] is None
+    detail = chosen.json()["snapshot"]
+    assert detail["project"]["plan"] is None
+    assert any(message["content"].startswith("选择创意方向：") for message in detail["messages"])
 
     class Recording:
         supports_strategy_planning = True
@@ -541,7 +523,7 @@ def test_matching_direction_copies_the_cache_and_streams_a_static_label(env):
 
     gateway = Recording()
     asyncio.run(Pipeline(store, gateway, env[1].state.settings).execute(chosen.json()["job"]["id"]))
-    assert gateway.cache["digest"]["stage"] == "storyboard"
+    assert gateway.cache is None
     labels = [event["label"] for event in store.events_after(env[2])["events"]]
     assert labels.count("正在接收画面安排") == 1
     assert store.get_project(env[2])["plan"] is None

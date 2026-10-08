@@ -635,9 +635,12 @@ def _finish_compiled_plan(plan):
     if settle_ending_actions(plan):
         plan = accept(plan, before_ending)
     before_voice = deepcopy(plan)
-    from .story_logic import settle_inner_monologue
+    from .story_logic import settle_inner_monologue, strip_speech_ordinals
     if settle_inner_monologue(plan):
         plan = accept(plan, before_voice)
+    before_ordinal = deepcopy(plan)
+    if strip_speech_ordinals(plan):
+        plan = accept(plan, before_ordinal)
     return plan
 
 
@@ -1651,7 +1654,17 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 plan.clear()
                 plan.update(before_voice)
                 notes = []
-        if notes:
+        from .story_logic import strip_speech_ordinals
+        before_ordinal = deepcopy(plan)
+        stripped = False
+        if strip_speech_ordinals(plan):
+            try:
+                Plan.model_validate(plan, context={"require_beat_ids": True, "require_directing_contract": True})
+                stripped = True
+            except (ValueError, ValidationError, KeyError, TypeError):
+                plan.clear()
+                plan.update(before_ordinal)
+        if notes or stripped:
             _rebind_reviewed_plan(plan)
             record_failure({"nonblocking": True, "message": notes[0],
                             "issues": notes[:8], "error_code": "inner_monologue"})

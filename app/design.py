@@ -483,6 +483,13 @@ def character_design_request(project, plan, character):
         instructions += "\n" + look
     instructions += "\n" + _SHEET_NO_PRODUCT
     context = {"name": character["name"], "description": character_sheet_description(character.get("description", ""), plan)}
+    from .story_logic import accepted_state_changes
+    kept, _warnings = accepted_state_changes(plan if isinstance(plan, dict) else {}, enabled_only=False)
+    own = [item for item in kept if item.get("owner") == character.get("id")]
+    if own:
+        instructions += "\n这张角色参考同时画出下列已确认状态，仍是同一个人、同一张图。一张角色参考可以有多个状态。不要另出状态参考图。"
+        for item in own:
+            instructions += f"\n起始状态：{item['start']}。结果状态：{item['result']}。"
     return {"version": "character-context-v2", "character_id": character["id"],
             "aspect_ratio": "16:9", "sheet_layout": "horizontal_16x9",
             "template_version": CHARACTER_SHEET_TEMPLATE,

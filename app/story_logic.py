@@ -635,7 +635,7 @@ def state_pairing_issues(container):
     return []
 
 def state_prompt_lines(shot, roles, shot_ids=None):
-    """A later result shot hard-cuts. Every shot from that result onward names the result sheet."""
+    """States are already drawn on the character sheet. Do not name a separate still."""
     if not isinstance(shot, dict):
         return []
     shot_id = shot.get("id")
@@ -643,17 +643,16 @@ def state_prompt_lines(shot, roles, shot_ids=None):
     result = next((role for role in roles or [] if role.get("role") == "state" and role.get("phase") == "result" and role.get("shot_id") == shot_id), None)
     lines = []
     if start and result:
-        lines.append(
-            f"  本镜从起始状态参考图{start['index']}到结果状态参考图{result['index']}，中间由画面补上。")
+        lines.append("  本镜从角色参考上的起始状态画到结果状态，中间由画面补上。")
     elif start:
-        lines.append(f"  本镜开始对齐起始状态参考图{start['index']}，停在过程里，不要跳到结果。")
+        lines.append("  本镜开始对齐角色参考上的起始状态，停在过程里，不要跳到结果。")
     elif result:
-        lines.append(f"  本镜硬切到结果状态参考图{result['index']}，不要在这一镜里从上一状态渐变。")
+        lines.append("  本镜硬切到角色参考上的结果状态，不要在这一镜里从上一状态渐变。")
     if isinstance(shot_ids, list) and shot_id in shot_ids:
         here = shot_ids.index(shot_id)
         present = [item for item in (shot.get("character_ids") or []) if isinstance(item, str)]
         for role in roles or []:
-            if role.get("role") != "state" or role.get("phase") != "result" or type(role.get("index")) is not int:
+            if role.get("role") != "state" or role.get("phase") != "result":
                 continue
             result_shot = role.get("shot_id")
             if not isinstance(result_shot, str) or result_shot not in shot_ids or shot_ids.index(result_shot) >= here:
@@ -661,7 +660,7 @@ def state_prompt_lines(shot, roles, shot_ids=None):
             cid = role.get("character_id")
             if isinstance(cid, str) and cid and cid not in present:
                 continue
-            line = f"  本镜人物身份用结果状态参考图{role['index']}，不要再用起始状态那张。"
+            line = "  本镜人物仍用角色参考上的结果状态，不要退回起始状态。"
             if line not in lines:
                 lines.append(line)
     return lines
@@ -1967,6 +1966,57 @@ def _stitch_continuous_starts(plan):
                 and continuity.get("start_state") != previous.get("end_state")):
             continuity["start_state"] = previous["end_state"]
         previous = continuity
+
+
+_SPEECH_ORDINAL = re.compile(r"第\s*(?:[0-9]{1,2}|[一二两三四五六七八九十]+)\s*句")
+
+
+def _without_speech_ordinal(text):
+    if not isinstance(text, str) or "句" not in text:
+        return text
+    return _SPEECH_ORDINAL.sub("", text)
+
+
+def strip_speech_ordinals(plan):
+    """Shot prose keeps who is speaking. It does not keep “第三句” as the line.
+
+    snap_declared_speech already used that counter to place the real sentence.
+    The sentence stays on the narration and speech span.
+    """
+    if not isinstance(plan, dict):
+        return False
+    changed = False
+
+    def write(container, key):
+        nonlocal changed
+        current = container.get(key)
+        updated = _without_speech_ordinal(current)
+        if updated != current:
+            container[key] = updated
+            changed = True
+
+    for segment in plan.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        write(segment, "prompt")
+        write(segment, "purpose")
+        for shot in segment.get("shots") or []:
+            if not isinstance(shot, dict):
+                continue
+            write(shot, "description")
+            write(shot, "purpose")
+            continuity = shot.get("continuity")
+            if isinstance(continuity, dict):
+                for key in list(continuity):
+                    if isinstance(continuity.get(key), str):
+                        write(continuity, key)
+        for span in segment.get("speech_spans") or []:
+            if not isinstance(span, dict):
+                continue
+            for anchor in span.get("anchors") or []:
+                if isinstance(anchor, dict):
+                    write(anchor, "visual_evidence")
+    return changed
 
 
 def settle_inner_monologue(plan):

@@ -302,7 +302,7 @@ def create_app(settings=None, gateway=None, run_worker=True):
                                  "planner_request_deadline_seconds": settings.planner_request_deadline_seconds,
                                  "state_references": bool(getattr(settings, "state_references_enabled", True)),
                                  "image_concurrency": int(getattr(settings, "image_concurrency", 3) or 3)},
-                "limitations": ["支持10至60秒商品广告；独立主播入口暂未开放，商品广告可按方向安排角色说话", "原生声音、台词与口型需检查成片，暂不自动生成字幕", "商品使用上传原图；每方案一张场景图。状态参考默认开着：会变化的人物用起始状态四视图当身份，其他人一张组合四视图。关掉后每位只出一张普通四视图。一起确认后生成视频"]}
+                "limitations": ["支持10至60秒商品广告；独立主播入口暂未开放，商品广告可按方向安排角色说话", "原生声音、台词与口型需检查成片，暂不自动生成字幕", "商品使用上传原图；每方案一张场景图，每位角色一张参考图。状态画在这张角色参考上，不另出状态参考图。一起确认后生成视频"]}
 
     @app.get("/api/projects")
     def projects():
@@ -338,17 +338,28 @@ def create_app(settings=None, gateway=None, run_worker=True):
             with Image.open(io.BytesIO(raw)) as source:
                 if source.format not in ("JPEG", "PNG", "WEBP") or source.width * source.height > 24_000_000:
                     raise ValueError("unsupported image")
-                im = ImageOps.exif_transpose(source).convert("RGB")
+                im = ImageOps.exif_transpose(source)
                 im.thumbnail((2048, 2048))
-                path = settings.media_root / project_id / "uploads" / (uuid.uuid4().hex + ".jpg")
-                path.parent.mkdir(parents=True, exist_ok=True)
-                im.save(path, "JPEG", quality=94)
+                keep_alpha = im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info)
+                folder = settings.media_root / project_id / "uploads"
+                folder.mkdir(parents=True, exist_ok=True)
+                if keep_alpha:
+                    if im.mode != "RGBA":
+                        im = im.convert("RGBA")
+                    path = folder / (uuid.uuid4().hex + ".png")
+                    im.save(path, "PNG")
+                    mime = "image/png"
+                else:
+                    im = im.convert("RGB")
+                    path = folder / (uuid.uuid4().hex + ".jpg")
+                    im.save(path, "JPEG", quality=94)
+                    mime = "image/jpeg"
         except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
             raise HTTPException(422, "请上传有效的JPEG、PNG或WebP图片，尺寸不超过2400万像素") from exc
         name = Path(file.filename or "商品图").name[:100]
-        asset = store.add_asset(project_id, "product", name, path, "image/jpeg", metadata={"generated": False, "width": im.width, "height": im.height})
+        asset = store.add_asset(project_id, "product", name, path, mime, metadata={"generated": False, "width": im.width, "height": im.height})
         if store.get_project(project_id)["plan"]:
-            store.add_message(project_id, "system", "商品图已保存。已选方向保持不变；写上商品信息并发送后，才会把新图并进当前方案。")
+            store.add_message(project_id, "system", "商品图已保存。已选方向保持不变；发送后才会把新图并进当前方案。")
         return public(asset)
 
     @app.post("/api/projects/{project_id}/messages", status_code=201)
