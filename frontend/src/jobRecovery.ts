@@ -73,12 +73,6 @@ export function recoveryForJob(job?: Job): JobRecovery | null {
     }
     return { kind: 'unavailable' };
   }
-  // A 401 or 402 never accepted a task. After the account is fixed, the same
-  // plan and pictures can be submitted again. A rejected request stays blocked.
-  if (job.kind === 'generate' && (job.progress.error_code === 'provider_balance'
-    || job.progress.error_code === 'provider_auth')) {
-    return { kind: 'retry_existing', label: '重新生成' };
-  }
   if (job.progress.error_code === 'provider_request_rejected') {
     return { kind: 'unavailable' };
   }
@@ -104,6 +98,7 @@ export function recoveryForJob(job?: Job): JobRecovery | null {
 }
 
 export const SYSTEM_FAILURE_COPY = '这是系统问题，已记录；你的方案和图片都还在。';
+export const RETRY_PLANNING_COPY = '点继续处理，会重新生成分镜，已确认的需求和方向不变。';
 
 const TECHNICAL_CARD = /pydantic|validation|请重新策划|请先重新策划|\b[a-z][a-z0-9]*_[a-z0-9_]+\b/i;
 
@@ -164,10 +159,8 @@ export function cardMessage(job: Job, recovery: JobRecovery): string {
     && code !== 'provider_balance' && code !== 'provider_auth') {
     return '这次没生成出来';
   }
-  if (recovery.kind === 'retry_planning' && storyboardContentFailure(job)) {
-    return '分镜这一步已记下。已保存的需求和方向仍保留。';
-  }
-  if (recovery.kind === 'retry_planning' || recovery.kind === 'unavailable') return SYSTEM_FAILURE_COPY;
+  if (recovery.kind === 'retry_planning') return RETRY_PLANNING_COPY;
+  if (recovery.kind === 'unavailable') return SYSTEM_FAILURE_COPY;
   if (/独立旁白方案的声音策略|视频段镜头时轴或素材结构无效/.test(job.error || '')) return SYSTEM_FAILURE_COPY;
   return sanitizeCardText(job.error || SYSTEM_FAILURE_COPY);
 }

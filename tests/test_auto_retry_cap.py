@@ -226,3 +226,22 @@ def test_storyboard_diagnostic_keeps_the_error_code_once(tmp_path, settings):
     assert saved["validation_errors"][0]["msg"] == "镜头只能引用已确认的出镜角色"
     assert saved["raw_output"] == {"shots": [{"id": "s3"}]}
     assert files[0].read_text().count('"s3"') == 1
+
+
+def test_nonblocking_warning_does_not_hide_a_later_blocking_reason(tmp_path, settings):
+    from app.progressive_planning import storyboard_check_note
+    from app.providers.gateway import save_stage_diagnostic
+
+    settings.data_root = tmp_path / "data"
+    stage = {"stage": "storyboard", "raw_output": {"shots": [{"id": "s3"}]}}
+    warning = {"nonblocking": True, "failed_reasons": ["外套只是提醒"], "error_code": "inner_monologue"}
+    first = save_stage_diagnostic(settings, warning, stage)
+    assert first is not None
+    assert stage.get("_diagnostic_saved") is not True
+    note = storyboard_check_note(ValueError("镜头只能引用已确认的出镜角色"))
+    second = save_stage_diagnostic(settings, note, stage)
+    assert second is not None
+    assert stage.get("_diagnostic_saved") is True
+    saved = json.loads(second.read_text())
+    assert saved["validation_reasons"] == ["storyboard_check"]
+    assert saved["validation_errors"][0]["msg"] == "镜头只能引用已确认的出镜角色"

@@ -129,6 +129,10 @@ def job_can_regenerate(job):
     hard_miss = code == "release_recheck" or _HARD_GATE_TEXT.search(error) is not None
     if not_produced or hard_miss:
         return True
+    # Balance and account failures never accepted a paid task. The same confirmed
+    # generate job can be submitted again. A passed plan in the payload must not hide that.
+    if job.get("kind") == "generate" and code in ("provider_balance", "provider_auth"):
+        return True
     if _job_plan_released(job):
         return False
     if job.get("kind") != "plan":

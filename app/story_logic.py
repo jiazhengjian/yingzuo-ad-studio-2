@@ -50,7 +50,10 @@ _CLOCK_GAP = re.compile(r"[\s\u3000，。！？、；：,.!?;:\"'“”‘’「
 _ASLEEP = re.compile(r"睡着|在睡|睡熟|酣睡|没醒|未醒")
 _AWAKE = re.compile(r"(?<!没)醒了|醒来|已经醒|坐起来")
 _LISTENER_WORDS = ("室友", "同事", "朋友", "旁边的人", "另一个人")
-_ALONE_NOW = re.compile(r"一个人|独自|身旁没有|旁边没有人|没有别人")
+# 「另一个人」「不是一个人」 are not "she is alone". 「对面…一个人」 is handled apart.
+_ALONE_PERSON = re.compile(r"(?<![另不])(?<!不是)一个人")
+_ALONE_NOW = re.compile(r"独自|身旁没有|旁边没有人|没有别人")
+_OPPOSITE_ONE = re.compile(r"对面.{0,8}一个人")
 # A named companion opposite her. Bare 坐在对面, 对坐, and 对面…人 do not name anyone.
 _OPPOSITE_COMPANY = re.compile(
     r"(?:朋友|室友|同事).{0,12}(?:坐在对面|坐在对过|对坐|对面)"
@@ -59,11 +62,20 @@ _OPPOSITE_COMPANY = re.compile(
 _CLOSE_UP = re.compile(r"特写|微距|大特写|只拍")
 _HANDS_OR_CAKE = re.compile(r"手|蛋糕")
 # 镜头推近 is the camera, not a person pushing something. 往柜子里推 still counts.
+# 缓慢推近 is one camera unit: the 推 is not a body action just because 镜头 is not the previous character.
+_CAMERA_MOVE_UNIT = re.compile(r"推(?:近|远|进|向|上|下)")
 _BODY_IN_FRAME = re.compile(r"脸|全身|走|站着|坐着|回头|(?<!镜头)推|柜子|脚步")
 _INNER_NOTE = "这一场没有醒着的人听，台词改成她自己的内心独白，不对口型。"
 _SHOT_INNER_NOTE = "这一镜没有醒着的人听，台词改成她自己的内心独白，不对口型。"
 _INNER_MOUTH = "这句是她的内心独白，嘴没有动。"
-_OPENING_LINE = re.compile(r"开口说(?:第\s*[0-9一二两三四五六七八九十]+\s*句)?")
+# Spoken-aloud stage directions. 没有开口 is already quiet and must stay.
+_ALOUD_CUE = re.compile(
+    r"(?<!没有)开口说话"
+    r"|(?<!没有)开口说(?:第\s*[0-9一二两三四五六七八九十]+\s*句)?"
+    r"|说出第\s*[0-9一二两三四五六七八九十]+\s*句"
+)
+_LINE_ORDINAL = re.compile(r"第\s*([0-9一二两三四五六七八九十]+)\s*句")
+_SHOT_TEXT_SKIP = {"id", "character_ids", "evidence_ids", "beat_id", "beat_ids", "match_cut", "shot_ids"}
 _BED = re.compile(r"床|床铺|被窝|枕头")
 _POSE_CARRY = re.compile(
     r"仍在睡|还在睡|还睡着|仍睡着|在睡着|睡着|朝向不变|"
@@ -1491,13 +1503,21 @@ def film_scene_shots(plan, segment):
     if not isinstance(segment, dict):
         return []
     own = [shot for shot in segment.get("shots") or [] if isinstance(shot, dict)]
-    film = iter_plan_shots(plan)
+    segments = []
+    if isinstance(plan, dict) and isinstance(plan.get("segments"), list):
+        segments = [item for item in plan["segments"] if isinstance(item, dict)]
+    film = []
+    for item in segments:
+        seg_id = item.get("id") if isinstance(item.get("id"), str) else ""
+        for shot in item.get("shots") or []:
+            if isinstance(shot, dict):
+                film.append((seg_id, shot))
     own_ids = [shot.get("id") for shot in own]
-    film_ids = [shot.get("id") for shot in film]
+    film_ids = [shot.get("id") for _, shot in film]
     if not film or film_ids == own_ids:
         return []
     copies = []
-    for shot in film:
+    for seg_id, shot in film:
         continuity = shot.get("continuity") if isinstance(shot.get("continuity"), dict) else {}
         entry = continuity.get("entry_transition")
         copied = {
@@ -1505,18 +1525,37 @@ def film_scene_shots(plan, segment):
             "description": shot.get("description") if isinstance(shot.get("description"), str) else "",
             "character_ids": list(shot.get("character_ids") or []),
         }
+        if seg_id:
+            copied["segment_id"] = seg_id
         if isinstance(entry, str) and entry:
             copied["continuity"] = {"entry_transition": entry}
         copies.append(copied)
     return copies
 
 
+def _is_alone_now(text):
+    """True when this shot says she is by herself.
+
+    「另一个人」 and 「不是一个人」 name company. 「对面坐着一个人」 does too.
+    A separate 「她一个人」 still counts after that phrase is set aside.
+    """
+    if not isinstance(text, str) or not text:
+        return False
+    if _ALONE_NOW.search(text):
+        return True
+    return _ALONE_PERSON.search(_OPPOSITE_ONE.sub("", text)) is not None
+
+
 def _hands_or_cake_macro(description):
-    """A close-up that only shows hands or cake cannot take a full-body acting cue."""
+    """A close-up that only shows hands or cake cannot take a full-body acting cue.
+
+    Camera moves such as 缓慢推近 are removed as whole words before the body check.
+    往柜子里推 is still her hand.
+    """
     text = description if isinstance(description, str) else ""
     if not _CLOSE_UP.search(text) or not _HANDS_OR_CAKE.search(text):
         return False
-    return _BODY_IN_FRAME.search(text) is None
+    return _BODY_IN_FRAME.search(_CAMERA_MOVE_UNIT.sub("", text)) is None
 
 
 def _listener_in_shot(production, shot):
@@ -1528,7 +1567,7 @@ def _listener_in_shot(production, shot):
         return False
     speaker = production.get("speaker_id")
     text = shot.get("description") if isinstance(shot.get("description"), str) else ""
-    if _ALONE_NOW.search(text):
+    if _is_alone_now(text):
         return False
     ids = shot.get("character_ids") if isinstance(shot.get("character_ids"), list) else []
     blobs = []
@@ -1566,7 +1605,7 @@ def shot_awake_listener(production, shot, scene_shots=None):
     if _listener_in_shot(production, shot):
         return True
     text = shot.get("description") if isinstance(shot.get("description"), str) else ""
-    if _ALONE_NOW.search(text):
+    if _is_alone_now(text):
         return False
     for other in scene_shots or []:
         if other is shot:
@@ -1584,21 +1623,142 @@ def awake_listener(production, shots):
     return False
 
 
+def _inner_cue(match):
+    token = match.group(0)
+    ordinal = _LINE_ORDINAL.search(token)
+    if ordinal:
+        return "心里想第" + ordinal.group(1) + "句"
+    return "心里想"
+
+
+def _quiet_aloud(text):
+    if not isinstance(text, str) or not text:
+        return text
+    return _ALOUD_CUE.sub(_inner_cue, text)
+
+
+def _quiet_tree(node):
+    """Replace aloud stage directions in every string on this shot. Returns old/new pairs."""
+    pairs = []
+    if isinstance(node, dict):
+        for key, value in list(node.items()):
+            if key in _SHOT_TEXT_SKIP:
+                continue
+            if isinstance(value, str):
+                updated = _quiet_aloud(value)
+                if updated != value:
+                    node[key] = updated
+                    pairs.append((value, updated))
+            elif isinstance(value, (dict, list)):
+                pairs.extend(_quiet_tree(value))
+    elif isinstance(node, list):
+        for item in node:
+            if isinstance(item, (dict, list)):
+                pairs.extend(_quiet_tree(item))
+    return pairs
+
+
 def rewrite_inner_shot(description, speaking):
     """Turn an on-screen speaking cue into private thought. Idempotent.
 
     Footsteps, a look back, and a held breath are not written in. A close-up
     of hands or cake, and a wider shot where she is alone, only note that her
-    mouth does not move.
+    mouth does not move. 开口说 and 说出第几句 become 心里想.
     """
     if not isinstance(description, str):
         return description
-    updated = _OPENING_LINE.sub("没有开口", description)
+    updated = _quiet_aloud(description)
     if speaking and "嘴没有动" not in updated and "放轻脚步" not in updated:
         if updated and not updated.endswith("。"):
             updated = updated.rstrip() + "。"
         updated += _INNER_MOUTH
     return updated
+
+
+def rewrite_inner_record(shot, speaking):
+    """Quiet every aloud cue stored on this shot, then note that her mouth does not move.
+
+    Description, purpose, continuity, and any other text on the shot are included.
+    The returned pairs are the original wording and the wording that replaces it,
+    so a copied record of this shot can be updated the same way.
+    """
+    if not isinstance(shot, dict):
+        return []
+    old_description = shot.get("description") if isinstance(shot.get("description"), str) else ""
+    pairs = _quiet_tree(shot)
+    final = rewrite_inner_shot(shot.get("description") or "", speaking)
+    if final != shot.get("description"):
+        shot["description"] = final
+    if old_description and old_description != final:
+        pairs = [(old, final if old == old_description else new) for old, new in pairs]
+        if not any(old == old_description for old, _ in pairs):
+            pairs.append((old_description, final))
+    return [(old, new) for old, new in pairs if old and old != new]
+
+
+def quiet_inner_shot(shot, speaking):
+    """A prompt copy. The stored shot is left for settle_inner_monologue."""
+    if not isinstance(shot, dict):
+        return shot
+    copied = deepcopy(shot)
+    rewrite_inner_record(copied, speaking)
+    return copied
+
+
+def _replace_pairs(text, pairs):
+    if not isinstance(text, str) or not text:
+        return text
+    for old, new in sorted(pairs, key=lambda item: len(item[0]), reverse=True):
+        if old and old != new and old in text:
+            text = text.replace(old, new)
+    return text
+
+
+def _sync_shot_records(segment, shot, pairs):
+    """Copied picture notes for this shot follow the rewritten wording.
+
+    The spoken line itself stays. Only records that quote this shot's picture change.
+    """
+    if not isinstance(segment, dict) or not pairs:
+        return
+    shot_id = shot.get("id")
+    old_description = next((old for old, new in pairs if new == shot.get("description")), "")
+    prompt = segment.get("prompt")
+    if isinstance(prompt, str) and old_description:
+        start, end = shot.get("start"), shot.get("end")
+        replaced = False
+        if isinstance(start, (int, float)) and isinstance(end, (int, float)) and not isinstance(start, bool):
+            final = shot.get("description") or ""
+            for dash in ("–", "-", "—"):
+                stamped = f"{start:g}{dash}{end:g}秒：{old_description}"
+                if stamped in prompt:
+                    segment["prompt"] = prompt.replace(
+                        stamped, f"{start:g}{dash}{end:g}秒：{final}", 1)
+                    replaced = True
+                    break
+        if not replaced and prompt.count(old_description) == 1:
+            segment["prompt"] = prompt.replace(old_description, shot.get("description") or "", 1)
+    if isinstance(segment.get("purpose"), str):
+        segment["purpose"] = _replace_pairs(segment["purpose"], pairs)
+    if not isinstance(shot_id, str) or not shot_id:
+        return
+    for span in segment.get("speech_spans") or []:
+        if not isinstance(span, dict):
+            continue
+        for anchor in span.get("anchors") or []:
+            if not isinstance(anchor, dict):
+                continue
+            ids = anchor.get("shot_ids") if isinstance(anchor.get("shot_ids"), list) else []
+            if shot_id not in ids:
+                continue
+            evidence = anchor.get("visual_evidence")
+            if not isinstance(evidence, str):
+                continue
+            updated = _replace_pairs(evidence, pairs)
+            if ids == [shot_id]:
+                updated = _quiet_aloud(updated)
+            if updated != evidence:
+                anchor["visual_evidence"] = updated
 
 
 def _spoken_plan_spans(plan):
@@ -1642,11 +1802,17 @@ def settle_inner_monologue(plan):
     shots = iter_plan_shots(plan)
     groups = scene_groups(shots)
     film_inner = not awake_listener(production, shots)
+    owners = {}
+    for segment in plan.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        for shot in segment.get("shots") or []:
+            if isinstance(shot, dict):
+                owners[id(shot)] = segment
 
     def rewrite(shot, speaking):
-        updated = rewrite_inner_shot(shot.get("description") or "", speaking)
-        if updated != shot.get("description"):
-            shot["description"] = updated
+        pairs = rewrite_inner_record(shot, speaking)
+        _sync_shot_records(owners.get(id(shot)), shot, pairs)
 
     if film_inner:
         for shot in shots:

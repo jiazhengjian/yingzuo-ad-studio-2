@@ -9,7 +9,7 @@ from .picture_rules import prepare_prompt_shot, unlock_wet_identity
 from .production import cast_appearance_clause
 from .story_logic import (
     _STORY_HOLD_LINE, _hands_or_cake_macro, awake_listener, rest_product_for_story_ending,
-    rewrite_inner_shot, scene_groups, shot_awake_listener,
+    quiet_inner_shot, scene_groups, shot_awake_listener,
     state_prompt_lines, story_gaze_line, story_needs_lens, with_background_line,
 )
 from .runtime_skills import compiler_template
@@ -440,14 +440,37 @@ def _only_guidance(shot, spans):
     return all(_story_span(span) is None for span in hit)
 
 
+def _scene_key(segment_id, shot_id):
+    return f"{segment_id}\x1f{shot_id}"
+
+
 def _scene_of(shots, scene_film_shots):
-    """Same scene split as the plan. Extra film shots are only for who can hear her."""
+    """Same scene split as the plan. Extra film shots are only for who can hear her.
+
+    Shot ids can repeat across segments. Those scenes are stored under segment id
+    plus shot id, so a later s1 does not replace an earlier s1.
+    """
     source = scene_film_shots if isinstance(scene_film_shots, list) and scene_film_shots else shots
-    by_id = {}
-    for group in scene_groups(source):
+    groups = scene_groups(source)
+    counts = {}
+    for group in groups:
         for item in group:
-            if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"]:
-                by_id[item["id"]] = group
+            shot_id = item.get("id") if isinstance(item, dict) else None
+            if isinstance(shot_id, str) and shot_id:
+                counts[shot_id] = counts.get(shot_id, 0) + 1
+    by_id = {}
+    for group in groups:
+        for item in group:
+            if not isinstance(item, dict):
+                continue
+            shot_id = item.get("id")
+            if not isinstance(shot_id, str) or not shot_id:
+                continue
+            segment_id = item.get("segment_id") if isinstance(item.get("segment_id"), str) else ""
+            if segment_id:
+                by_id[_scene_key(segment_id, shot_id)] = group
+            if counts.get(shot_id) == 1:
+                by_id[shot_id] = group
     return by_id
 
 
@@ -475,7 +498,15 @@ def _compile_grouped_video(segment, template, scene_film_shots=None):
     scene_of = _scene_of(shots, scene_film_shots)
 
     def scene_for(shot):
-        found = scene_of.get(shot.get("id")) if isinstance(shot, dict) else None
+        if not isinstance(shot, dict):
+            return [shot]
+        shot_id = shot.get("id")
+        segment_id = segment.get("id") if isinstance(segment.get("id"), str) else ""
+        if segment_id and isinstance(shot_id, str):
+            found = scene_of.get(_scene_key(segment_id, shot_id))
+            if found:
+                return found
+        found = scene_of.get(shot_id) if isinstance(shot_id, str) else None
         return found or [shot]
 
     listener_shots = scene_film_shots if isinstance(scene_film_shots, list) and scene_film_shots else shots
@@ -528,10 +559,8 @@ def _compile_grouped_video(segment, template, scene_film_shots=None):
         alone_here = (segment.get("ad_form") == "scene_story" and production
                       and production.get("speech_mode") == "character_dialogue" and speaking_here
                       and not shot_awake_listener(production, shot, scene))
-        if inner:
-            shot = {**shot, "description": rewrite_inner_shot(shot.get("description") or "", speaking_here)}
-        elif alone_here:
-            shot = {**shot, "description": rewrite_inner_shot(shot.get("description") or "", True)}
+        if inner or alone_here:
+            shot = quiet_inner_shot(shot, True if alone_here else speaking_here)
         if segment.get("ad_form") == "scene_story":
             shot = {**shot, "description": with_background_line(shot.get("description") or "", shots, index)}
             if last:

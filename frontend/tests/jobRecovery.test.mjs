@@ -68,7 +68,8 @@ test('only exhausted planning request failures expose a last-resort resume', () 
   assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
   const html = renderCard(job);
   assert.match(html, /继续处理/);
-  assert.match(html, /这是系统问题，已记录/);
+  assert.match(html, /点继续处理，会重新生成分镜，已确认的需求和方向不变/);
+  assert.doesNotMatch(html, /没通过|硬门|不是最好/);
   assert.doesNotMatch(html, /重新尝试|请重试|恢复任务|输入修改要求|检查素材|请重新策划/);
   for (const progress of [{ error_code: 'planning_request_failed', can_regenerate: true },
     { ...job.progress, retryable: false, can_regenerate: true }]) {
@@ -260,8 +261,8 @@ test('an interrupted planner reply keeps the request and one last resume', () =>
   assert.equal(recoveryForJob(job).label, '继续处理');
   assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
   const html = renderCard(job);
-  assert.match(html, /这是系统问题，已记录/);
-  assert.match(html, /方案和图片都还在/);
+  assert.match(html, /点继续处理，会重新生成分镜，已确认的需求和方向不变/);
+  assert.doesNotMatch(html, /没通过|硬门|不是最好/);
   assert.match(html, /继续处理/);
   assert.equal((html.match(/<button/g) || []).length, 1);
   assert.doesNotMatch(html, /重新尝试|请重试|结构校验|输入修改要求|继续对话|请重新策划/);
@@ -395,7 +396,7 @@ test('an account or balance refusal offers 重新生成 and keeps the saved work
   for (const [code, sentence] of cases) {
     const job = fixture({
       error: '账户问题',
-      progress: { error_code: code, retryable: false, retry_action: null, failed_segment_ids: ['seg_1'] },
+      progress: { error_code: code, retryable: false, retry_action: null, failed_segment_ids: ['seg_1'], can_regenerate: true },
     });
     assert.deepEqual(recoveryForJob(job), { kind: 'retry_existing', label: '重新生成' });
     assert.deepEqual(retryRequest(job), { job_id: job.id, retry_failed_segments: false });
@@ -405,6 +406,12 @@ test('an account or balance refusal offers 重新生成 and keeps the saved work
     assert.match(html, /本次制作未完成/);
     assert.doesNotMatch(html, /重试失败片段|视频片段未生成|继续制作/);
     assert.equal((html.match(/<button/g) || []).length, 1);
+    const codedOnly = fixture({
+      error: '账户问题',
+      progress: { error_code: code, retryable: false, retry_action: null, failed_segment_ids: ['seg_1'] },
+    });
+    assert.notEqual(recoveryForJob(codedOnly)?.label, '重新生成');
+    assert.doesNotMatch(renderCard(codedOnly), /<button/);
   }
 });
 

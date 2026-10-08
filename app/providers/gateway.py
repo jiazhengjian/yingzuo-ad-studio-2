@@ -544,7 +544,9 @@ def save_stage_diagnostic(settings, candidate, stage_result):
     """Write one diagnostics file for this failure.
 
     A later note for the same stage result does not store the raw model output
-    again. The error code is kept on validation_reasons.
+    again. The error code is kept on validation_reasons. A non-blocking warning
+    may still be stored, and it does not mark the stage, so a blocking failure
+    after it keeps its own reasons.
     """
     if not isinstance(candidate, dict):
         return None
@@ -572,14 +574,9 @@ def save_stage_diagnostic(settings, candidate, stage_result):
             stage_result["validation_reasons"] = [code]
     if nonblocking:
         if safe_structured and isinstance(stage_result, dict) and "raw_output" in stage_result:
-            saved = save_failed_planner_output(settings, stage_result)
-            stage_result["_diagnostic_saved"] = True
-            return saved
+            return save_failed_planner_output(settings, stage_result)
         if reasons:
-            saved = save_check_reasons(settings, reasons, error_code=code, stage_result=stage_result)
-            if isinstance(stage_result, dict):
-                stage_result["_diagnostic_saved"] = True
-            return saved
+            return save_check_reasons(settings, reasons, error_code=code, stage_result=stage_result)
         return None
     if stage_result is None:
         if reasons:

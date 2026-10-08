@@ -224,6 +224,17 @@ def test_can_regenerate_uses_this_job_and_counts_conservative_release(tmp_path):
                  "progress": {"error_code": "planning_invalid_response", "retryable": False}}
     assert job_can_regenerate(structure) is True
     assert job_can_regenerate({"kind": "plan", "status": "failed", "error": "供应商生成失败", "progress": {}}) is True
+    for code in ("provider_balance", "provider_auth"):
+        account = {"kind": "generate", "status": "failed", "error": "账户余额或额度不足",
+                   "progress": {"error_code": code, "retryable": False},
+                   "payload": {"plan": {"review_status": "passed"}}}
+        assert job_can_regenerate(account) is True
+        shown_account = public({"jobs": [account]})
+        assert shown_account["jobs"][0]["progress"]["can_regenerate"] is True
+    rejected = {"kind": "generate", "status": "failed", "error": "视频没有生成",
+                "progress": {"error_code": "provider_request_rejected"},
+                "payload": {"plan": {"review_status": "passed"}}}
+    assert job_can_regenerate(rejected) is False
     shown = public({
         "project": {"plan": {"review_status": "passed", "auto_release": True}},
         "jobs": [missed, released],
