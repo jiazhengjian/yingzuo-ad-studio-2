@@ -1356,7 +1356,7 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                            merchant_request, current_plan, initial_brief=None, content_only=False,
                            speech_only=False, max_refinements=MAX_PLAN_REFINEMENTS,
                            refinement_format="sparse_or_full", diagnostic_settings=None,
-                           skip_review=False, cta_target=None):
+                           skip_review=False, cta_target=None, project_id=None):
     from .av_review import review_execution_windows, review_speech_requirements, review_transition_boundaries
     from .beat_timing import script_capacity_budget
     from .line_quality import (
@@ -1413,8 +1413,12 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     if speech_only:
         director_system += "\ndraft_format=speech_only时，draft_speech只有完整文案，没有既定内容拍、画面或秒点；保留其话语作用，沿已选方向首次编排完整内容与镜头，可以为实际动作和时长协调未固定措辞，不得照读创作说明或改变用户固定台词。\n"
     raw = None
+    from .planner_recovery import AUTO_RETRY_CAP
+    if type(max_refinements) is not int or max_refinements < 0:
+        max_refinements = 0
+    max_refinements = min(max_refinements, AUTO_RETRY_CAP)
     storyboard_errors = 0
-    while raw is None and storyboard_errors < 3:
+    while raw is None and storyboard_errors < AUTO_RETRY_CAP:
         try:
             raw = await stage_call(director_system, data, assets)
         except Exception as error:
@@ -1487,11 +1491,11 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
             # The eight gates cannot run until the ad type is known. A placeholder
             # can still be replaced. Anything left is labelled not ready.
             if is_degenerate_plan(plan):
-                chosen = _conservative()
+                chosen = _release_best()
                 if chosen is not None:
-                    return chosen
+                    return _hand(chosen)
             _label_for_release(plan)
-            return plan
+            return _hand(plan)
         kind, findings = classify_release(plan, strategy, locked_lines=locked, insisted_lines_=insisted)
         if kind == "ask":
             from .release_gate import line_gate_questions
@@ -1503,10 +1507,10 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                             "message": "硬门没有通过，不把这版交给确认",
                             "issues": [item.summary for item in findings][:8] or ["fallback_skeleton"],
                             "error_code": "planning_content_failed"})
-            chosen = _conservative()
+            chosen = _release_best()
             if chosen is None:
                 unfinished_board()
-            return chosen
+            return _hand(chosen)
         _label_for_release(plan)
         notes = settle_inner_monologue(plan)
         if notes:
@@ -1515,11 +1519,11 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                             "issues": notes[:8], "error_code": "inner_monologue"})
         from .release_gate import images_blocked_reason as decide
         if decide(plan, strategy=strategy):
-            chosen = _conservative()
+            chosen = _release_best()
             if chosen is None:
                 unfinished_board()
-            return chosen
-        return plan
+            return _hand(chosen)
+        return _hand(plan)
 
     if raw is None:
         record_failure({"nonblocking": True,
@@ -1596,45 +1600,95 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     stale_lines_used = False
     prop_review_repaired = False
     gate_repair_used = False
+    contract_repair_used = False
     last_reviewed_plan = None
 
     class _PlanAccepted(Exception):
         def __init__(self, plan):
             self.plan = plan
 
-    async def stop(message, issues, *, error_code="planning_content_failed", accept=True):
+    def _locked_kept(plan):
+        if not locked or not isinstance(plan, dict):
+            return True
+        spoken = []
+        script = plan.get("ad_script") or {}
+        for beat in script.get("beats") or []:
+            if isinstance(beat, dict) and isinstance(beat.get("narration"), str) and beat["narration"].strip():
+                spoken.append(beat["narration"].strip())
+        for segment in plan.get("segments") or []:
+            if not isinstance(segment, dict):
+                continue
+            for span in segment.get("speech_spans") or []:
+                if isinstance(span, dict) and isinstance(span.get("text"), str) and span["text"].strip():
+                    spoken.append(span["text"].strip())
+        return all(line in spoken for line in locked)
+
+    def _release_best():
+        """Hard-gate passers only. Fewest remaining review issues. Later ties win."""
+        from .release_gate import MerchantLineChoice, choose_hard_gate_release
+        pool = []
+
+        def add(candidate):
+            if usable(candidate) and _locked_kept(candidate):
+                pool.append(deepcopy(candidate))
+
+        for item in real_candidates:
+            add(item.get("plan") if isinstance(item, dict) else None)
+        add(last_reviewed_plan)
+        add(last_valid_plan)
+        try:
+            conservative = _conservative()
+        except MerchantLineChoice:
+            raise
+        if conservative is not None:
+            add(conservative)
+        return choose_hard_gate_release(pool, strategy=strategy)
+
+    def _hand(plan):
+        from .release_gate import record_auto_release, should_record_auto_release
+        if should_record_auto_release(plan):
+            record_auto_release(plan, project_id=project_id, repair_rounds=repairs)
+        return plan
+
+    async def stop(message, issues, *, error_code="planning_content_failed", accept=True, reasons=()):
         from .planner_recovery import needs_merchant
-        if needs_merchant(message, issues):
-            raise ProgressivePlanningError(message + "。已有方案和素材已保留，尚未开始新的图片或视频生成",
-                issue_summary=list(issues.values()), repair_attempts=repairs,
-                error_code=error_code) from None
-        if error_code == "planning_review_incomplete":
-            # The check itself did not finish. A usable board can still continue,
-            # but only with this recorded conservative fallback. A finished
-            # review that is not ready stays not_ready and does not start images.
-            chosen = last_reviewed_plan if usable(last_reviewed_plan) else best_real()
-            if not usable(chosen) and usable(last_valid_plan):
-                chosen = last_valid_plan
-            if usable(chosen):
-                cleaned = deepcopy(chosen)
-                record_failure({"nonblocking": True, "message": message,
-                                "issues": list(issues.values())[:8], "error_code": error_code})
-                raise _PlanAccepted(cleaned)
+        concrete = []
+        for item in reasons:
+            text = str(item).strip() if item is not None else ""
+            if text and text not in concrete:
+                concrete.append(text[:200])
+            if len(concrete) == 8:
+                break
         record_failure({"nonblocking": True, "message": message,
-                        "issues": list(issues.values())[:8], "error_code": error_code})
+                        "issues": (concrete or list(issues.values()))[:8],
+                        "error_code": error_code, "failed_reasons": concrete})
         # A failed revision stays inside refine(). The caller keeps the plan
         # it already compiled, or seals the mapping, then continues the review.
         if not accept:
             raise RevisionKept from None
-        chosen = last_reviewed_plan if usable(last_reviewed_plan) else best_real()
-        if not usable(chosen) and usable(last_valid_plan):
-            chosen = last_valid_plan
-        if not usable(chosen):
+        # Repair already ran. Release a hard-gate passer instead of asking the
+        # merchant to retry. Their own locked line still raises MerchantLineChoice.
+        chosen = _release_best()
+        if chosen is None:
+            # No board cleared the hard gates. Keep the last usable compilation
+            # so the loop can finish. Image spend still refuses it until the
+            # gates pass, and does that repair without asking the merchant.
+            fallback = last_reviewed_plan if usable(last_reviewed_plan) else best_real()
+            if not usable(fallback) and usable(last_valid_plan):
+                fallback = last_valid_plan
+            # A board that dropped the merchant's own line is not a release.
+            if usable(fallback) and _locked_kept(fallback):
+                chosen = deepcopy(fallback)
+        if chosen is not None:
+            raise _PlanAccepted(chosen)
+        summary = list(issues.values()) or ["占位稿不是完成的方案"]
+        if needs_merchant(message, issues):
             raise ProgressivePlanningError(
                 message + "。已有方案和素材已保留，尚未开始新的图片或视频生成",
-                issue_summary=list(issues.values()) or ["占位稿不是完成的方案"],
-                repair_attempts=repairs, error_code=error_code)
-        raise _PlanAccepted(chosen)
+                issue_summary=summary, repair_attempts=repairs, error_code=error_code)
+        raise ProgressivePlanningError(
+            message + "。已有方案和素材已保留，尚未开始新的图片或视频生成",
+            issue_summary=summary, repair_attempts=repairs, error_code=error_code)
 
     async def refine(before, scope, feedback, issues, *, plan=None, schedule=None, bound_review=None):
         nonlocal repairs
@@ -1743,12 +1797,10 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                         else:
                             detail = {("contract",): "方案结构、商品依据或已确认内容需要调整"}
                         record_failure(plan)
-                        # This is an authored lock or identity break, not a timing miss.
-                        # Raising here keeps that reason; a capacity retry would hide it
-                        # and must not fill in a placeholder board.
-                        raise ProgressivePlanningError(
-                            "本次方案未能满足已确认要求，暂未采用。已有方案和素材已保留，尚未开始新的图片或视频生成",
-                            issue_summary=list(detail.values()), repair_attempts=repairs)
+                        # A lock the merchant set still stops as their choice.
+                        # Any other contract failure falls through to the same
+                        # repair-and-release path as the main compile loop.
+                        await stop("本次方案未能满足已确认要求，暂未采用", detail, reasons=[text])
                     capacity_issue = str(compile_error)
                 beat_positions = {beat["id"]: index + 1 for index, beat in enumerate(before["ad_script"]["beats"])}
                 guard_issues = {("estimate", beat_id): f"第{beat_positions[beat_id]}个内容段的实际动作未变，不能仅降低估时"
@@ -1874,11 +1926,16 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                             await stop("分镜没有完成，占位稿不是完成的方案",
                                        {("contract",): "占位稿不是完成的方案"})
                     record_failure(None)
-                    await stop("本次方案结构不完整，暂未采用", {("contract",): "方案结构、商品依据或已确认内容需要调整"})
-                except ValueError:
+                    await stop("本次方案结构不完整，暂未采用",
+                               {("contract",): "方案结构、商品依据或已确认内容需要调整"},
+                               reasons=[str(shape_error)])
+                except ValueError as shape_value:
                     record_failure(None)
-                    await stop("本次方案结构不完整，暂未采用", {("contract",): "方案结构、商品依据或已确认内容需要调整"})
+                    await stop("本次方案结构不完整，暂未采用",
+                               {("contract",): "方案结构、商品依据或已确认内容需要调整"},
+                               reasons=[str(shape_value)])
                 text = str(error)
+                check_reasons = [text] if text else []
                 if "说话窗口须包含已确认的说话角色" in text and not voice_board_regenerated:
                     # A replayed voiceover board has no speaker in the talking shots.
                     # Ask for the storyboard again instead of filling in the template.
@@ -1897,11 +1954,11 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 if "无人声" in text:
                     record_failure(None)
                     await stop("本次方案未能满足已确认要求，暂未采用",
-                         {("speech",): "已选无人声方向不能增加台词"})
+                         {("speech",): "已选无人声方向不能增加台词"}, reasons=check_reasons)
                 if "用户明确固定的台词" in text or "用户固定台词" in text:
                     record_failure(None)
                     await stop("本次方案未能满足已确认要求，暂未采用",
-                         {("fixed_speech",): "用户固定台词未完整保留"})
+                         {("fixed_speech",): "用户固定台词未完整保留"}, reasons=check_reasons)
                 if "选中创意的商品依据必须落实" in text and not selected_evidence_restored:
                     selected_evidence_restored = True
                     restored = _restore_selected_evidence(before, strategy)
@@ -1939,11 +1996,24 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                 record_failure(None)
                 issues = {("timing",): "动作与完整台词无法放入所选时长或生成分段"}
                 if not repairable:
-                    if "用户明确固定的台词" in str(error):
+                    if "用户明确固定的台词" in str(error) or "用户固定台词" in str(error):
                         issues = {("fixed_speech",): "用户固定台词未完整保留"}
-                    else:
-                        issues = {("contract",): "方案结构、商品依据或已确认内容需要调整"}
-                    await stop("本次方案未能满足已确认要求，暂未采用", issues)
+                        await stop("本次方案未能满足已确认要求，暂未采用", issues, reasons=check_reasons)
+                    issues = {("contract",): "方案结构、商品依据或已确认内容需要调整"}
+                    if not contract_repair_used:
+                        contract_repair_used = True
+                        scope = {"beat_ids": [beat["id"] for beat in before["ad_script"]["beats"]],
+                                 "shot_ids": [shot["id"] for shot in before["shots"]],
+                                 "adjacent_state_shot_ids": [], "allow_summary_update": False}
+                        feedback = {"kind": "contract", "issue": str(error),
+                                    "repair_contract": "按这条校验失败改正分镜。用户固定台词原样保留。不要加入未确认的人物或商品事实。"}
+                        try:
+                            raw = await refine(before, scope, feedback, issues)
+                        except RevisionKept:
+                            await stop("本次方案未能满足已确认要求，暂未采用", issues, reasons=check_reasons)
+                        else:
+                            continue
+                    await stop("本次方案未能满足已确认要求，暂未采用", issues, reasons=check_reasons)
                 # A global packing conflict couples all of these content windows;
                 # the original story/visual contract remains protected separately.
                 scope = capacity_repair_scope(before)

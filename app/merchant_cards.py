@@ -50,12 +50,12 @@ def failure_class(text: str, error_code: str | None = None) -> int:
                 "planning_configuration_failed"}:
         return 2
     if code in {"planning_invalid_response", "planning_response_interrupted", "planning_request_failed",
-                "planning_review_incomplete"}:
+                "planning_review_incomplete", "planning_content_failed"}:
         return 1
     raw = text or ""
     if any(pattern.search(raw) for pattern, _sentence in _MERCHANT_RULES):
         return 2
-    if code in {"planning_content_failed", "planning_request_limit"}:
+    if code in {"planning_request_limit"}:
         return 2
     if _TECHNICAL.search(raw) or not raw.strip():
         return 3

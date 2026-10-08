@@ -113,18 +113,18 @@ def test_joint_authoring_cannot_change_a_fixed_merchant_line(joint_gateway, chan
 
     if change_during == "initial":
         state.first_director_mutation = change
+        with pytest.raises(ProviderError):
+            state.run()
+        assert state.calls == ["storyboard"]
     else:
         state.first_review_mutation = reject_first_shot
         state.refinement_mutation = change
-    with pytest.raises(ProviderError):
-        state.run()
-
-    assert state.contexts[0]["fixed_speech"] == ["看轮廓。"]
-    if change_during == "initial":
-        assert state.calls == ["storyboard"]
-    else:
+        plan = state.run()
+        spoken = "".join(beat.get("narration") or "" for beat in plan["ad_script"]["beats"])
+        assert "看轮廓。" in spoken and "看外形" not in spoken
         assert state.calls == ["storyboard", "plan_review", "plan_refinement"]
         assert state.contexts[-1]["fixed_speech"] == ["看轮廓。"]
+    assert state.contexts[0]["fixed_speech"] == ["看轮廓。"]
 
 
 def test_joint_incomplete_review_stops_without_turning_it_into_content_repair(joint_gateway):

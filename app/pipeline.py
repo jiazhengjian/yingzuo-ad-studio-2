@@ -208,6 +208,31 @@ class VoiceTooLong(ValueError):
     retryable = False
 
 
+STRUCTURE_EXHAUSTED_CARD = "这次没生成出来"
+
+
+def _auto_retry_count(payload, key):
+    try:
+        count = int((payload or {}).get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+    return count if count > 0 else 0
+
+
+def _structure_auto_failure(exc) -> bool:
+    """The plan-structure check. Strategy and transport failures stay on their own caps."""
+    if isinstance(exc, PlanStructureError):
+        return True
+    return "规划结果未通过结构校验" in str(exc)
+
+
+def _content_auto_failure(exc) -> bool:
+    code = getattr(exc, "error_code", None)
+    message = str(exc)
+    return code in ("planning_content_failed", "planning_review_incomplete") or any(
+        token in message for token in ("结构不完整", "未能满足已确认要求", "容量仍未改善"))
+
+
 class PlanStructureError(ValueError):
     """A segment/plan shape the merchant should not have to edit by hand."""
 
@@ -611,13 +636,21 @@ class Pipeline:
             held_submission = getattr(exc, "error_code", None) in (
                 "provider_balance", "provider_auth", "provider_request_rejected")
             if job["kind"] == "plan":
+                from .planner_recovery import AUTO_RETRY_CAP
                 progress = dict(self.store.get_job(job_id).get("progress") or {})
                 retryable = bool(getattr(exc, "retryable", False))
                 retry_action = getattr(exc, "retry_action", "edit_plan")
-                # One replay of a saved storyboard is enough. A second identical
-                # structure failure starts again from the brief instead of looping.
-                if isinstance(exc, PlanStructureError) and (job.get("payload") or {}).get("plan_structure_replayed"):
-                    retryable, retry_action = False, "continue_conversation"
+                payload_now = self.store.get_job(job_id).get("payload") or {}
+                # Two automatic structure retries already ran. The merchant can
+                # start a new generation. They are not asked to edit the plan.
+                if (_structure_auto_failure(exc)
+                        and _auto_retry_count(payload_now, "structure_auto_retries") >= AUTO_RETRY_CAP):
+                    message = STRUCTURE_EXHAUSTED_CARD
+                    changes["error"] = message
+                    retryable, retry_action = True, "retry_planning"
+                    progress["structure_retries_exhausted"] = True
+                elif isinstance(exc, PlanStructureError) and payload_now.get("plan_structure_replayed"):
+                    retryable, retry_action = False, None
                 progress.update(error_code=getattr(exc, "error_code", "planning_invalid_response"),
                     retryable=retryable, retry_action=retry_action)
                 # Only our bounded planning errors provide these owned summaries.
@@ -625,13 +658,7 @@ class Pipeline:
                     progress.update(issue_summary=getattr(exc, "issue_summary", [])[:8],
                         repair_attempts=getattr(exc, "repair_attempts", 0))
                 changes["progress"] = progress
-            if job["kind"] == "generate" and getattr(exc, "error_code", None) == "release_recheck":
-                progress = dict(self.store.get_job(job_id).get("progress") or {})
-                progress.update(error_code="release_recheck", retryable=False, retry_action="edit_plan")
-                changes["progress"] = progress
-                changes["error"] = str(exc)[:500]
-                self.store.add_message(job["project_id"], "assistant", str(exc), job_id)
-            elif job["kind"] == "generate" and held_submission:
+            if job["kind"] == "generate" and held_submission:
                 from .generate_retry import ACCOUNT_RETRY_CODES
                 progress = dict(self.store.get_job(job_id).get("progress") or {})
                 # 401/402 did not accept a task. The merchant can fix the account
@@ -668,8 +695,51 @@ class Pipeline:
                 progress.update(error_code="image_submission_unavailable", retryable=True, retry_action="retry_existing")
                 changes["progress"] = progress
             self.store.update_job(job_id, **changes)
+            if self._auto_repair_plan_job(job_id, exc):
+                return self.store.get_job(job_id)
             self.store.set_project_status(job["project_id"], job["revision"], "partial" if self.store.get_job(job_id)["submission_count"] else "failed")
         return self.store.get_job(job_id)
+
+    def _auto_repair_plan_job(self, job_id, exc):
+        """Requeue a model failure. Each category stops after AUTO_RETRY_CAP rounds."""
+        from .planner_recovery import AUTO_RETRY_CAP, merchant_stop
+        from .planning_session import drop_storyboard_checkpoint, reopen_rejected_stage
+        job = self.store.get_job(job_id)
+        if job["kind"] != "plan" or job["status"] not in ("failed", "partial"):
+            return False
+        code = getattr(exc, "error_code", None)
+        message = str(exc)
+        issues = getattr(exc, "issue_summary", ()) or ()
+        if merchant_stop(code, message, issues, getattr(exc, "retry_action", None)):
+            return False
+        payload = dict(job.get("payload") or {})
+        if _content_auto_failure(exc):
+            key = "content_auto_retries"
+            regenerate = True
+        elif _structure_auto_failure(exc):
+            key = "structure_auto_retries"
+            regenerate = True
+        else:
+            return False
+        if _auto_retry_count(payload, key) >= AUTO_RETRY_CAP:
+            return False
+        payload[key] = _auto_retry_count(payload, key) + 1
+        if regenerate:
+            checkpoint = payload.get("planning_checkpoint")
+            reopened = None
+            if isinstance(checkpoint, dict):
+                reopened = drop_storyboard_checkpoint(checkpoint) or reopen_rejected_stage(checkpoint)
+            if reopened is not None:
+                payload["planning_checkpoint"] = reopened
+            else:
+                payload.pop("planning_checkpoint", None)
+            payload["auto_retry_prepared"] = True
+        self.store.update_job(job_id, payload=payload)
+        try:
+            self.store.retry_planning_job(job["project_id"], job_id)
+        except Exception:
+            return False
+        return True
 
     async def _plan(self, job):
         def planning_progress(phase):
@@ -871,18 +941,23 @@ class Pipeline:
                 self.store.add_event(job["project_id"], job["id"], "step", "已自动校正，继续制作中")
         return plan
 
-    def _refuse_unreleased(self, job, plan):
-        """Re-run the hard gates before any image or video provider call."""
-        from .release_gate import ReleaseRecheck, images_blocked_reason
+    def _settle_before_spend(self, job, plan):
+        """Re-run the hard gates. Repair locally. Do not ask the merchant to fix a model failure."""
+        from .release_gate import MerchantLineChoice, settle_before_spend
         project = self.store.get_project(job["project_id"])
-        strategy = plan.get("strategy") if isinstance(plan, dict) else None
-        if images_blocked_reason(plan, strategy=strategy, project=project):
-            raise ReleaseRecheck()
+        try:
+            settled = settle_before_spend(plan, project=project, project_id=job["project_id"])
+        except MerchantLineChoice as choice:
+            prompt = choice.questions[0]["prompt"] if choice.questions else str(choice)
+            raise ValueError(prompt) from choice
+        if isinstance(settled, dict) and settled is not plan:
+            self._payload(job["id"], plan=settled)
+        return settled
 
     async def _generate(self, job):
         project = self.store.get_project(job["project_id"])
         plan = await self._generation_plan(job, project)
-        self._refuse_unreleased(job, plan)
+        plan = self._settle_before_spend(job, plan)
         from .release_gate import assert_spend_confirmed
         assert_spend_confirmed(self.store.get_job(job["id"]), project)
         if project["route"] == "presenter" and not getattr(self.settings, "presenter_verified", False):
@@ -1125,7 +1200,7 @@ class Pipeline:
             callback["on_asset"] = save_design
         if replace_keys and "replace_keys" in inspect.signature(create).parameters:
             callback["replace_keys"] = replace_keys
-        self._refuse_unreleased(job, plan)
+        plan = self._settle_before_spend(job, plan)
         self.gateway._submission_busy_notice = lambda: self.store.add_event(
             job["project_id"], job["id"], "step", "图片平台繁忙，正在自动重新提交")
         try:
@@ -1200,7 +1275,7 @@ class Pipeline:
             raise ValueError("该视频任务已明确失败，原run不自动重新生成；需要新的明确授权与方案版本")
         if not step:
             fresh = self.store.get_job(jid)
-            self._refuse_unreleased(fresh, (fresh.get("payload") or {}).get("plan"))
+            self._settle_before_spend(fresh, (fresh.get("payload") or {}).get("plan"))
             from .release_gate import assert_spend_confirmed
             assert_spend_confirmed(fresh, self.store.get_project(job["project_id"]))
             allowed = job.get("payload", {}).get("retry_segment_ids")

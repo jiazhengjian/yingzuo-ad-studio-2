@@ -439,10 +439,18 @@ class Store:
                              progress.get("issue_summary"), progress.get("retry_action")):
                 raise StaleRevision("本次方案需要调整，请通过输入框说明修改要求；已有成果仍保留")
             from .story_logic import planning_rerun_storyboard
+            # The worker already chose the next checkpoint. A click after two
+            # structure retries starts a new generation instead of replaying it.
+            if progress.get("structure_retries_exhausted"):
+                payload = {key: value for key, value in payload.items()
+                           if key not in ("planning_checkpoint", "structure_auto_retries",
+                                          "auto_retry_prepared", "content_auto_retries")}
+            elif payload.get("auto_retry_prepared"):
+                payload = {key: value for key, value in payload.items() if key != "auto_retry_prepared"}
             # A shot-level content failure, a voice mismatch, or a local template
             # is stored after the storyboard call already returned. Reopening only
             # the last dialogue rewrite would replay that board and skip review.
-            if planning_rerun_storyboard(job.get("error"), progress.get("issue_summary")):
+            elif planning_rerun_storyboard(job.get("error"), progress.get("issue_summary")):
                 if isinstance(checkpoint, dict):
                     resumed = drop_storyboard_checkpoint(checkpoint)
                     payload = {**payload, "planning_checkpoint": resumed} if resumed is not None else {
@@ -1431,7 +1439,13 @@ class Store:
                         stamp_honest_label(plan, plan.get("strategy"), project=p)
                     blocked = images_blocked_reason(plan, strategy=plan.get("strategy"), project=p)
                     if blocked:
-                        raise ValueError(blocked)
+                        from .release_gate import MerchantLineChoice, settle_before_spend
+                        try:
+                            plan = settle_before_spend(plan, project=p, project_id=p["id"])
+                        except MerchantLineChoice as choice:
+                            prompt = choice.questions[0]["prompt"] if choice.questions else str(choice)
+                            raise ValueError(prompt) from choice
+                        decision["plan"] = plan
                     self._validate_plan_duration(p, plan)
                     for option in decision["creative_options"]:
                         self._validate_plan_duration(p, {"generation_strategy": plan.get("generation_strategy", "legacy_10s"), "segments": [option["segment"], *plan["segments"][1:]]})

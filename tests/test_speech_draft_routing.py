@@ -139,8 +139,9 @@ def test_fixed_speech_remains_guarded_after_new_handoff(speech_gateway):
     line = "这一句必须原样保留。"
     state.brief = f"固定台词“{line}”，继续安排。"
     state.draft_mutation = lambda value: (value.clear(), value.update(narration=line))
-    with pytest.raises(ProviderError):
-        state.run()
+    plan = state.run()
+    spoken = "".join(beat.get("narration") or "" for beat in plan["ad_script"]["beats"])
+    assert line in spoken
     assert state.calls == ["ad_script", "storyboard"]
     assert line in state.contexts[0]["task"]
     assert state.contexts[1]["fixed_speech"] == [line]
@@ -161,10 +162,11 @@ def test_speech_route_does_not_allow_director_to_drop_selected_evidence(speech_g
         for shot in value["shots"]:
             shot["evidence_ids"] = []
     state.first_director_mutation = drop
-    with pytest.raises(ProviderError, match="结构不完整"):
-        state.run()
+    plan = state.run()
     assert state.calls[0:2] == ["ad_script", "storyboard"]
     assert "plan_review" not in state.calls
+    assert all(beat.get("evidence_ids") for beat in plan["ad_script"]["beats"])
+    assert any("appearance" in beat["evidence_ids"] for beat in plan["ad_script"]["beats"])
 
 
 def test_nonprogressive_initial_authoring_keeps_timed_contract(speech_gateway, settings, monkeypatch):

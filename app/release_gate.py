@@ -5,13 +5,22 @@ as a structure check. Image and video spend always re-run this table. A stored
 label from planning time, including passed, repaired, and conservative_fallback,
 does not skip that check. A later edit or an older saved board can change the
 words and leave the label. Merchant-insisted lines are the only exemption.
+
+A failed check is repaired here. The merchant is not asked to fix a board the
+model wrote. Their own locked line is still a choice. When the overall review
+still fails, the hard-gate passer with the fewest remaining issues is released
+and recorded. That record is not shown.
 """
 from __future__ import annotations
 
+import json
+import logging
 import math
 import re
 from copy import deepcopy
 from dataclasses import dataclass
+
+logger = logging.getLogger("yingzuo.auto_release")
 
 from .line_quality import (
     brand_stack_remaining, brand_visual_claim_overflow,
@@ -402,11 +411,202 @@ def _fit_failure_note(labels):
 
 
 def conservative_fallback_note(plan):
-    """Say whether the full review failed, or never finished."""
+    """Say whether the full review failed, or never finished.
+
+    This sentence is a backend record. It is not shown to the merchant.
+    """
     review = _review_record(plan)
     if not _review_ran_and_failed(review):
         return _INCOMPLETE_REVIEW_NOTE
     return _fit_failure_note(_failed_review_labels(review))
+
+
+def review_issue_rank(plan):
+    """Lower is better. A clean review, then fewer failed items, then an unfinished review."""
+    review = _review_record(plan)
+    if isinstance(review, dict) and review.get("ready") is True and review.get("checks"):
+        return (0, 0)
+    if _review_ran_and_failed(review):
+        return (1, len(_failed_review_labels(review)))
+    return (2, 0)
+
+
+def choose_hard_gate_release(candidates, *, strategy=None, project=None):
+    """Among boards that pass every hard gate, keep the fewest remaining review issues.
+
+    A later candidate wins a tie. A board that fails a hard gate is not eligible.
+    """
+    best = None
+    best_rank = None
+    for plan in candidates or ():
+        if not isinstance(plan, dict):
+            continue
+        if images_blocked_reason(plan, strategy=strategy or plan.get("strategy"), project=project):
+            continue
+        rank = review_issue_rank(plan)
+        if best is None or rank <= best_rank:
+            best = plan
+            best_rank = rank
+    return best
+
+
+def should_record_auto_release(plan):
+    """A clean pass is not an auto-release. A hard-gate release with a weak review is."""
+    if not isinstance(plan, dict) or isinstance(plan.get("auto_release"), dict):
+        return False
+    if plan.get("review_status") in ("passed", "repaired", "not_ready"):
+        return False
+    review = _review_record(plan)
+    if isinstance(review, dict) and review.get("ready") is True and review.get("checks"):
+        return False
+    return True
+
+
+def record_auto_release(plan, *, project_id=None, ad_form=None, repair_rounds=0, failed_checks=None):
+    """Store one queryable record and write one log line. Nothing here is shown."""
+    if not isinstance(plan, dict):
+        return plan
+    review = _review_record(plan)
+    if failed_checks is None:
+        failed_checks = _failed_review_labels(review) if _review_ran_and_failed(review) else []
+    form = ad_form or _form_of(_strategy_of(plan, None), plan)
+    note = conservative_fallback_note(plan)
+    rounds = int(repair_rounds or 0)
+    plan["auto_release"] = {
+        "note": note,
+        "failed_checks": list(failed_checks),
+        "repair_rounds": rounds,
+        "ad_form": form,
+        "project_id": project_id,
+    }
+    logger.info("auto_release %s", json.dumps({
+        "project_id": project_id,
+        "ad_form": form,
+        "failed_checks": list(failed_checks),
+        "repair_rounds": rounds,
+        "note": note,
+    }, ensure_ascii=False))
+    return plan
+
+
+def _sync_spoken(plan, narrations, previous):
+    lines = [text for text in narrations.values() if isinstance(text, str) and text.strip()]
+    if lines:
+        plan["script"] = "\n".join(lines)
+    replaced = {
+        previous[beat_id]: narrations[beat_id]
+        for beat_id in narrations
+        if beat_id in previous and previous[beat_id] != narrations[beat_id]
+    }
+    for segment in plan.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        for span in segment.get("speech_spans") or []:
+            if not isinstance(span, dict):
+                continue
+            if span.get("beat_id") in narrations:
+                span["text"] = narrations[span["beat_id"]]
+            elif span.get("text") in replaced:
+                span["text"] = replaced[span["text"]]
+        for shot in segment.get("shots") or []:
+            if not isinstance(shot, dict):
+                continue
+            if shot.get("beat_id") in narrations and "narration" in shot:
+                shot["narration"] = narrations[shot["beat_id"]]
+            elif shot.get("narration") in replaced:
+                shot["narration"] = replaced[shot["narration"]]
+
+
+def local_hard_gate_repair(plan, strategy=None, project=None):
+    """One local rewrite of a board that failed a hard gate. None when nothing changed."""
+    if not isinstance(plan, dict):
+        return None
+    strategy = _strategy_of(plan, strategy)
+    copied = deepcopy(plan)
+    try:
+        from .line_quality import collapse_brand_claims
+        script = copied.get("ad_script")
+        if not isinstance(script, dict):
+            return None
+        revised, changed = collapse_brand_claims(script, insisted_lines(copied), _plan_duration(copied))
+        if not changed or not isinstance(revised, dict):
+            return None
+        previous = {}
+        for beat in script.get("beats") or []:
+            if isinstance(beat, dict) and isinstance(beat.get("id"), str):
+                previous[beat["id"]] = beat.get("narration") or ""
+        narrations = {}
+        for beat in revised.get("beats") or []:
+            if isinstance(beat, dict) and isinstance(beat.get("id"), str):
+                narrations[beat["id"]] = beat.get("narration") or ""
+        copied["ad_script"] = revised
+        _sync_spoken(copied, narrations, previous)
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return None
+    copied.pop("plan_review", None)
+    copied.pop("review_status", None)
+    copied.pop("review_status_note", None)
+    copied.pop("auto_release", None)
+    stamp_honest_label(copied, strategy, project=project)
+    return copied
+
+
+def settle_before_spend(plan, *, strategy=None, project=None, project_id=None, duration=None,
+                        generation_strategy=None, asset_ids=None, cta_target=None):
+    """Return a board that passes the eight hard gates.
+
+    One local repair is tried first. If that board passes, it continues.
+    If it does not, the fallback is the hard-gate passer with the fewest
+    remaining review issues. Nothing is returned for a provider call until a
+    board passes. The merchant is not asked to rewrite a model failure.
+    MerchantLineChoice still propagates when the blocked words are theirs.
+    """
+    from .merchant_cards import SYSTEM_CARD
+    if not isinstance(plan, dict):
+        raise ValueError(SYSTEM_CARD)
+    strategy = _strategy_of(plan, strategy)
+    form = _form_of(strategy, plan, project)
+    if form is None:
+        raise ValueError(SYSTEM_CARD)
+    if images_blocked_reason(plan, strategy=strategy, project=project) is None:
+        return plan
+    repaired = local_hard_gate_repair(plan, strategy, project)
+    if repaired is not None and images_blocked_reason(repaired, strategy=strategy, project=project) is None:
+        if should_record_auto_release(repaired):
+            record_auto_release(repaired, project_id=project_id, ad_form=form, repair_rounds=1)
+        return repaired
+    locked = _kept_lines(plan.get("merchant_locked_lines"))
+    insisted = insisted_lines(plan)
+    if duration is None:
+        duration = _plan_duration(plan)
+    if generation_strategy is None:
+        generation_strategy = plan.get("generation_strategy") or "legacy_10s"
+    if asset_ids is None:
+        asset_ids = []
+        for segment in plan.get("segments") or []:
+            if not isinstance(segment, dict):
+                continue
+            for aid in segment.get("reference_asset_ids") or []:
+                if aid not in asset_ids:
+                    asset_ids.append(aid)
+    conservative = None
+    if type(duration) is int and strategy is not None:
+        try:
+            conservative = conservative_usable_plan(
+                strategy, duration, generation_strategy, asset_ids, locked, cta_target,
+                insisted_lines_=insisted)
+        except MerchantLineChoice:
+            raise
+        except (TypeError, ValueError, KeyError, AttributeError):
+            conservative = None
+    chosen = choose_hard_gate_release(
+        [item for item in (repaired, conservative) if item is not None],
+        strategy=strategy, project=project)
+    if chosen is None:
+        raise ValueError(SYSTEM_CARD)
+    if should_record_auto_release(chosen):
+        record_auto_release(chosen, project_id=project_id, ad_form=form, repair_rounds=1)
+    return chosen
 
 
 def stamp_honest_label(plan, strategy=None, *, repairs=0, project=None):

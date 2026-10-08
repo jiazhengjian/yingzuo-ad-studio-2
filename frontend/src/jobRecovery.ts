@@ -29,23 +29,39 @@ export function recoveryForJob(job?: Job): JobRecovery | null {
   // A content failure must not silently start the same planning loop again.
   // Older planning jobs have no classification and are treated conservatively.
   if (job.kind === 'plan') {
-    if (/结构不完整|未能满足已确认要求|容量仍未改善/.test(job.error || '')) return { kind: 'retry_planning', label: '继续处理' };
-    if (job.progress.error_code === 'planning_content_failed' && storyboardContentFailure(job)) {
-      return { kind: 'retry_planning', label: '继续处理' };
+    const issues = Array.isArray(job.progress?.issue_summary) ? job.progress.issue_summary.join('') : '';
+    const owned = `${job.error || ''}${issues}`;
+    // The merchant's own locked line still needs a choice. A model check does not.
+    if (/用户明确固定的台词|用户固定台词|已选无人声方向不能增加台词|无人声方向/.test(owned)) {
+      return { kind: 'edit_plan' };
+    }
+    if (/结构不完整|未能满足已确认要求|容量仍未改善/.test(job.error || '')
+      || job.progress.error_code === 'planning_content_failed'
+      || job.progress.error_code === 'planning_review_incomplete'
+      || storyboardContentFailure(job)) {
+      return { kind: 'unavailable' };
+    }
+    // Two automatic structure retries already failed. Regenerating is a new
+    // system attempt, not a request to edit the plan.
+    if (job.progress.structure_retries_exhausted || job.error === '这次没生成出来'
+      || /规划结果未通过结构校验/.test(job.error || '')) {
+      return { kind: 'retry_existing', label: '重新生成' };
     }
     if (job.progress.error_code === 'planning_configuration_failed') return { kind: 'check_connection' };
     if (job.progress.error_code === 'planning_invalid_response'
       && job.progress.retry_action === 'retry_planning' && job.progress.retryable !== false) {
       return { kind: 'retry_planning', label: '继续处理' };
     }
-    // A saved storyboard was rejected by a later structure check. Resume replays
-    // that storyboard; only an exhausted replay starts again from the brief.
+    // A saved storyboard failed a structure check. The job already replays it once.
+    // A leftover failure is a system record, not a merchant retry.
     if (job.progress.error_code === 'planning_invalid_response'
-      && job.progress.retry_action !== 'continue_conversation'
       && /视频段镜头时轴或素材结构无效|独立旁白方案的声音策略、内容或跨段对应无效/.test(job.error || '')) {
-      return { kind: 'retry_planning', label: '继续处理' };
+      return { kind: 'unavailable' };
     }
-    if (['planning_invalid_response', 'planning_review_incomplete', 'planning_request_limit'].includes(job.progress.error_code as string)) {
+    if (job.progress.error_code === 'planning_request_limit') {
+      return { kind: 'continue_conversation' };
+    }
+    if (job.progress.error_code === 'planning_invalid_response') {
       return { kind: 'continue_conversation' };
     }
     if ((job.progress.error_code === 'planning_request_failed'
@@ -53,7 +69,7 @@ export function recoveryForJob(job?: Job): JobRecovery | null {
       && job.progress.retry_action === 'retry_planning' && job.progress.retryable !== false) {
       return { kind: 'retry_planning', label: '继续处理' };
     }
-    return { kind: 'edit_plan' };
+    return { kind: 'unavailable' };
   }
   // A 401 or 402 never accepted a task. After the account is fixed, the same
   // plan and pictures can be submitted again. A rejected request stays blocked.
@@ -68,9 +84,11 @@ export function recoveryForJob(job?: Job): JobRecovery | null {
   if (/请重新上传商品图|还没有可用的商品图/.test(job.error || '')) return { kind: 'upload_product', label: '重新上传商品图' };
   if (/请重新选择时长|所选时长不一致/.test(job.error || '')) return { kind: 'edit_plan', label: '重新选择时长' };
   if (job.progress.error_code === 'image_generation_failed') return { kind: 'edit_plan' };
+  if (/方案检查没有通过|方案检查没通过|这版方案需要重新检查/.test(job.error || '')
+    || job.progress.error_code === 'release_recheck') {
+    return { kind: 'unavailable' };
+  }
   if (/请修改方案/.test(job.error || '')) return { kind: 'edit_plan', label: '修改方案' };
-  // Spend-time recheck failed. The merchant edits in the composer. Do not offer another generate.
-  if (job.progress.error_code === 'release_recheck') return { kind: 'edit_plan', label: '回到对话修改' };
   if (job.progress.retryable === false) return {
     kind: job.progress.error_code === 'reference_image_unreadable' ? 'check_materials' : 'unavailable',
   };
@@ -111,7 +129,7 @@ export function cardMessage(job: Job, recovery: JobRecovery): string {
     return '本轮处理已达到次数上限，已停止继续尝试。原需求和已有内容仍然保留。';
   }
   if (code === 'planning_review_incomplete') {
-    return '系统未能完成这次方案检查，尚未采用本轮草稿。已保存的内容仍然保留。';
+    return SYSTEM_FAILURE_COPY;
   }
   if (recovery.kind === 'reconcile') {
     return sanitizeCardText(job.error || '平台可能已受理，暂不重复提交。请先核对原任务。');
@@ -119,9 +137,6 @@ export function cardMessage(job: Job, recovery: JobRecovery): string {
   if (recovery.kind === 'retry_failed_segments') {
     if (code === 'reference_image_unreadable') return '视频服务未能读取参考图片。已有图片和成功片段仍保留。';
     return '有的视频片段没有生成，已有图片和成功片段仍保留。';
-  }
-  if (code === 'release_recheck') {
-    return '这版方案需要重新检查。请在对话里改完再制作，这次不会生成图片或视频。';
   }
   if (recovery.kind === 'edit_plan') {
     if (recovery.label === '重新选择时长') return '方案与所选时长不一致，已有内容仍保留。请重新选择时长后再制作。';
@@ -136,6 +151,9 @@ export function cardMessage(job: Job, recovery: JobRecovery): string {
   }
   if (code === 'provider_auth') {
     return '生成账户的连接需要检查，已有方案和图片仍保留。账户修好后可以重新生成。';
+  }
+  if (recovery.kind === 'retry_existing' && recovery.label === '重新生成' && job.kind === 'plan') {
+    return '这次没生成出来';
   }
   if (recovery.kind === 'retry_planning' && storyboardContentFailure(job)) {
     return '这次分镜没有通过内容检查。继续处理会重新生成分镜，已保存的需求和方向仍保留。';

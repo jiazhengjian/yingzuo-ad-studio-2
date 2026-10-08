@@ -496,6 +496,19 @@ def test_renaming_failed_shots_cannot_reset_same_content_problem_count(progressi
     assert state.calls.count("plan_review") == (1 if rename_only else 2)
 
 
+def test_review_repair_stops_at_two_even_when_the_setting_asks_for_more(progressive_gateway, settings):
+    settings.planner_max_refinements = 9
+    state = progressive_gateway
+    state.first_review_mutation = lambda review: reject_shot(review, 0)
+    state.second_review_mutation = lambda review: reject_shot(review, 2)
+    state.third_review_mutation = lambda review: reject_shot(review, 1)
+    state.refinement_mutations = [simplify_shot(0), simplify_shot(2), simplify_shot(1), simplify_shot(1)]
+    plan = state.run()
+    assert plan["segments"]
+    assert state.calls.count("plan_refinement") == 2
+    assert state.calls.count("plan_review") == 3
+
+
 def test_two_round_budget_stops_even_if_remaining_issue_is_new(progressive_gateway):
     state = progressive_gateway
     state.first_review_mutation = lambda review: reject_shot(review, 0)
@@ -638,6 +651,9 @@ def test_content_failure_exposes_only_owned_summary_and_is_not_retryable(source)
     assert "镜头" in plan["review_status_note"]
     assert plan["review_status_note"].endswith("硬门已通过")
     assert "没有完整的综合检查" not in plan["review_status_note"]
+    assert plan["auto_release"]["note"] == plan["review_status_note"]
+    assert "镜头" in plan["auto_release"]["failed_checks"]
+    assert plan["auto_release"]["repair_rounds"] >= 1
 
 
 @pytest.mark.parametrize("outside", ["beat", "shot", "global_message"])
@@ -673,9 +689,10 @@ def test_incomplete_independent_reviews_never_release_or_invent_passes(progressi
 def test_unknown_fact_stops_before_review_or_refinement(progressive_gateway):
     state = progressive_gateway
     state.first_director_mutation = lambda value: value["ad_script"]["beats"][0].update(evidence_ids=["invented"])
-    with pytest.raises(ProviderError, match="结构不完整"):
+    with pytest.raises(ProviderError, match="这是系统问题，已记录"):
         state.run()
-    assert state.calls == ["ad_script", "storyboard"]
+    assert state.calls[0] == "ad_script" and "storyboard" in state.calls
+    assert state.calls.count("plan_refinement") <= 1
 
 
 def test_fixed_merchant_line_is_checked_before_independent_review(progressive_gateway):
@@ -783,7 +800,7 @@ def test_capacity_repair_cannot_shrink_estimates_without_changing_actual_actions
         value["ad_script"]["beats"][0]["timing"].update(visual_seconds=3,
             action_plan="重新估计本拍三秒可完成。")
     state.refinement_mutation = merely_lower_estimate
-    with pytest.raises(ProviderError, match="容量仍未改善"):
+    with pytest.raises(ProviderError, match="这是系统问题，已记录"):
         state.run()
     assert state.calls == ["ad_script", "storyboard", "plan_refinement", "plan_refinement"]
 
@@ -792,7 +809,7 @@ def test_capacity_repair_stops_if_action_changes_do_not_reduce_overrun(progressi
     state = progressive_gateway
     state.first_director_mutation = overburden_first_beat
     state.refinement_mutation = simplify_shot(0)
-    with pytest.raises(ProviderError, match="容量仍未改善"):
+    with pytest.raises(ProviderError, match="这是系统问题，已记录"):
         state.run()
     assert state.calls == ["ad_script", "storyboard", "plan_refinement"]
 
@@ -843,7 +860,7 @@ def test_deterministic_repair_cannot_bypass_capacity_or_stable_contract(progress
             assert plan["ad_script"]["core_message"] == "省去重复取放，直接辨认同一商品与桌角的关系。"
         assert state.calls == ["ad_script", "storyboard", "plan_refinement", "plan_review"]
     else:
-        with pytest.raises(ProviderError, match="容量仍未改善"):
+        with pytest.raises(ProviderError, match="这是系统问题，已记录"):
             state.run()
         assert state.calls == ["ad_script", "storyboard", "plan_refinement"]
 
@@ -1188,7 +1205,10 @@ def test_fixed_line_is_also_protected_during_local_refinement(progressive_gatewa
     state.brief = "台词逐字保留“看轮廓。”"
     state.first_review_mutation = reject_first_shot
     state.refinement_mutation = lambda value: value["ad_script"]["beats"][0].update(narration="改过的轮廓。")
-    with pytest.raises(ProviderError): state.run()
+    plan = state.run()
+    spoken = json.dumps(plan, ensure_ascii=False)
+    assert "看轮廓。" in spoken
+    assert "改过的轮廓" not in spoken
     assert state.calls == ["ad_script", "storyboard", "plan_review", "plan_refinement"]
 
 

@@ -253,7 +253,9 @@ class Plan(BaseModel):
     merchant_insisted_lines: list[str] = Field(default_factory=list, max_length=12, exclude_if=lambda value: not value,
         description="商家明知碰到硬门仍坚持保留的台词。豁免只覆盖这些句子。")
     review_status_note: str | None = Field(default=None, max_length=200, exclude_if=lambda value: value is None,
-        description="终审落点的一句说明，给商家看。")
+        description="终审落点的一句后台说明，不展示给商家。综合检查没通过时列出没通过的项；检查没有做完时写没有完整的综合检查。")
+    auto_release: dict | None = Field(default=None, exclude_if=lambda value: value is None,
+        description="综合检查仍未通过时的自动放行记录，不展示给商家。含 note、failed_checks、repair_rounds、ad_form、project_id。")
     visual_direction: VisualDirection | None = Field(default=None, exclude_if=lambda value: value is None, description="统一视觉约定，供场景图和全部镜头复用，不新增商家表单")
     generation_strategy: Literal["legacy_10s", "continuity_v1"] = Field(default="legacy_10s", exclude_if=lambda value: value == "legacy_10s", description="服务端决定的生成策略，旧任务保持原10秒回执，新任务按连续性分组")
     title: str = Field(min_length=1, max_length=100)

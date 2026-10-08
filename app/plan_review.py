@@ -138,7 +138,7 @@ def _fingerprint_validated_plan(plan: Plan, reviewed_references: _ReviewedRefere
     # append references; the picture gate still checks ownership and content.
     content = plan.model_dump(mode="json", exclude={
         "plan_review", "script_review", "alignment_review", "skill_trace",
-        "review_status", "review_status_note"})
+        "review_status", "review_status_note", "auto_release"})
     if reviewed_references is not None and set(reviewed_references) != {segment.id for segment in plan.segments}:
         raise ValueError("综合审核的原图引用绑定须完整对应当前最终方案各段")
     for segment in content["segments"]:

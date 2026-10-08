@@ -1,5 +1,6 @@
 """L1–L9 must-pass and must-fail checks from the product-rule brief. Offline."""
 import asyncio
+import json
 
 import pytest
 
@@ -274,6 +275,7 @@ def test_l4_presenter_and_chain_is_not_collapsed():
 def test_l4_review_salvage_does_not_ship_a_stacked_fifteen_second_brand_line(source):
     """A failed storyboard must not deliver ions+smooth+noise, and a compiled stack still stops."""
     from app.progressive_planning import ProgressivePlanningError, progressive_plan
+    from app.release_gate import images_blocked_reason
     from app.strategy import StrategyRecord
     from test_progressive_planning import chosen_strategy, director_output
 
@@ -297,8 +299,15 @@ def test_l4_review_salvage_does_not_ship_a_stacked_fifteen_second_brand_line(sou
             shot["character_ids"] = ["missing_person"]
         return value
 
-    with pytest.raises(ProgressivePlanningError, match="未能满足已确认要求"):
-        plan_with(broken_board)
+    plan = plan_with(broken_board)
+    blob = json.dumps(plan, ensure_ascii=False)
+    assert "missing_person" not in blob
+    assert plan["review_status"] == "conservative_fallback"
+    assert images_blocked_reason(plan, strategy=plan.get("strategy")) is None
+    spoken = "".join(beat.get("narration") or "" for beat in plan["ad_script"]["beats"])
+    assert "负离子" not in spoken and "不吵" not in spoken
+    assert plan["auto_release"]["repair_rounds"] >= 1
+    assert "硬门已通过" in plan["auto_release"]["note"]
 
     async def stacked_board(system, data, assets, max_tokens=7000):
         value = director_output(strategy)

@@ -1,5 +1,6 @@
 """One release decision, the hard-gate table, locked lines, and pre-spend confirmation."""
 import asyncio
+import json
 from copy import deepcopy
 
 import pytest
@@ -7,11 +8,12 @@ import pytest
 from app.config import Settings
 from app.db import Store
 from app.pipeline import Pipeline
+from app.merchant_cards import SYSTEM_CARD
 from app.release_gate import (
-    RELEASE_TABLE, SPEND_RECHECK, MerchantLineChoice, assert_spend_confirmed, classify_release,
-    conservative_usable_plan, duration_needed, duration_question, evaluate_release_table,
-    images_blocked_reason, lengthen_target, line_locks, present_checked_plan, settle_manual_edit,
-    stamp_honest_label,
+    RELEASE_TABLE, SPEND_RECHECK, MerchantLineChoice, assert_spend_confirmed, choose_hard_gate_release,
+    classify_release, conservative_usable_plan, duration_needed, duration_question, evaluate_release_table,
+    images_blocked_reason, lengthen_target, line_locks, present_checked_plan, record_auto_release,
+    settle_before_spend, settle_manual_edit, stamp_honest_label,
 )
 from app.strategy import StrategyRecord
 from test_line_quality import typed
@@ -488,7 +490,7 @@ def test_merchant_insisted_line_still_goes_through():
     assert images_blocked_reason(board, strategy=board["strategy"]) is None
 
 
-def test_changed_passed_plan_is_blocked_before_any_image_or_video_spend(tmp_path):
+def test_changed_passed_plan_is_repaired_before_image_spend_without_asking_the_merchant(tmp_path):
     store = Store(tmp_path / "db.sqlite", tmp_path / "media")
     project = store.create_project("蓝瓶", "product", duration_seconds=10, ad_form="brand_tvc")
     path = store.media_root / "product.png"
@@ -515,9 +517,11 @@ def test_changed_passed_plan_is_blocked_before_any_image_or_video_spend(tmp_path
         def __init__(self):
             self.designs = 0
             self.videos = 0
+            self.plans = []
 
-        async def create_designs(self, *args, **kwargs):
+        async def create_designs(self, project, assets, plan, folder, **kwargs):
             self.designs += 1
+            self.plans.append(plan)
             return []
 
         async def submit_video(self, *args, **kwargs):
@@ -530,12 +534,84 @@ def test_changed_passed_plan_is_blocked_before_any_image_or_video_spend(tmp_path
                         poll_seconds=0.01, provider_timeout_seconds=1, tts_voice="TEST_ONLY",
                         video_model="TEST_ONLY")
     result = asyncio.run(Pipeline(store, gateway, settings).execute(job["id"]))
-    assert result["status"] == "failed"
     assert result["submission_count"] == 0
-    assert "这版方案需要重新检查" in (result.get("error") or "")
-    assert result["progress"]["error_code"] == "release_recheck"
-    assert result["progress"]["retry_action"] == "edit_plan"
-    assert result["progress"]["retryable"] is False
-    assert gateway.designs == 0 and gateway.videos == 0
+    assert gateway.videos == 0
+    assert gateway.designs == 1
+    spent = gateway.plans[0]
+    assert images_blocked_reason(spent, strategy=spent.get("strategy"), project=project) is None
+    assert stacked not in json.dumps(spent, ensure_ascii=False)
+    assert spent.get("auto_release", {}).get("repair_rounds") == 1
+    assert "这版方案需要重新检查" not in (result.get("error") or "")
+    assert "回到对话修改" not in (result.get("error") or "")
+    assert result["progress"].get("error_code") != "release_recheck"
     messages = store.project_detail(project["id"])["messages"]
-    assert any(item["role"] == "assistant" and "这版方案需要重新检查" in item["content"] for item in messages)
+    assert not any("这版方案需要重新检查" in item["content"] for item in messages)
+    assert not any("请修改" in item["content"] for item in messages)
+
+
+def test_unknown_type_does_not_spend_or_ask_the_merchant_to_rewrite():
+    labelled = {
+        "review_status": "passed",
+        "strategy": {"brief": {"ad_form": "auto", "product_name": "蓝瓶"}},
+        "segments": [{"duration_seconds": 10, "shots": [
+            {"description": "瓶身在左侧。"}, {"description": "瓶身靠近一些。"},
+        ]}],
+    }
+    with pytest.raises(ValueError, match=SYSTEM_CARD):
+        settle_before_spend(labelled, project={"ad_form": "auto"}, project_id="p1")
+
+
+def test_fallback_keeps_the_hard_gate_passer_with_the_fewest_review_issues():
+    strategy = _strategy("brand_tvc")
+    worse = _board(strategy, ["看清这件。"], ["瓶身在左侧。", "瓶身靠近一些。"])
+    worse["plan_review"] = _failed_review()
+    worse["plan_review"]["checks"][0]["passed"] = False
+    worse["plan_review"]["checks"][1]["passed"] = False
+    worse["plan_review"]["alignment"]["ad_expression_passed"] = False
+    better = _board(strategy, ["看清这件。"], ["瓶身在左侧。", "瓶身靠近一些。"])
+    better["plan_review"] = _failed_review()
+    better["plan_review"]["alignment"]["shots"] = [{"passed": False}]
+    blocked = _board(strategy, ["它带负离子，吹完是顺的。这风不吵。"], ["瓶身留在桌角。", "瓶身仍在原处。"])
+    blocked["plan_review"] = _failed_review()
+    blocked["plan_review"]["ready"] = True
+    chosen = choose_hard_gate_release([worse, blocked, better], strategy=strategy)
+    assert chosen is better
+    incomplete = _board(strategy, ["看清这件。"], ["瓶身在左侧。", "瓶身靠近一些。"])
+    assert choose_hard_gate_release([incomplete, better], strategy=strategy) is better
+
+
+def test_auto_release_records_a_failed_review_and_an_unfinished_one(caplog):
+    import logging
+    strategy = _strategy("scene_story")
+    failed = _board(strategy, ["先放这儿。"], ["她把瓶子放在桌角。", "瓶子留在原处。"], mode="character_dialogue")
+    failed["plan_review"] = _failed_review()
+    failed["plan_review"]["alignment"]["ad_expression_passed"] = False
+    failed["review_status"] = "conservative_fallback"
+    with caplog.at_level(logging.INFO, logger="yingzuo.auto_release"):
+        record_auto_release(failed, project_id="proj-story", ad_form="scene_story", repair_rounds=2)
+    assert failed["auto_release"]["note"] == "综合检查没通过（广告表达），硬门已通过"
+    assert failed["auto_release"]["failed_checks"] == ["广告表达"]
+    assert failed["auto_release"]["repair_rounds"] == 2
+    assert failed["auto_release"]["project_id"] == "proj-story"
+    assert failed["auto_release"]["ad_form"] == "scene_story"
+    assert "没有完整的综合检查" not in failed["auto_release"]["note"]
+    line = caplog.records[-1].message
+    assert "proj-story" in line and "scene_story" in line and "广告表达" in line and "2" in line
+    missing = _board(strategy, ["先放这儿。"], ["她把瓶子放在桌角。", "瓶子留在原处。"], mode="character_dialogue")
+    missing["review_status"] = "conservative_fallback"
+    record_auto_release(missing, project_id="proj-2", ad_form="scene_story", repair_rounds=1)
+    assert missing["auto_release"]["note"] == "没有完整的综合检查，硬门已通过"
+    assert missing["auto_release"]["failed_checks"] == []
+
+
+def test_merchant_insisted_line_is_not_replaced_before_spend():
+    strategy = _strategy("brand_tvc")
+    stacked = "它带负离子，吹完是顺的。这风不吵。"
+    board = _board(strategy, [stacked], ["瓶身留在桌角。", "瓶身仍在原处。"])
+    board["review_status"] = "passed"
+    board["merchant_insisted_lines"] = [stacked]
+    board["segments"][0]["speech_spans"][0]["merchant_insisted"] = True
+    settled = settle_before_spend(board, strategy=strategy, project_id="proj")
+    assert settled is board
+    assert "auto_release" not in board
+    assert settled["ad_script"]["beats"][0]["narration"] == stacked

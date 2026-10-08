@@ -526,6 +526,48 @@ def save_failed_planner_output(settings, stage_result):
                 pass
 
 
+def _owned_check_reasons(reasons):
+    """Concrete check sentences safe to store. No rejected input and no secrets."""
+    saved = []
+    for item in reasons or ():
+        text = str(item).strip() if item is not None else ""
+        if (not text or "\n" in text or len(text) > 200 or re.search(r"[{}\[\]\"']", text)):
+            continue
+        if text not in saved:
+            saved.append(text[:120])
+        if len(saved) == 8:
+            break
+    return saved
+
+
+def save_check_reasons(settings, reasons, *, error_code=None, stage_result=None):
+    """Write the failed check sentences next to any raw model output.
+
+    A diagnostics file that only keeps the model body cannot explain which
+    rule rejected it. Structure checks and content checks both land here.
+    """
+    concrete = _owned_check_reasons(reasons)
+    if not concrete or settings is None:
+        return None
+    errors = [{"loc": ["check"], "type": "content_check", "msg": text} for text in concrete]
+    stage = "plan_check"
+    raw = {"check": "validation"}
+    if isinstance(stage_result, dict):
+        if isinstance(stage_result.get("stage"), str) and stage_result["stage"]:
+            stage = stage_result["stage"]
+        if "raw_output" in stage_result:
+            raw = stage_result["raw_output"]
+    record = {"stage": stage, "raw_output": raw, "validation_errors": errors}
+    if isinstance(error_code, str) and re.fullmatch(r"[a-z0-9_]{1,40}", error_code):
+        record["validation_reasons"] = [error_code]
+    saved = save_failed_planner_output(settings, record)
+    if saved is None and raw != {"check": "validation"}:
+        saved = save_failed_planner_output(settings, {
+            "stage": stage, "raw_output": {"check": "validation"}, "validation_errors": errors,
+            "validation_reasons": record.get("validation_reasons") or []})
+    return saved
+
+
 def save_craft_accept_diagnostic(settings, issues):
     """A directing check stayed after one automatic rewrite. No prompt or merchant error."""
     data_root = getattr(settings, "data_root", None)
@@ -2330,6 +2372,9 @@ class Gateway:
 
         repair_attempted = False
         strategy = None
+        # Strategy schema failures already retry once inside this request.
+        # Only a later plan-structure failure uses the plan retry message.
+        checking_plan = False
         from app.release_gate import MerchantLineChoice, present_checked_plan
 
         def _line_choice_decision(choice):
@@ -2549,18 +2594,30 @@ class Gateway:
                 }
 
                 def record_progressive_failure(candidate):
+                    reasons = candidate.get("failed_reasons") if isinstance(candidate, dict) else None
                     if isinstance(candidate, dict) and candidate.get("nonblocking") is True:
                         remember_plan_warning(self.settings, self._plan_warning_holder, candidate)
+                        if reasons:
+                            save_check_reasons(self.settings, reasons,
+                                               error_code=candidate.get("error_code"),
+                                               stage_result=last_stage_result)
                         return
+                    if reasons and isinstance(last_stage_result, dict):
+                        last_stage_result["validation_errors"] = [
+                            {"loc": ["check"], "type": "content_check", "msg": text}
+                            for text in _owned_check_reasons(reasons)]
                     if last_stage_result is None or last_stage_result.get("_diagnostic_saved"):
-                        if last_stage_result is not None and candidate is not None:
+                        if last_stage_result is not None and candidate is not None and not reasons:
                             last_stage_result["validation_candidate"] = copy.deepcopy(candidate)
+                        if reasons:
+                            save_check_reasons(self.settings, reasons, stage_result=last_stage_result)
                         return
-                    if candidate is not None:
+                    if candidate is not None and not reasons:
                         last_stage_result["validation_candidate"] = copy.deepcopy(candidate)
                     save_failed_planner_output(self.settings, last_stage_result)
                     last_stage_result["_diagnostic_saved"] = True
 
+                checking_plan = True
                 plan = await progressive_plan(stage_call=stage_call, on_progress=on_progress,
                     record_failure=record_progressive_failure, strategy=strategy, draft=draft,
                     draft_issues=draft_enum_issues, duration=duration, generation_strategy=generation_strategy,
@@ -2569,7 +2626,8 @@ class Gateway:
                     speech_only=speech_only,
                     max_refinements=getattr(self.settings, "planner_max_refinements", MAX_PLAN_REFINEMENTS),
                     refinement_format=getattr(self.settings, "planner_refinement_format", "sparse_or_full"),
-                    diagnostic_settings=self.settings, cta_target=project_cta_mode(project))
+                    diagnostic_settings=self.settings, cta_target=project_cta_mode(project),
+                    project_id=project.get("id") if isinstance(project, dict) else None)
                 plan["skill_trace"] = copy.deepcopy(skill_trace)
                 from app.progressive_planning import is_degenerate_plan
                 if is_degenerate_plan(plan):
@@ -3006,27 +3064,46 @@ class Gateway:
                     and "validation_candidate" not in last_stage_result):
                 save_failed_planner_output(self.settings, last_stage_result)
                 last_stage_result["_diagnostic_saved"] = True
-            error = ProviderError(str(exc))
+            from app.merchant_cards import SYSTEM_CARD
+            from app.planner_recovery import needs_merchant
+            merchant = needs_merchant(str(exc), getattr(exc, "issue_summary", ()))
+            # A model check that still has no releasable board is a system record.
+            # The merchant is not asked to press 继续处理 or rewrite the plan.
+            # Their own locked line keeps the original sentence.
+            error = ProviderError(str(exc) if merchant else SYSTEM_CARD)
             error.error_code, error.retryable = exc.error_code, False
-            from app.story_logic import planning_rerun_storyboard
-            if planning_rerun_storyboard(str(exc), getattr(exc, "issue_summary", ())):
-                error.retryable = True
-                error.retry_action = "retry_planning"
-            else:
-                error.retry_action = "continue_conversation" if exc.error_code == "planning_review_incomplete" else "edit_plan"
+            error.retry_action = "edit_plan" if merchant else None
             error.issue_summary = getattr(exc, "issue_summary", [])
             error.repair_attempts = getattr(exc, "repair_attempts", 0)
             raise error from None
         except ValidationError as exc:
             log_planner_validation(exc)
-            save_failed_planner_output(self.settings, last_stage_result)
+            details = []
+            for item in exc.errors(include_url=False, include_context=False, include_input=False)[:12]:
+                details.append({"loc": tuple(item.get("loc") or ()),
+                                "type": item.get("type", "validation_error"),
+                                "msg": item.get("msg", "")})
+            target = last_stage_result if isinstance(last_stage_result, dict) else {
+                "stage": "plan_validation", "raw_output": {"check": "structure"}}
+            target = {**target, "validation_errors": details}
+            save_failed_planner_output(self.settings, target)
             if repair_attempted and repairable_timing_issues(exc):
                 raise PlannerInvalidResponse("画面与旁白的时间对应仍未校正完成；已有方案和素材已保留，尚未开始图片或视频生成") from None
             # Field/type diagnostics remain in the private log, not the product UI.
-            raise PlannerInvalidResponse("规划结果未通过结构校验，已有成果仍保留；尚未开始图片或视频生成") from None
+            # The plan-structure sentence is what the job retries. An entrance
+            # reply that fails its own schema stays failed after its one repair.
+            if checking_plan:
+                raise PlannerInvalidResponse("规划结果未通过结构校验，已有成果仍保留；尚未开始图片或视频生成") from None
+            raise PlannerInvalidResponse("策划回复未通过结构校验；已有成果仍保留，尚未开始图片或视频生成") from None
         except (KeyError, IndexError, ValueError, TypeError, AttributeError) as exc:
             log_planner_guard_failure(exc)
-            save_failed_planner_output(self.settings, last_stage_result)
+            target = last_stage_result if isinstance(last_stage_result, dict) else {
+                "stage": "plan_validation", "raw_output": {"check": "guard"}}
+            reasons = _owned_check_reasons([str(exc)])
+            if reasons:
+                target = {**target, "validation_errors": [
+                    {"loc": ["check"], "type": "content_check", "msg": text} for text in reasons]}
+            save_failed_planner_output(self.settings, target)
             raise PlannerInvalidResponse("策划回复未通过结构或商品依据校验；已有成果仍保留，尚未开始制作") from None
 
     async def plan(self, project, assets, messages, *, on_progress=None, gates=()):
@@ -3038,10 +3115,10 @@ class Gateway:
     async def review_saved_plan(self, plan):
         """One fresh plan review for a saved film whose binding no longer matches.
 
-        The plan text is not rewritten. A review that is not ready, or a call
-        that cannot be checked, stays off the card as a recorded system issue.
+        The plan text is not rewritten. A review that is not ready stays on the
+        plan and generation continues. A call that cannot be checked drops the
+        stale review instead of asking the merchant to modify the plan.
         """
-        from app.merchant_cards import SYSTEM_CARD
         from app.plan_review import lower_failed_plan_verdicts, validate_plan_review
         from app.progressive_planning import PLAN_REVIEW_SYSTEM, saved_plan_review_request
         try:
@@ -3052,9 +3129,11 @@ class Gateway:
                                           require_review_policy=True)
         except Exception as exc:
             log_planner_guard_failure(exc)
-            raise ValueError(SYSTEM_CARD) from None
-        if not review.ready:
-            raise ValueError("方案检查没有通过，已有图片仍保留。请修改方案后再制作。")
+            updated = copy.deepcopy(plan)
+            updated.pop("plan_review", None)
+            updated.pop("review_status", None)
+            updated.pop("review_status_note", None)
+            return updated
         updated = copy.deepcopy(plan)
         updated["plan_review"] = review.model_dump()
         return updated
