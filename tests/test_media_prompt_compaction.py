@@ -148,13 +148,15 @@ def test_default_cast_is_chinese_and_an_explicit_look_replaces_it(directed_plan_
     segment = with_production(directed_plan_data)
     segment["reference_roles"][-1]["sheet_layout"] = "horizontal_16x9"
     prompt = compile_grouped_video(segment)
-    assert "左侧是脸部和上胸特写，右侧同一排依次是正面、侧面、背面全身" in prompt
+    assert "左侧是脸部和上胸特写，右侧同一排依次是正面、侧面、背面全身" not in prompt
+    assert "版式不进入视频" in prompt
     assert DEFAULT_CAST_LINE in prompt
     segment["production"]["characters"][0]["description"] = "成年欧美女性，金色长发，白衬衫"
     overridden_video = compile_grouped_video(segment)
     assert DEFAULT_CAST_LINE not in overridden_video
     assert "欧美女性" in overridden_video
-    assert "角色“同事”的四视图，左侧是脸部和上胸特写" in overridden_video
+    assert "角色“同事”的四视图，左侧是脸部和上胸特写" not in overridden_video
+    assert "角色“同事”的四视图，版式不进入视频。" in overridden_video
     assert "四格版式不进入视频" not in overridden_video
     legacy = with_production(directed_plan_data)
     legacy_prompt = compile_grouped_video(legacy)

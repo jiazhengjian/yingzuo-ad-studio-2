@@ -30,37 +30,6 @@
   ],
   "skills": [
     {
-      "id": "ads-video-orchestrator",
-      "display_name": "Ads Video Orchestrator",
-      "version": "1.7.4",
-      "stages": [
-        "orchestrator"
-      ],
-      "mode": "model",
-      "resources": [
-        "SKILL.md"
-      ],
-      "runtime_status": "active",
-      "source_refs": [
-        {
-          "source_id": "tvc-ai-director-local",
-          "path": "tvc-ai-director/SKILL.md",
-          "sha256": "2113b93c1c84b23c960e543ffd54a19dc2ca6e74275b6ec5ab3720d5c8df6c30"
-        },
-        {
-          "source_id": "tvc-ai-director-local",
-          "path": "tvc-brief-strategist/SKILL.md",
-          "sha256": "031c6bedb75d40e9956a13eb970b8e501c2abb14b290ce3b2ee0ca38ef76d031"
-        },
-        {
-          "source_id": "tvc-ai-director-local",
-          "path": "tvc-client-review-interpreter/SKILL.md",
-          "sha256": "162b8a2955bbf33e9b0a2db9c988003e54a84138895be884c482bd7405da1e89"
-        }
-      ],
-      "adaptation_note": "入口意图、必要澄清与反馈解释；程序控制阶段、预算、确认和媒体提交。"
-    },
-    {
       "id": "ads-video-reference-research",
       "display_name": "Ads Video Reference Research",
       "version": "1.0.1",
@@ -84,45 +53,15 @@
     {
       "id": "ads-video-sound-direction",
       "display_name": "Ads Video Sound Direction",
-      "version": "1.3.2",
-      "stages": [
-        "strategy"
-      ],
-      "mode": "model",
-      "resources": [
-        "SKILL.md"
-      ],
-      "runtime_status": "active",
-      "source_refs": [],
-      "adaptation_note": "映作自写：方向中的人物、原生声音形式与说话人决策。剧情默认出镜短对白，定格去向才用画外一句。"
-    },
-    {
-      "id": "ads-video-product-understanding",
-      "display_name": "Ads Video Product Understanding",
-      "version": "1.1.5",
-      "stages": [
-        "strategy"
-      ],
-      "mode": "model",
-      "resources": [
-        "SKILL.md"
-      ],
-      "runtime_status": "active",
-      "source_refs": [],
-      "adaptation_note": "映作自写：商品图形态识别与有来源的动作边界，不推断份量规格。"
-    },
-    {
-      "id": "ads-video-creative-strategy",
-      "display_name": "Ads Video Creative Strategy",
-      "version": "1.7.2",
+      "version": "1.4.0",
       "stages": [
         "strategy"
       ],
       "mode": "model",
       "resources": [
         "SKILL.md",
-        "references/direction-comparison.md",
-        "references/film-concept.md"
+        "references/film-concept.md",
+        "references/direction-comparison.md"
       ],
       "runtime_status": "active",
       "source_refs": [
@@ -152,21 +91,24 @@
           "sha256": "9692d6efab17b8311d870a9811211c24c218a98f187a268a6d1057fd80ec6cd3"
         }
       ],
-      "adaptation_note": "同一次先写六个短概念，程序按机制、钩子和品牌世界留下三个再展开。观众处境、一句话和具名开场用消费者的话；商品主张仍要事实，情绪和夸张不另编号也不写成功效。"
+      "adaptation_note": "映作自写的人物、原生声音与说话人决策，并收入原创意策略：同一次先写六个短概念，程序按机制、钩子和品牌世界留下三个再展开。谁说话、画外和内心独白只在这里决定。观众处境、一句话和具名开场用消费者的话；商品主张仍要事实，情绪和夸张不另编号也不写成功效。"
     },
     {
       "id": "ads-video-script-planning",
       "display_name": "Ads Video Script Planning",
-      "version": "1.6.1",
+      "version": "1.7.0",
       "stages": [
         "ad_script",
-        "content_draft"
+        "storyboard",
+        "line_rewrite"
       ],
       "mode": "model",
       "resources": [
         "SKILL.md",
         "references/timed-script.md",
-        "references/content-draft.md"
+        "references/speech-timing.md",
+        "references/speech-picture-alignment.md",
+        "references/ad-dialogue-examples.md"
       ],
       "runtime_status": "active",
       "source_refs": [
@@ -184,43 +126,6 @@
           "source_id": "tvc-ai-director-local",
           "path": "tvc-ai-director/references/tvc-quality-bar.md",
           "sha256": "73884723e71e92916cac3522236b6c488e6a962073ff5497e08b3e25dbf58879"
-        }
-      ],
-      "adaptation_note": "商品作用、故事推进与动作/说话联合容量；内容稿供分镜协调，明确依附和消耗状态及时间省略。",
-      "stage_resources": {
-        "ad_script": [
-          "SKILL.md",
-          "references/timed-script.md"
-        ],
-        "content_draft": [
-          "SKILL.md",
-          "references/content-draft.md"
-        ]
-      }
-    },
-    {
-      "id": "ads-video-dialogue-writing",
-      "display_name": "Ads Video Dialogue Writing",
-      "version": "1.9.5",
-      "stages": [
-        "ad_script",
-        "storyboard",
-        "content_draft",
-        "line_rewrite"
-      ],
-      "mode": "model",
-      "resources": [
-        "SKILL.md",
-        "references/speech-timing.md",
-        "references/speech-picture-alignment.md",
-        "references/ad-dialogue-examples.md"
-      ],
-      "runtime_status": "active",
-      "source_refs": [
-        {
-          "source_id": "tvc-ai-director-local",
-          "path": "tvc-storyboard-writer/SKILL.md",
-          "sha256": "ecaee13dbfb58ea4e99edcedc75d9b62dd9db02c7b1ad02ca0622f2ac466a0d9"
         },
         {
           "source_id": "tvc-ai-director-local",
@@ -228,19 +133,16 @@
           "sha256": "67ed37618a07cf5d2e822a9f0cf6d47268235dd3164fff34759b08ea11bf9fbd"
         }
       ],
-      "adaptation_note": "吸收声画分工与节奏；中文台词、跨镜语义和示例由映作自写，草稿台词可在分镜中协调。",
+      "adaptation_note": "商品作用、故事推进与动作/说话联合容量，并收入原台词方法。内容稿供分镜协调；窄重写只加载主文件和台词示例，不加载整份时长参考。",
       "stage_resources": {
         "ad_script": [
           "SKILL.md",
+          "references/timed-script.md",
           "references/speech-timing.md",
           "references/speech-picture-alignment.md",
           "references/ad-dialogue-examples.md"
         ],
         "storyboard": [
-          "SKILL.md",
-          "references/ad-dialogue-examples.md"
-        ],
-        "content_draft": [
           "SKILL.md",
           "references/ad-dialogue-examples.md"
         ],
@@ -253,18 +155,16 @@
     {
       "id": "ads-video-storyboard-direction",
       "display_name": "Ads Video Storyboard Direction",
-      "version": "1.13.2",
+      "version": "1.14.0",
       "stages": [
         "storyboard",
         "plan_refinement",
-        "legacy_storyboard",
         "shot_craft_rewrite"
       ],
       "mode": "model",
       "resources": [
         "SKILL.md",
         "references/coordinated-storyboard.md",
-        "references/legacy-storyboard.md",
         "references/shot-literal.md"
       ],
       "runtime_status": "active",
@@ -300,7 +200,7 @@
           "sha256": "c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1"
         }
       ],
-      "adaptation_note": "新流程协调内容稿与有序覆盖镜头，程序排时并有界局部修正；旧固定台词/时轴分镜以独立资源兼容加载。镜头写法改编自 tvc-director 摘录的七要素、字面画面、分类型出镜和视频内英雄定格；长镜头的多阶段只写进同一次视频提示词，不新增生成请求，不引入九宫格。",
+      "adaptation_note": "新流程协调内容稿与有序覆盖镜头，程序排时并有界局部修正。镜头写法改编自 tvc-director 摘录的七要素、字面画面、分类型出镜和视频内英雄定格；长镜头的多阶段只写进同一次视频提示词，不新增生成请求，不引入九宫格。",
       "stage_resources": {
         "storyboard": [
           "SKILL.md",
@@ -309,10 +209,6 @@
         "plan_refinement": [
           "SKILL.md",
           "references/coordinated-storyboard.md"
-        ],
-        "legacy_storyboard": [
-          "SKILL.md",
-          "references/legacy-storyboard.md"
         ],
         "shot_craft_rewrite": [
           "SKILL.md",
@@ -361,7 +257,7 @@
     {
       "id": "ads-video-video-prompts",
       "display_name": "Ads Video Video Prompts",
-      "version": "1.5.2",
+      "version": "1.6.0",
       "stages": [
         "video_prompts"
       ],
@@ -403,20 +299,16 @@
     {
       "id": "ads-video-plan-review",
       "display_name": "Ads Video Plan Review",
-      "version": "1.18.2",
+      "version": "1.19.0",
       "stages": [
         "direction_review",
-        "plan_review",
-        "script_review",
-        "alignment_review"
+        "plan_review"
       ],
       "mode": "review",
       "resources": [
         "SKILL.md",
         "references/direction-review.md",
-        "references/plan-review.md",
-        "references/script-review.md",
-        "references/alignment-review.md"
+        "references/plan-review.md"
       ],
       "runtime_status": "active",
       "source_refs": [
@@ -441,14 +333,6 @@
         "direction_review": [
           "SKILL.md",
           "references/direction-review.md"
-        ],
-        "script_review": [
-          "SKILL.md",
-          "references/script-review.md"
-        ],
-        "alignment_review": [
-          "SKILL.md",
-          "references/alignment-review.md"
         ],
         "plan_review": [
           "SKILL.md",
@@ -486,21 +370,6 @@
         }
       ],
       "adaptation_note": "连续性验收、版本定位和最小返工；媒体测量、ASR、声纹等能力须另行实现。"
-    },
-    {
-      "id": "ads-video-voiceover-draft",
-      "display_name": "Ads Video Voiceover Draft",
-      "version": "1.1.0",
-      "stages": [
-        "speech_draft"
-      ],
-      "mode": "model",
-      "resources": [
-        "SKILL.md"
-      ],
-      "runtime_status": "active",
-      "source_refs": [],
-      "adaptation_note": "映作自写：显式试验开关下的整段产品旁白初稿，仅替换原起稿调用；默认关闭，完整方向和保护继续由导演及审核处理。"
     }
   ],
   "shared_references": [
@@ -525,49 +394,104 @@
     {
       "id": "script-expression",
       "path": "shared/script-expression.md",
-      "version": "1.8.5",
+      "version": "1.9.0",
       "stages": [
         "ad_script",
         "storyboard",
         "plan_refinement",
-        "plan_review",
-        "content_draft"
+        "plan_review"
       ]
     },
     {
       "id": "ad-form-playbook-index",
       "path": "shared/ad-form-playbooks/index.md",
-      "version": "1.1.1",
-      "stages": ["strategy", "direction_review"],
-      "ad_forms": ["auto"],
-      "source_refs": [{"source_id": "tvc-director-local", "path": "tvc-director-examples.md", "sha256": "c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1"}],
+      "version": "1.1.2",
+      "stages": [
+        "strategy",
+        "direction_review"
+      ],
+      "ad_forms": [
+        "auto"
+      ],
+      "source_refs": [
+        {
+          "source_id": "tvc-director-local",
+          "path": "tvc-director-examples.md",
+          "sha256": "c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1"
+        }
+      ],
       "adaptation_note": "方向选定前的三种骨架索引。时长与阶段结构改编自用户提供的 tvc-director 摘录，台词例子为映作原创。"
     },
     {
       "id": "ad-form-playbook-brand-tvc",
       "path": "shared/ad-form-playbooks/brand-tvc.md",
-      "version": "1.4.4",
-      "stages": ["strategy", "direction_review", "ad_script", "content_draft", "storyboard", "plan_refinement", "plan_review", "speech_draft"],
-      "ad_forms": ["brand_tvc"],
-      "source_refs": [{"source_id": "tvc-director-local", "path": "tvc-director-examples.md", "sha256": "c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1"}],
+      "version": "1.4.5",
+      "stages": [
+        "strategy",
+        "direction_review",
+        "ad_script",
+        "storyboard",
+        "plan_refinement",
+        "plan_review"
+      ],
+      "ad_forms": [
+        "brand_tvc"
+      ],
+      "source_refs": [
+        {
+          "source_id": "tvc-director-local",
+          "path": "tvc-director-examples.md",
+          "sha256": "c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1"
+        }
+      ],
       "adaptation_note": "产品展示的开场、可缩放节拍、短旁白、镜头和英雄定格。16:9/Seedance 改为 9:16/wan3.0。台词例子为映作原创。分镜补充七要素和字面画面。"
     },
     {
       "id": "ad-form-playbook-scene-story",
       "path": "shared/ad-form-playbooks/scene-story.md",
-      "version": "1.5.3",
-      "stages": ["strategy", "direction_review", "ad_script", "content_draft", "storyboard", "plan_refinement", "plan_review"],
-      "ad_forms": ["scene_story"],
-      "source_refs": [{"source_id": "tvc-director-local", "path": "tvc-director-examples.md", "sha256": "c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1"}],
+      "version": "1.5.4",
+      "stages": [
+        "strategy",
+        "direction_review",
+        "ad_script",
+        "storyboard",
+        "plan_refinement",
+        "plan_review"
+      ],
+      "ad_forms": [
+        "scene_story"
+      ],
+      "source_refs": [
+        {
+          "source_id": "tvc-director-local",
+          "path": "tvc-director-examples.md",
+          "sha256": "c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1"
+        }
+      ],
       "adaptation_note": "剧情/场景的处境开场、一个包袱、短对白、反应镜头和余韵。末句不点题，家用物品留在原处，不写英雄定格。台词例子为映作原创。分镜补充七要素和字面画面。"
     },
     {
       "id": "ad-form-playbook-presenter-pitch",
       "path": "shared/ad-form-playbooks/presenter-pitch.md",
-      "version": "1.4.3",
-      "stages": ["strategy", "direction_review", "ad_script", "content_draft", "storyboard", "plan_refinement", "plan_review"],
-      "ad_forms": ["presenter_pitch"],
-      "source_refs": [{"source_id": "tvc-director-local", "path": "tvc-director-examples.md", "sha256": "c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1"}],
+      "version": "1.4.4",
+      "stages": [
+        "strategy",
+        "direction_review",
+        "ad_script",
+        "storyboard",
+        "plan_refinement",
+        "plan_review"
+      ],
+      "ad_forms": [
+        "presenter_pitch"
+      ],
+      "source_refs": [
+        {
+          "source_id": "tvc-director-local",
+          "path": "tvc-director-examples.md",
+          "sha256": "c970a937bc60e4c0a2e6d88c168062cddc1eb04ca0b65884d99d476eaa8943c1"
+        }
+      ],
       "adaptation_note": "人物讲解的直视开场、讲加演示、更高台词密度和英雄定格。台词例子为映作原创。分镜补充七要素和字面画面，讲解出镜大约七成。"
     }
   ]

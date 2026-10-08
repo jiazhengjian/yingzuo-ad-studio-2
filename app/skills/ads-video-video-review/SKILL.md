@@ -1,6 +1,6 @@
 ---
 name: ads-video-video-review
-description: 待接入的成片语义与声音检查方法。依据真实媒体及实际可用工具记录问题与覆盖范围，未看听不得判通过，不自动重生成。
+description: 待接入的成片语义与声音检查方法。依据真实媒体及实际可用工具记录问题与覆盖范围，不自动重生成。
 ---
 
 # Ads Video Video Review

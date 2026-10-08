@@ -44,7 +44,7 @@ flowchart TD
 | 入口 | 决定这一轮是回话、澄清、出方向，还是直接排方案。已有方案或已选方向不再重问。 | `app/providers/gateway.py` `Gateway.decide`；收口 `app/ad_form.py` `intake_strategy_response` |
 | 三个方向 | 本地先收正过长的母题、角色 id、剧情旁白，再校验，再独立审方向。 | `app/strategy.py` `prepare_strategy_ingress`、`build_direction_candidates`；审核在 `gateway.decide` 里调 `direction_review` |
 | 声音 | 剧情里有能开口的人时，旁白改成这个人的对白。给方向前改一次，开排前再改一次。 | `app/production.py` `align_story_voice`、`align_selected_story_voice`。开排入口在 `progressive_plan` 开头 |
-| 台词 | 只加载「广告视频台词」技能。渐进策划不单独做剧本审核。 | `app/progressive_planning.py` `progressive_plan`；技能 `app/skills/ads-video-dialogue-writing/` |
+| 台词 | 脚本规划里的台词方法。渐进策划不单独做剧本审核。 | `app/progressive_planning.py` `progressive_plan`；技能 `app/skills/ads-video-script-planning/` |
 | 分镜 | 台词技能加「分镜导演」技能。模型返回镜头，程序不替它编故事。 | 同上；技能 `app/skills/ads-video-storyboard-direction/` |
 | 编译 | 把镜头收成真实秒点、说话窗口、分段。这里不改创作，只排时间。剧情末镜会试着收到大约 2 秒。 | `compile_director`；末镜时长 `app/planning.py` `fit_story_insert`；台词落镜 `app/story_logic.py` `snap_declared_speech` |
 | 综合检查 | 进度文案是「正在综合检查商品表达、动作与声画计划」。审核对象是编译后的成稿。 | `progressive_plan` 里 `stage` 为 `plan_review`；规则说明 `app/skills/ads-video-plan-review/` |
@@ -63,7 +63,7 @@ flowchart TD
 | --- | --- | --- | --- |
 | 剧情不问去向 | 澄清说明 | `cta.should_ask_cta`、`project_cta_mode` | 一处说了算，清楚 |
 | 卖点、人群没写先问 | 澄清说明 | `highlight.should_ask_highlight`、`audience.should_ask_audience`；方向如果直接返回，`intake_strategy_response` 改回澄清 | 入口和打包各看一次，顺序一致 |
-| 剧情旁白是主角自己的声音 | `scene-story.md`「戏里的话由出镜人物开口说」；`ads-video-sound-direction` 第 5 点 | 给方向：`prepare_strategy_ingress`、`build_direction_candidates`；开排：`align_selected_story_voice`；放行前：`line_quality.voice_identity_issues` | 三处改或判。没人能开口时仍是旁白，放行时硬停。口播写成旁白、产品片写成对口型也硬停，不自动改 |
+| 剧情旁白是主角自己的声音 | 谁开口只在 `ads-video-sound-direction` 第 5 点决定 | 给方向：`prepare_strategy_ingress`、`build_direction_candidates`；开排：`align_selected_story_voice`；放行前：`line_quality.voice_identity_issues` | 三处改或判。没人能开口时仍是旁白，放行时硬停。口播写成旁白、产品片写成对口型也硬停，不自动改 |
 | 内心独白、不对口型 | playbook：这一镜没有醒着的听者就走内心独白 | 放行时 `story_logic.settle_inner_monologue` 往画面补「放轻脚步…嘴没有动」；视频提示 `video_prompt` 在这时关掉对口型。说话方式保持 `character_dialogue` | 说明书、放行、视频提示三处。占位稿以前会在放行时被贴上这句表演，看起来像真方案 |
 | 不说卖点 | playbook 整段对照 | 台词毛病 `line_quality.script_line_offenses`（「在说卖点」）；改写 `rewrite_director_if_needed`；硬停 `story_logic.story_plan_issues` | 先改一次，改不掉再停。两套名单，改写认得的毛病比硬停多 |
 | 不念画面、不用第三人称解说 | playbook | 同上，毛病名「在念画面」「第三人称解说」。`story_explainer_remaining` 只给改写用 | 改不掉不硬停。和「不说卖点」不是同一道门 |

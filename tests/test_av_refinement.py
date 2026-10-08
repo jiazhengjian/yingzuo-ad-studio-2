@@ -125,7 +125,7 @@ def test_rejected_av_gets_one_refinement_then_independent_complete_review(harnes
     for key in ("approved_ad_script", "expression_schedule", "selected_direction", "production", "generation_grouping", "assets"):
         assert first[key] == second[key]
     assert second["review_feedback"] == harness.first_review
-    assert second["stage_skills"]["stage"] == "legacy_storyboard"
+    assert second["stage_skills"]["stage"] == "storyboard"
     assert len(second["draft_storyboard"]["segments"][0]["shots"]) == 2
     assert len(result["segments"][0]["shots"]) == 1
     assert result["ad_script"] == first["approved_ad_script"]

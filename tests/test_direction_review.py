@@ -159,11 +159,11 @@ def test_review_transport_uses_same_model_high_budget_original_image_and_persist
         assert len(shared) == 3
         assert not any(item["id"].startswith("ad-form-playbook-") and item["id"] != "ad-form-playbook-index" for item in shared)
         if stage == "strategy":
-            assert context["orchestrator_skills"]["shared_references"] == []
-        loaded_stages = ["orchestrator", stage] if stage == "strategy" else [stage]
+            assert "orchestrator_skills" not in context
+        loaded_stages = [stage]
         for loaded_stage in loaded_stages:
             loaded = service_contexts[loaded_stage]
-            wire = context["orchestrator_skills" if loaded_stage == "orchestrator" else "stage_skills"]
+            wire = context["stage_skills"]
             assert_skill_wire_matches_source(wire, loaded)
             expected_traces.extend([*runtime_skills.skill_trace(loaded), *runtime_skills.shared_reference_trace(loaded)])
         assert payload["model"] == app.state.settings.planner_model

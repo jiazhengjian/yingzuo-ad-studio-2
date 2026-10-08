@@ -256,7 +256,7 @@ def test_key_line_schema_is_optional_and_rewrite_loads_only_dialogue():
     assert "key_line_options" not in asked["required"]
     assert "key_line_options" not in script_stage_schema(review=True)["properties"]
     loaded = stage_skill_context("line_rewrite")
-    assert [item["id"] for item in loaded["skills"]] == ["ads-video-dialogue-writing"]
+    assert [item["id"] for item in loaded["skills"]] == ["ads-video-script-planning"]
     assert loaded["skills"][0]["loaded_sections"] == ["SKILL.md", "references/ad-dialogue-examples.md"]
     assert loaded["shared_references"] == []
     assert "说出口的对照" in loaded["skills"][0]["content"]
@@ -643,7 +643,7 @@ def test_skills_and_replan_show_the_per_type_line_focus_rule(capsys):
     presenter = (root / "shared/ad-form-playbooks/presenter-pitch.md").read_text()
     brand = (root / "shared/ad-form-playbooks/brand-tvc.md").read_text()
     scene = (root / "shared/ad-form-playbooks/scene-story.md").read_text()
-    examples = (root / "ads-video-dialogue-writing/references/ad-dialogue-examples.md").read_text()
+    examples = (root / "ads-video-script-planning/references/ad-dialogue-examples.md").read_text()
     review = (root / "ads-video-plan-review/references/plan-review.md").read_text()
     assert "风大，这几下就吹开了" in presenter and "我用这款吹风机，几下就吹开了" in presenter
     assert "十万转高速马达，三分钟吹干" in brand and "不必" in brand
@@ -722,8 +722,9 @@ def test_stacked_brand_voiceover_keeps_one_benefit_and_the_call_to_action():
     from pathlib import Path
     scene_book = Path("app/skills/shared/ad-form-playbooks/scene-story.md").read_text()
     sound = Path("app/skills/ads-video-sound-direction/SKILL.md").read_text()
-    assert "出镜人物开口说" in scene_book
-    assert "不要整条都写成画外音" in scene_book
+    assert "出镜人物" in sound and "开口说" in sound
+    assert "不要把整条剧情都写成产品片旁白" in sound
+    assert "出镜人物开口说" not in scene_book
     assert "剧情可以用旁白" not in sound
     assert "character_dialogue" in sound and "定格那一句" in sound
 

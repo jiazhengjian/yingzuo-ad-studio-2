@@ -167,12 +167,12 @@ def test_direction_prompt_does_not_default_to_a_plain_real_scene():
     assert "大白话" in FILM_CONCEPT_SYSTEM and "别吵醒她" in FILM_CONCEPT_SYSTEM
     assert "影棚特写" in STRATEGY_SELECTION_SYSTEM and "别吵醒她" in STRATEGY_SELECTION_SYSTEM
     assert "生活世界" in DIRECTOR_SYSTEM and "衔接" in DIRECTOR_SYSTEM
-    skill = Path("app/skills/ads-video-creative-strategy/references/film-concept.md").read_text()
+    skill = Path("app/skills/ads-video-sound-direction/references/film-concept.md").read_text()
     assert "真场景演示不是创意标准" in skill
     assert "九宫格" in skill
     assert "别吵醒她" in skill
     assert "降噪" in skill and "纯影棚" in skill
-    comparison = Path("app/skills/ads-video-creative-strategy/references/direction-comparison.md").read_text()
+    comparison = Path("app/skills/ads-video-sound-direction/references/direction-comparison.md").read_text()
     review = Path("app/skills/ads-video-plan-review/references/direction-review.md").read_text()
     assert "纯影棚" in comparison and "ready=false" in review and "降噪" in review
     brand = Path("app/skills/shared/ad-form-playbooks/brand-tvc.md").read_text()

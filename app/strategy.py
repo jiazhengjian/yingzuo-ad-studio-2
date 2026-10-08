@@ -148,7 +148,7 @@ class FilmConcept(_StrictModel):
         description="贯穿母题，只写一个元素，不超过16字")
     side_proof: Annotated[str, StringConstraints(strip_whitespace=True, max_length=40)] = Field(
         default="", exclude_if=lambda value: not value,
-        description="侧面证明，不超过40字。大白话，用场景、过程或概念层比喻让人看见好处。不写规格、价格、数字或照片说明")
+        description="侧面证明，不超过40字。大白话，用场景、过程或概念层比喻让人看见好处。不写规格、数字或照片说明")
     key_visual: LongText = Field(description="中段，不超过40字。大白话写这一拍：剧情是转折，讲解是演示，产品片是产品高光。不是运镜清单，也不是摄影散文")
     memory_anchor: HistoricalDirectionText = Field(default="", exclude_if=lambda value: not value,
         description="历史字段。新方向不写；脚本从核心画面和收尾推导观众留下的印象")

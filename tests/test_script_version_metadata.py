@@ -99,8 +99,12 @@ def test_new_flow_draft_and_review_use_runtime_version_without_more_requests(enu
     ordered_contexts = [service_contexts[sent["stage_skills"]["stage"]] for sent in enum_gateway.contexts]
     for sent, loaded in zip(enum_gateway.contexts, ordered_contexts, strict=True):
         assert_skill_wire_matches_source(sent["stage_skills"], loaded)
-    assert result["skill_trace"] == [trace for context in ordered_contexts
-                                     for trace in [*skill_trace(context), *shared_reference_trace(context)]]
+    from app.planner_recovery import SKILL_TRACE_LIMIT, bound_server_list
+    expected_trace = bound_server_list(
+        [trace for context in ordered_contexts
+         for trace in [*skill_trace(context), *shared_reference_trace(context)]],
+        SKILL_TRACE_LIMIT)
+    assert result["skill_trace"] == expected_trace
     assert all(trace["version"] and trace["content_sha256"] for trace in result["skill_trace"])
     assert all(trace["source_content_sha256"] for trace in result["skill_trace"]
                if trace["execution_kind"] != "shared_reference")

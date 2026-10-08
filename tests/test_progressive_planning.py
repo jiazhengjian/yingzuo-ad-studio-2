@@ -1190,13 +1190,13 @@ def test_planner_jargon_is_rewritten_once_before_review(progressive_gateway):
     rewrite = state.contexts[2]
     assert rewrite["task_kind"] == "line_jargon_rewrite"
     assert rewrite["stage"] == "ad_script"
-    assert [item["id"] for item in rewrite["stage_skills"]["skills"]] == ["ads-video-dialogue-writing"]
+    assert [item["id"] for item in rewrite["stage_skills"]["skills"]] == ["ads-video-script-planning"]
     assert rewrite["stage_skills"]["shared_references"] == []
     assert "说出口的对照" in rewrite["stage_skills"]["skills"][0]["content"]
     loaded = [trace for trace in state.traces if trace["stage"] == "line_rewrite"]
     assert len(loaded) == 1
     assert loaded[0]["loaded_sections"] == ["SKILL.md", "references/ad-dialogue-examples.md"]
-    assert loaded[0]["id"] == "ads-video-dialogue-writing"
+    assert loaded[0]["id"] == "ads-video-script-planning"
     assert "关注" not in plan["script"]
     assert plan["ad_script"]["beats"][0]["narration"] == "吹完头发顺了。"
     assert plan["ad_script"]["beats"][1]["narration"] == "看桌角。"
