@@ -123,3 +123,45 @@ test('a confirmed option shows its label when the stored text is null', () => {
   const written = { ...answered.answers[1], text: '送给妈妈' };
   assert.equal(draft.answerLabel(answered.questions[1], written), '送给妈妈');
 });
+
+test('reopening fills the original card and does not ask which part', () => {
+  memory.clear();
+  const reopened = {
+    ...gate,
+    id: 'gate-reopen',
+    message: '先确认广告怎么拍、最想让观众记住的一点、拍给谁看、在什么情境下使用、看完去哪里，再继续准备方案。',
+    answers: [
+      { question_id: 'ad_form', option_id: 'brand_tvc' },
+      { question_id: 'highlight', text: '瓶身透亮' },
+      { question_id: 'audience', text: '上班族通勤' },
+      { question_id: 'cta_target', option_id: 'link' },
+    ],
+  };
+  const seeded = draft.initialDraft(reopened);
+  assert.equal(seeded.step, 0);
+  assert.equal(seeded.answers.ad_form.option_id, 'brand_tvc');
+  assert.equal(seeded.answers.highlight.text, '瓶身透亮');
+  assert.equal(seeded.answers.audience.text, '上班族通勤');
+  assert.equal(seeded.answers.cta_target.option_id, 'link');
+  const html = renderToStaticMarkup(React.createElement(ConversationGate, {
+    gate: reopened, busy: false, onSubmit: async () => {}, onCreativeSubmit: async () => {},
+  }));
+  assert.match(html, /产品展示广告/);
+  assert.match(html, /aria-pressed="true"/);
+  assert.doesNotMatch(html, /这次想改的是哪一部分|哪一部分|请修改|没通过|硬门/);
+  const story = {
+    ...reopened,
+    id: 'gate-story',
+    answers: [
+      { question_id: 'ad_form', option_id: 'scene_story' },
+      { question_id: 'highlight', text: '瓶身透亮' },
+      { question_id: 'audience', text: '上班族通勤' },
+      { question_id: 'cta_target', option_id: 'link' },
+    ],
+  };
+  assert.deepEqual(draft.visibleQuestions(story, draft.initialDraft(story).answers).map(item => item.id), ['ad_form', 'highlight', 'audience']);
+  const storyHtml = renderToStaticMarkup(React.createElement(ConversationGate, {
+    gate: story, busy: false, onSubmit: async () => {}, onCreativeSubmit: async () => {},
+  }));
+  assert.doesNotMatch(storyHtml, /看完视频后|这次想改的是哪一部分|请修改|没通过|硬门/);
+});

@@ -470,6 +470,169 @@ def classify_narrative_axis(card):
     return None
 
 
+_PRODUCTION_EDIT = re.compile(
+    r"台词|文案|旁白|口播词|方案|分镜|脚本|方向|时长|秒钟|镜头|画面|视频|配音|音色|字幕|图片|场景图"
+)
+_REOPEN_CLAUSE = re.compile(
+    r"(?:我想再改一下|我想改一下|再改一下|再改改|我想再改|"
+    r"我想改个内容|想改个内容|我改个内容|改一下内容|改个内容|"
+    r"改一下刚才的选择|改一下刚才选的|刚才的选择再改一下|刚才的选择我想改一下|"
+    r"重新填一下|重填一下|重新选一下|"
+    r"改一下选择|改一下回答|改一下澄清)[吧啊呀了]?"
+)
+_WHICH_PART = re.compile(r"哪一部分|哪一块|想改的是哪|改哪一")
+_PART_SWAP = (
+    re.compile(r"换表达方式|换广告倾向|换广告类型"),
+    re.compile(r"换想被记住|换卖点|记住的点"),
+    re.compile(r"换拍给谁|换人群|换使用情境"),
+    re.compile(r"换看完|换去向|换去哪里"),
+)
+_CANONICAL_IDS = ("ad_form", "highlight", "audience", "cta_target")
+
+
+def requests_clarification_revision(text):
+    """A request to edit the last clarification, not a line, plan or duration."""
+    whole = re.sub(r"\s+", "", str(text or ""))
+    if not whole or explicit_ad_form(whole) is not None or unresolved_ad_form_change(whole):
+        return False
+    clauses = [clause for clause in re.split(r"[，,。！!；;？?\n]", whole) if clause]
+    if not clauses or any(_PRODUCTION_EDIT.search(clause) for clause in clauses):
+        return False
+    return any(_REOPEN_CLAUSE.fullmatch(clause) for clause in clauses)
+
+
+def is_which_part_menu(raw):
+    """The model menu that asks which saved answer to change."""
+    if not isinstance(raw, dict) or raw.get("kind") != "clarify":
+        return False
+    chunks = [str(raw.get("message") or "")]
+    for question in raw.get("questions") or []:
+        if not isinstance(question, dict):
+            continue
+        chunks.append(str(question.get("prompt") or ""))
+        for option in question.get("options") or []:
+            if isinstance(option, dict):
+                chunks.append(str(option.get("label") or ""))
+    blob = re.sub(r"\s+", "", "".join(chunks))
+    if _WHICH_PART.search(blob):
+        return True
+    return sum(bool(pattern.search(blob)) for pattern in _PART_SWAP) >= 2
+
+
+def _answered_clarifications(gates):
+    for gate in gates or ():
+        if not isinstance(gate, dict) or gate.get("status") != "answered":
+            continue
+        if gate.get("kind") not in (None, "clarification", "clarify"):
+            continue
+        yield gate
+
+
+def _prefill_answer(question, answer, source_question):
+    if not isinstance(answer, dict):
+        return None
+    question_id = question["id"]
+    if answer.get("skipped"):
+        return {"question_id": question_id, "skipped": True}
+    text = answer.get("text")
+    if isinstance(text, str) and text.strip():
+        return {"question_id": question_id, "text": text.strip()[:500]}
+    option_id = answer.get("option_id")
+    if not isinstance(option_id, str) or not option_id:
+        return None
+    allowed = {item.get("id") for item in question.get("options") or [] if isinstance(item, dict)}
+    if option_id in allowed:
+        return {"question_id": question_id, "option_id": option_id}
+    labels = {item.get("id"): item.get("label") for item in (source_question or {}).get("options") or []
+              if isinstance(item, dict)}
+    label = labels.get(option_id)
+    if isinstance(label, str) and label.strip() and question.get("allow_custom", True):
+        return {"question_id": question_id, "text": label.strip()[:500]}
+    return None
+
+
+def _saved_form(project, prefilled):
+    answer = prefilled.get("ad_form")
+    if isinstance(answer, dict):
+        if answer.get("option_id") in AD_FORM_LABELS:
+            return answer["option_id"]
+        parsed = explicit_ad_form(answer.get("text") or "")
+        if parsed:
+            return parsed
+    return project.get("ad_form")
+
+
+def reopen_clarification_card(project, messages=(), gates=()):
+    """The original four questions, filled with the choices already saved.
+
+    A story still omits the destination. The message is the usual confirmation.
+    """
+    from .audience import AUDIENCE_IDS, audience_question
+    from .cta import cta_question
+    from .highlight import highlight_question, merchant_corpus
+
+    saved, sources = {}, {}
+    for gate in _answered_clarifications(gates):
+        questions = {item.get("id"): item for item in gate.get("questions") or [] if isinstance(item, dict)}
+        for answer in gate.get("answers") or []:
+            if not isinstance(answer, dict):
+                continue
+            question_id = answer.get("question_id")
+            source = questions.get(question_id)
+            if question_id in AUDIENCE_IDS:
+                question_id = "audience"
+            if question_id not in _CANONICAL_IDS:
+                continue
+            saved[question_id] = answer
+            sources[question_id] = source
+    corpus = merchant_corpus(project, messages)
+    drafted = {
+        "ad_form": ad_form_question(),
+        "highlight": highlight_question(corpus),
+        "audience": audience_question(corpus),
+        "cta_target": cta_question(),
+    }
+    prefilled = {}
+    for question_id, question in drafted.items():
+        answer = _prefill_answer(question, saved.get(question_id), sources.get(question_id))
+        if answer:
+            prefilled[question_id] = answer
+    if "ad_form" not in prefilled and project.get("ad_form") in AD_FORM_LABELS:
+        prefilled["ad_form"] = {"question_id": "ad_form", "option_id": project.get("ad_form")}
+    form = _saved_form(project, prefilled)
+    questions = [drafted["ad_form"], drafted["highlight"], drafted["audience"]]
+    if form != "scene_story":
+        questions.append(drafted["cta_target"])
+        if "cta_target" not in prefilled:
+            target = project.get("cta_target")
+            if target in ("link", "brand", "message", "store", "ai_decide"):
+                prefilled["cta_target"] = {"question_id": "cta_target", "option_id": target}
+            elif isinstance(target, str) and target.strip() and target.strip() not in ("none",):
+                prefilled["cta_target"] = {"question_id": "cta_target", "text": target.strip()[:500]}
+    else:
+        prefilled.pop("cta_target", None)
+    return {
+        "kind": "clarify",
+        "message": confirmation_message(questions),
+        "questions": questions,
+        "prefilled_answers": [prefilled[item["id"]] for item in questions if item["id"] in prefilled],
+    }
+
+
+def clarification_revision_response(project, messages=(), gates=(), *, force=False):
+    """Reopen the saved card. None when this turn is not that request."""
+    if not isinstance(project, dict) or "ad_form" not in project:
+        return None
+    if not force:
+        latest = next((str(message.get("content") or "") for message in reversed(messages or [])
+                       if isinstance(message, dict) and message.get("role") == "user"), "")
+        if not requests_clarification_revision(latest):
+            return None
+    if not any(True for _ in _answered_clarifications(gates)):
+        return None
+    return reopen_clarification_card(project, messages, gates)
+
+
 def strip_ad_form_declarations(text):
     """Keep raw conversation, but don't cite recognized preferences as facts."""
     parts = re.split(r"([，,。！!；;\n\r])", str(text))

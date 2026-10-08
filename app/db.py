@@ -1440,7 +1440,8 @@ class Store:
                 raise StaleRevision("该回合不再等待规划结果")
             from .ad_form import bind_brief_ad_form, guard_ad_form_confirmation
             frozen_project = job["payload"].get("frozen", {}).get("project", p)
-            decision = AgentDecision.model_validate(guard_ad_form_confirmation(decision_dict, frozen_project)).model_dump()
+            validated = AgentDecision.model_validate(guard_ad_form_confirmation(decision_dict, frozen_project))
+            decision = validated.model_dump()
             plan_brief = ((decision.get("plan") or {}).get("strategy") or {}).get("brief")
             if isinstance(plan_brief, dict) and plan_brief.get("ad_form") != p.get("ad_form"):
                 raise ValueError("方案须沿用本轮已确认的广告倾向，不能修改已审核方案的归属")
@@ -1449,6 +1450,19 @@ class Store:
                 if isinstance(brief, dict):
                     bind_brief_ad_form(brief, p)
             now, kind = time.time(), decision["kind"]
+            prefilled = []
+            for item in validated.prefilled_answers:
+                row = {"question_id": item.question_id}
+                if item.skipped:
+                    row["skipped"] = True
+                elif item.text:
+                    row["text"] = item.text
+                elif item.option_id:
+                    row["option_id"] = item.option_id
+                else:
+                    continue
+                prefilled.append(row)
+            decision.pop("prefilled_answers", None)
             payload = job["payload"]
             restoring_pending_candidates = kind == "reply" and bool(payload.get("pending_direction_candidates"))
             if restoring_pending_candidates:
@@ -1460,7 +1474,7 @@ class Store:
             payload["decision"] = decision
             if kind == "clarify":
                 gid = identifier("gate")
-                c.execute("INSERT INTO gates VALUES(?,?,?,'clarification','pending',?,?,?,'[]',NULL,NULL,?,?,?,NULL)", (gid, p["id"], job_id, decision["message"], encoded(decision["questions"]), "[]", p["context_version"], p["revision"], now))
+                c.execute("INSERT INTO gates VALUES(?,?,?,'clarification','pending',?,?,?,?,NULL,NULL,?,?,?,NULL)", (gid, p["id"], job_id, decision["message"], encoded(decision["questions"]), "[]", encoded(prefilled), p["context_version"], p["revision"], now))
                 c.execute("UPDATE jobs SET status='awaiting_input',phase='awaiting_input',payload=?,lease_until=0,updated_at=? WHERE id=?", (encoded(payload), now, job_id))
                 c.execute("UPDATE projects SET status='awaiting_input',updated_at=? WHERE id=?", (now, p["id"]))
                 self._message(c, p["id"], "assistant", decision["message"], job_id)

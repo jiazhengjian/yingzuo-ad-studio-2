@@ -366,7 +366,7 @@ export default function App() {
     }); } finally { submissionLock.current = false; }
   }
   async function savePlan() { if (!projectId || !editPlan || editRevision === null || !validEditedPlan(editPlan)) return; await run('edit', async () => { await api(`/api/projects/${projectId}/plan`, json('PATCH', { plan: editPlan, accepted_revision: editRevision })); if (selectedProjectRef.current === projectId) { setEditPlan(null); setEditRevision(null); setNotice('台词已保存，生成前请再确认。'); } await refresh(projectId); }); }
-  async function cancel() { if (!projectId) return; await run('cancel', async () => { await api(`/api/projects/${projectId}/cancel`, json('POST', {})); await refresh(projectId); if (selectedProjectRef.current === projectId) setNotice('已请求停止后续工作。供应商已受理的任务仍需核对结果，取消不等于退款。'); }); }
+  async function cancel() { if (!projectId) return; await run('cancel', async () => { await api(`/api/projects/${projectId}/cancel`, json('POST', {})); await refresh(projectId); if (selectedProjectRef.current === projectId) setNotice('已请求停止后续工作。'); }); }
   async function resumeSavedPlanning() {
     if (!projectId || !canPlan || submissionLock.current || uploadLock.current || hasActive) {
       if (projectId) setError('当前不能按已保存的需求继续，请等正在进行的步骤结束。');
