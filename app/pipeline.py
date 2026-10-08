@@ -233,6 +233,10 @@ def _content_auto_failure(exc) -> bool:
         token in message for token in ("结构不完整", "未能满足已确认要求", "容量仍未改善"))
 
 
+class NeedsReconfirm(Exception):
+    """The saved board was replaced. Image and video spend wait for another 确认."""
+
+
 class PlanStructureError(ValueError):
     """A segment/plan shape the merchant should not have to edit by hand."""
 
@@ -635,6 +639,14 @@ class Pipeline:
         except media.MediaCanceled as exc:
             self.store.update_job(job_id, status="canceled", error=str(exc), lease_until=0)
             self.store.set_project_status(job["project_id"], job["revision"], "canceled")
+        except NeedsReconfirm:
+            # The replacement plan is already the current revision. This job
+            # stays on the revision the merchant confirmed, so 确认 can start
+            # a new one. Nothing was submitted.
+            self.store.update_job(job_id, status="canceled",
+                                  error="方案已换成能通过检查的一版，请再确认后再制作。", lease_until=0)
+            current = self.store.get_project(job["project_id"])
+            self.store.set_project_status(job["project_id"], current["revision"], "awaiting_generate")
         except StaleRevision as exc:
             self.store.update_job(job_id, status="needs_review", error=str(exc), lease_until=0)
         except asyncio.CancelledError:
@@ -983,23 +995,42 @@ class Pipeline:
         return plan
 
     def _settle_before_spend(self, job, plan):
-        """Re-run the hard gates. Repair locally. Do not ask the merchant to fix a model failure."""
-        from .release_gate import MerchantLineChoice, settle_before_spend
+        """Re-run the hard gates. A line-only repair keeps this confirmation.
+
+        Replacing the whole board with the conservative plan saves that board
+        and waits for another 确认. It does not submit images or video.
+        """
+        from .release_gate import (
+            MerchantLineChoice, settle_before_spend, spoken_line_changes, spoken_repair_message,
+        )
         project = self.store.get_project(job["project_id"])
         try:
             settled = settle_before_spend(plan, project=project, project_id=job["project_id"])
         except MerchantLineChoice as choice:
             prompt = choice.questions[0]["prompt"] if choice.questions else str(choice)
             raise ValueError(prompt) from choice
-        if isinstance(settled, dict) and settled is not plan:
-            previous = job["revision"]
+        if not isinstance(settled, dict) or settled is plan:
+            return settled
+        changes = spoken_line_changes(plan, settled)
+        previous = job["revision"]
+        if changes is None:
             project = self.store.save_repaired_plan(job["project_id"], previous, settled)
-            current = self.store.get_job(job["id"])
-            payload = dict(current.get("payload") or {})
-            payload["plan"] = settled
-            payload["repaired_from_revision"] = previous
-            payload["merchant_confirmed_revision"] = project["revision"]
-            self.store.update_job(job["id"], revision=project["revision"], payload=payload)
+            self.store.add_message(
+                job["project_id"], "assistant",
+                "硬门没有通过，已换成一份能通过检查的方案。请再按确认，确认之后才会出图。",
+                job["id"])
+            raise NeedsReconfirm()
+        project = self.store.save_repaired_plan(job["project_id"], previous, settled)
+        current = self.store.get_job(job["id"])
+        payload = dict(current.get("payload") or {})
+        payload["plan"] = settled
+        payload["repaired_from_revision"] = previous
+        payload["merchant_confirmed_revision"] = project["revision"]
+        self.store.update_job(job["id"], revision=project["revision"], payload=payload)
+        if changes:
+            note = spoken_repair_message(plan, changes)
+            if note:
+                self.store.add_message(job["project_id"], "assistant", note, job["id"])
         return settled
 
     async def _generate(self, job):

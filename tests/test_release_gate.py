@@ -558,6 +558,89 @@ def test_changed_passed_plan_is_repaired_before_image_spend_without_asking_the_m
     messages = store.project_detail(project["id"])["messages"]
     assert not any("这版方案需要重新检查" in item["content"] for item in messages)
     assert not any("请修改" in item["content"] for item in messages)
+    notes = [item["content"] for item in messages if item["role"] == "assistant"]
+    assert len(notes) == 1
+    assert stacked in notes[0]
+    assert "它带负离子。" in notes[0]
+    assert "堆卖点" in notes[0]
+    assert "出图前改了这句台词" in notes[0]
+
+
+def _pipeline(store, tmp_path):
+    class _Gateway:
+        def __init__(self):
+            self.designs = 0
+            self.videos = 0
+            self.plans = []
+
+        async def create_designs(self, project, assets, plan, folder, **kwargs):
+            self.designs += 1
+            self.plans.append(plan)
+            return []
+
+        async def submit_video(self, *args, **kwargs):
+            self.videos += 1
+            return {}
+
+    gateway = _Gateway()
+    settings = Settings(data_root=tmp_path, deepseek_api_key="TEST_ONLY", tudou_api_key="TEST_ONLY",
+                        ffmpeg_path="TEST_ONLY", max_video_submissions=1, max_active_runs=1,
+                        poll_seconds=0.01, provider_timeout_seconds=1, tts_voice="TEST_ONLY",
+                        video_model="TEST_ONLY")
+    return gateway, settings
+
+
+def test_conservative_replacement_waits_for_another_confirm_before_any_spend(tmp_path, monkeypatch):
+    """A whole-board replacement is shown again. Images wait for the next 确认."""
+    monkeypatch.setattr("app.release_gate.local_hard_gate_repair", lambda *args, **kwargs: None)
+    store = Store(tmp_path / "db.sqlite", tmp_path / "media")
+    project = store.create_project("蓝瓶", "product", duration_seconds=10, ad_form="brand_tvc")
+    path = store.media_root / "product.png"
+    path.write_bytes(PNG)
+    asset = store.add_asset(project["id"], "product", "原图", path, "image/png")
+    strategy = _strategy("brand_tvc")
+    stacked = "它带负离子，吹完是顺的。这风不吵。"
+    plan = {
+        "title": "方案", "script": stacked, "language": "zh-CN", "aspect_ratio": "9:16",
+        "audio_strategy": "voiceover", "review_status": "passed", "strategy": strategy.model_dump(),
+        "facts": {"name": "蓝瓶", "claims": []},
+        "ad_script": {"core_message": "看清商品", "beats": [{
+            "id": "b0", "narration": stacked, "purpose": "看清商品", "message": "看清外观",
+            "visual_role": "商品留在画面里"}]},
+        "segments": [{"id": "s0", "duration_seconds": 10, "purpose": "展示", "prompt": "真实商品展示",
+                      "shots": [{"start": 0, "end": 5, "description": "瓶身在左侧。"},
+                                {"start": 5, "end": 10, "description": "瓶身靠近一些。"}],
+                      "reference_asset_ids": [asset["id"]]}],
+    }
+    project = store.update_plan(project["id"], plan)
+    job = store.create_job(project["id"], "generate", project["revision"])
+    gateway, settings = _pipeline(store, tmp_path)
+    result = asyncio.run(Pipeline(store, gateway, settings).execute(job["id"]))
+    assert gateway.designs == 0 and gateway.videos == 0
+    assert result["submission_count"] == 0
+    assert result["status"] == "canceled"
+    stopped = store.get_job(job["id"])
+    assert stopped["revision"] == project["revision"]
+    assert stopped["payload"]["merchant_confirmed_revision"] == project["revision"]
+    current = store.get_project(project["id"])
+    assert current["revision"] == project["revision"] + 1
+    assert current["status"] == "awaiting_generate"
+    previous = store.revision_plan(project["id"], project["revision"])
+    assert stacked in json.dumps(previous, ensure_ascii=False)
+    saved = store.revision_plan(project["id"], current["revision"])
+    assert stacked not in json.dumps(saved, ensure_ascii=False)
+    assert saved["segments"] != plan["segments"]
+    assert images_blocked_reason(saved, strategy=saved.get("strategy"), project=current) is None
+    notes = [item["content"] for item in store.project_detail(project["id"])["messages"] if item["role"] == "assistant"]
+    assert notes == ["硬门没有通过，已换成一份能通过检查的方案。请再按确认，确认之后才会出图。"]
+    assert "重新生成" not in notes[0]
+    again = store.create_job(project["id"], "generate", current["revision"])
+    assert again["id"] != job["id"]
+    assert again["payload"]["merchant_confirmed_revision"] == current["revision"]
+    second = asyncio.run(Pipeline(store, gateway, settings).execute(again["id"]))
+    assert gateway.designs == 1 and gateway.videos == 0
+    assert second["submission_count"] == 0
+    assert "请再按确认" not in (second.get("error") or "")
 
 
 def test_unknown_type_does_not_spend_or_ask_the_merchant_to_rewrite():
@@ -740,6 +823,10 @@ def test_regenerate_after_not_produced_starts_text_planning(tmp_path):
     }
     project = store.update_plan(project["id"], plan)
     job = store.create_job(project["id"], "generate", project["revision"])
+    store.update_job(job["id"], status="failed", error="供应商生成失败", progress={
+        "error_code": "unknown", "retryable": False, "retry_action": None})
+    with pytest.raises(StaleRevision, match="不会提交图片或视频"):
+        store.retry_generate_job(project["id"], job["id"])
     store.update_job(job["id"], status="failed", error="这次没生成出来", progress={
         "error_code": "planning_not_produced", "retryable": True, "retry_action": "retry_planning"})
     with pytest.raises(StaleRevision, match="不会提交图片或视频"):
@@ -773,3 +860,7 @@ def test_merchant_insisted_line_is_not_replaced_before_spend():
     assert settled is board
     assert "auto_release" not in board
     assert settled["ad_script"]["beats"][0]["narration"] == stacked
+    rewritten = deepcopy(board)
+    rewritten["ad_script"]["beats"][0]["narration"] = "看清这件。"
+    from app.release_gate import spoken_line_changes
+    assert spoken_line_changes(board, rewritten) is None

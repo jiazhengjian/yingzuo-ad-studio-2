@@ -379,10 +379,17 @@ def create_app(settings=None, gateway=None, run_worker=True):
             require_planner()
             return {"job": public(store.retry_planning_job(project_id, job["id"]))}
         if job["kind"] == "generate":
+            from app.generate_retry import ACCOUNT_RETRY_CODES
             code = (job.get("progress") or {}).get("error_code")
-            # This generate never cleared the hard gates. Regenerating starts a
-            # text plan from the saved brief. It does not post image or video work.
-            if code in ("planning_not_produced", "release_recheck") or (job.get("error") or "") == "这次没生成出来":
+            progress = job.get("progress") or {}
+            # Account and balance refusals retry the same confirmed, unpaid job.
+            # Every other "重新生成" on a generate job starts a text plan. The
+            # button is not a new permission to submit images or video.
+            text_only = code not in ACCOUNT_RETRY_CODES and (
+                code in ("planning_not_produced", "release_recheck")
+                or (job.get("error") or "") == "这次没生成出来"
+                or progress.get("retryable") is False)
+            if text_only:
                 require_planner()
                 idle(project_id)
                 return {"job": public(store.resume_saved_planning(project_id))}

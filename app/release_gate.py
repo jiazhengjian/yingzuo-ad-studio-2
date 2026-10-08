@@ -194,6 +194,172 @@ def _spoken_lines(plan):
     return lines
 
 
+_REVIEW_STAMPS = ("plan_review", "review_status", "review_status_note", "auto_release")
+
+
+def _beat_narrations(plan):
+    found = {}
+    script = plan.get("ad_script") if isinstance(plan, dict) and isinstance(plan.get("ad_script"), dict) else {}
+    for index, beat in enumerate(script.get("beats") or []):
+        if not isinstance(beat, dict):
+            continue
+        key = beat.get("id") if isinstance(beat.get("id"), str) and beat.get("id") else index
+        text = beat.get("narration") if isinstance(beat.get("narration"), str) else ""
+        found[key] = text.strip()
+    return found
+
+
+def _every_spoken_text(plan):
+    found = []
+    if not isinstance(plan, dict):
+        return found
+    for text in _beat_narrations(plan).values():
+        if text:
+            found.append(text)
+    script = plan.get("script")
+    if isinstance(script, str) and script.strip():
+        found.append(script.strip())
+    for segment in plan.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        narration = segment.get("narration")
+        if isinstance(narration, str) and narration.strip():
+            found.append(narration.strip())
+        for span in segment.get("speech_spans") or []:
+            if isinstance(span, dict) and isinstance(span.get("text"), str) and span["text"].strip():
+                found.append(span["text"].strip())
+        for shot in segment.get("shots") or []:
+            if isinstance(shot, dict) and isinstance(shot.get("narration"), str) and shot["narration"].strip():
+                found.append(shot["narration"].strip())
+    return found
+
+
+def _without_spoken(plan):
+    """Board with review stamps and spoken text removed, for a structure compare."""
+    copied = deepcopy(plan) if isinstance(plan, dict) else {}
+    for key in _REVIEW_STAMPS:
+        copied.pop(key, None)
+    copied["script"] = ""
+    script = copied.get("ad_script")
+    if isinstance(script, dict):
+        for beat in script.get("beats") or []:
+            if isinstance(beat, dict):
+                beat["narration"] = ""
+    for segment in copied.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        segment["narration"] = ""
+        for span in segment.get("speech_spans") or []:
+            if isinstance(span, dict):
+                span["text"] = ""
+        for shot in segment.get("shots") or []:
+            if isinstance(shot, dict):
+                shot["narration"] = ""
+    return copied
+
+
+def _spoken_places(plan):
+    places = {}
+    if not isinstance(plan, dict):
+        return places
+    script = plan.get("ad_script") if isinstance(plan.get("ad_script"), dict) else {}
+    for index, beat in enumerate(script.get("beats") or []):
+        if not isinstance(beat, dict):
+            continue
+        key = beat.get("id") if isinstance(beat.get("id"), str) and beat.get("id") else index
+        text = beat.get("narration") if isinstance(beat.get("narration"), str) else ""
+        places[("beat", key)] = text.strip()
+    for index, segment in enumerate(plan.get("segments") or []):
+        if not isinstance(segment, dict):
+            continue
+        segment_key = segment.get("id") if isinstance(segment.get("id"), str) and segment.get("id") else index
+        for span_index, span in enumerate(segment.get("speech_spans") or []):
+            if not isinstance(span, dict):
+                continue
+            span_key = span.get("id") if isinstance(span.get("id"), str) and span.get("id") else span_index
+            text = span.get("text") if isinstance(span.get("text"), str) else ""
+            places[("span", segment_key, span_key)] = text.strip()
+        for shot_index, shot in enumerate(segment.get("shots") or []):
+            if not isinstance(shot, dict) or "narration" not in shot:
+                continue
+            shot_key = shot.get("id") if isinstance(shot.get("id"), str) and shot.get("id") else shot_index
+            text = shot.get("narration") if isinstance(shot.get("narration"), str) else ""
+            places[("shot", segment_key, shot_key)] = text.strip()
+    return places
+
+
+def _insisted_rewritten(before, after):
+    """True when a merchant-dictated line no longer sits where they put it."""
+    insisted = insisted_lines(before)
+    if not insisted:
+        return False
+    before_places = _spoken_places(before)
+    after_places = _spoken_places(after)
+    for line in insisted:
+        held = [key for key, text in before_places.items() if text == line]
+        if any(after_places.get(key) != line for key in held):
+            return True
+        if not held and line not in after_places.values() and line not in _every_spoken_text(after):
+            return True
+    return False
+
+
+def spoken_line_changes(before, after):
+    """Spoken-line edits when the rest of the board is the same.
+
+    Returns a list of (old, new) pairs. None means this is not a line-only
+    repair: the board was replaced, or a merchant-dictated line was rewritten.
+    An empty list means the spoken lines themselves did not change.
+    """
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return None
+    if _insisted_rewritten(before, after):
+        return None
+    if _without_spoken(before) != _without_spoken(after):
+        return None
+    pairs = []
+    before_beats = _beat_narrations(before)
+    after_beats = _beat_narrations(after)
+    for key in dict.fromkeys([*before_beats, *after_beats]):
+        old = before_beats.get(key, "")
+        new = after_beats.get(key, "")
+        if old != new:
+            pairs.append((old, new))
+    if pairs or before_beats or after_beats:
+        return [(old, new) for old, new in pairs if old or new]
+    old_script = before.get("script") if isinstance(before.get("script"), str) else ""
+    new_script = after.get("script") if isinstance(after.get("script"), str) else ""
+    if old_script.strip() != new_script.strip():
+        return [(old_script.strip(), new_script.strip())]
+    return []
+
+
+def spoken_repair_message(before, changes):
+    """Plain chat line naming each rewritten spoken line and the hard-gate reason."""
+    findings = []
+    try:
+        findings = evaluate_release_table(before, exempt_lines=insisted_lines(before))
+    except (TypeError, ValueError, KeyError, AttributeError):
+        findings = []
+    parts = []
+    for old, new in changes:
+        reason = next((item.summary for item in findings if item.line and item.line == old), None)
+        if reason is None and findings:
+            reason = findings[0].summary
+        if not reason:
+            reason = "这句过不了出图前的检查"
+        if old and new:
+            parts.append(f"「{old}」改成了「{new}」，因为{reason}")
+        elif old:
+            parts.append(f"收掉了「{old}」，因为{reason}")
+        elif new:
+            parts.append(f"补上了「{new}」，因为{reason}")
+    if not parts:
+        return ""
+    lead = "出图前改了这句台词：" if len(parts) == 1 else "出图前改了这几句台词："
+    return lead + "；".join(parts) + "。"
+
+
 def _with_form(strategy, form):
     """Attach a project ad type the plan itself did not carry."""
     if hasattr(strategy, "model_copy") and getattr(strategy, "brief", None) is not None:

@@ -684,6 +684,8 @@ class Store:
                 raise StaleRevision("配音文案过长，请先精简文案后重新确认；直接恢复同样文案不能解决时长问题，已保存的图片会保留")
             if code in ("planning_not_produced", "release_recheck") or (job.get("error") or "") == "这次没生成出来":
                 raise StaleRevision("这次没生成出来，重新生成会按已保存的需求再策划，不会提交图片或视频")
+            if code not in ACCOUNT_RETRY_CODES and (job.get("progress") or {}).get("retryable") is False:
+                raise StaleRevision("这次没生成出来，重新生成会按已保存的需求再策划，不会提交图片或视频")
             project = self._project(c, project_id)
             if project["revision"] != job["revision"]:
                 raise StaleRevision("这是旧版本任务，请使用当前方案")
