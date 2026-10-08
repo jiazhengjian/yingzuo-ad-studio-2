@@ -1468,6 +1468,8 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
     while raw is None and storyboard_errors < AUTO_RETRY_CAP:
         try:
             raw = await stage_call(director_system, data, assets)
+            from .early_schedule import detach_model_schedule
+            detach_model_schedule(raw)
         except Exception as error:
             _reraise_terminal(error)
             record_failure({"nonblocking": True, "message": type(error).__name__, "issues": ["storyboard"]})
@@ -2113,6 +2115,8 @@ async def progressive_plan(*, stage_call, on_progress, record_failure, strategy,
                         "repair_instruction": "声音是这个主角自己的对白。每个说话的镜头都要出现这个角色，不要写成没有人的产品摆拍。只返回完整分镜。"}
                     try:
                         raw = await stage_call(director_system, regen_payload, assets)
+                        from .early_schedule import detach_model_schedule
+                        detach_model_schedule(raw)
                     except Exception as regen_error:
                         _reraise_terminal(regen_error)
                         record_failure(storyboard_check_note(regen_error))

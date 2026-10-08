@@ -844,7 +844,8 @@ class Pipeline:
             if getattr(self.gateway, "supports_direction_selection", False):
                 callbacks.update(selected_strategy=job["payload"].get("selected_strategy"),
                     inherited_skill_trace=job["payload"].get("inherited_skill_trace", []),
-                    force_plan=bool(job["payload"].get("planning_requested")), on_skill_trace=used_skill)
+                    force_plan=bool(job["payload"].get("planning_requested")), on_skill_trace=used_skill,
+                    model_next_step=job["payload"].get("model_next_step"))
             if getattr(self.gateway, "supports_planning_checkpoints", False):
                 def save_checkpoint(checkpoint):
                     self._guard(job["id"], require_current=True)
