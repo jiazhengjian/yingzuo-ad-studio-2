@@ -1209,6 +1209,32 @@ class Store:
         self._event(c, project_id, job_id, "message", "需求已保存" if role == "user" else "收到助手回复", "done")
         return {"id": mid, "project_id": project_id, "role": role, "content": content, "created_at": now, "job_id": job_id}
 
+    def _bind_turn_attachments(self, c, project_id, message, body):
+        """Remember which user message a product image was sent with. Display only."""
+        ids = list(dict.fromkeys(body.get("attachment_asset_ids") or []))
+        if not ids:
+            return
+        target = body.get("attachment_target") or "created"
+        owner = message["id"] if message is not None and target == "created" else None
+        if target == "latest":
+            row = c.execute("SELECT id FROM messages WHERE project_id=? AND role='user' ORDER BY created_at DESC, rowid DESC LIMIT 1", (project_id,)).fetchone()
+            owner = row["id"] if row else None
+        for aid in ids:
+            row = c.execute("SELECT * FROM assets WHERE id=? AND project_id=?", (aid, project_id)).fetchone()
+            if row is None:
+                raise ValueError("附件不属于当前项目")
+            asset = self._dict(row)
+            meta = dict(asset.get("metadata") or {})
+            if meta.get("generated") or asset["kind"] not in ("product", "person"):
+                raise ValueError("本轮附件只能是商品原图")
+            if owner:
+                meta["message_id"] = owner
+                meta.pop("sent_without_message", None)
+            else:
+                meta.pop("message_id", None)
+                meta["sent_without_message"] = True
+            c.execute("UPDATE assets SET metadata=? WHERE id=?", (encoded(meta), aid))
+
     def _sync_pending_context(self, c, project_id, context_version):
         """Keep an open card on the new brief version without canceling its job."""
         pending = c.execute("SELECT id,job_id FROM gates WHERE project_id=? AND status='pending'", (project_id,)).fetchall()
@@ -1410,6 +1436,7 @@ class Store:
                 content = "广告倾向：" + AD_FORM_LABELS[chosen_form]
             c.execute("UPDATE projects SET context_version=context_version+1,updated_at=? WHERE id=?", (time.time(), project_id))
             message = self._message(c, project_id, "user", content) if content else None
+            self._bind_turn_attachments(c, project_id, message, body)
             p = self._project(c, project_id)
             if retain_offer:
                 # The direction card stays. Record the note on that same waiting job

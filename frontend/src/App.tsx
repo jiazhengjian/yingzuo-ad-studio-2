@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, FormEvent, ReactNode } from 'react';
 import { ArrowRight, AtSign, Check, CheckCircle2, ChevronLeft, ChevronRight, Download, FileImage, Film, FolderOpen, ImagePlus, Images, Layers3, LoaderCircle, Maximize2, MessageSquare, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RefreshCw, Settings2, Sparkles, Square, TriangleAlert, X } from 'lucide-react';
 import Home from './Home';
@@ -24,6 +24,8 @@ import { creativeSummary, planningMessageText, planningNotes } from './planningD
 import { directionSelectRequest, isCurrentDirectionGate, pendingConversationGate } from './directionSelection';
 import { stageProductImages } from './composerDraft';
 import ComposerImageDraft from './ComposerImageDraft';
+import { canvasShowsVideoSection } from './canvasStage';
+import { originalAssetsForMessage, unplacedOriginalAssets } from './messageAttachments';
 import './conversation.css';
 import { api, json, activeStatus, mediaUrl, downloadUrl } from './api';
 import type { AdForm, Answer, Asset, Detail, Gate, Health, Job, Message, Plan, Project, Render, RunEvent } from './api';
@@ -227,13 +229,19 @@ export default function App() {
       setWorkspaceView('chat');
     }
   }
+  function attachmentPayload(ids: string[], target: 'created' | 'latest') {
+    return ids.length ? { attachment_asset_ids: ids, attachment_target: target } : {};
+  }
   async function uploadStaged(target: string, files: File[]) {
     uploadLock.current = true; setUploading(true);
+    const uploaded: Asset[] = [];
     try {
-      for (const file of files) await uploadFile(target, file);
+      for (const file of files) uploaded.push(await uploadFile(target, file));
       const updated = await refresh(target);
-      if (selectedProjectRef.current === target) { detailRef.current = updated; setPendingFiles([]); }
-      return updated;
+      const ids = new Set(uploaded.map(asset => asset.id));
+      const patched: Detail = { ...updated, assets: updated.assets.map(asset => ids.has(asset.id) && typeof asset.metadata.message_id !== 'string' ? { ...asset, metadata: { ...asset.metadata, pending_attachment: true } } : asset) };
+      if (selectedProjectRef.current === target) { detailRef.current = patched; setDetail(patched); setPendingFiles([]); }
+      return { detail: patched, assetIds: uploaded.map(asset => asset.id) };
     } finally { uploadLock.current = false; setUploading(false); }
   }
   async function send(event: FormEvent) {
@@ -248,9 +256,10 @@ export default function App() {
       gateInputLock.current = true; setError('');
       try {
         let version = detailRef.current?.project.id === target ? detailRef.current.project.context_version : project?.context_version ?? 0;
-        if (target && files.length) version = (await uploadStaged(target, files)).project.context_version;
+        let attachmentIds: string[] = [];
+        if (target && files.length) { const uploaded = await uploadStaged(target, files); version = uploaded.detail.project.context_version; attachmentIds = uploaded.assetIds; }
         if (text) await pendingGateRef.current.submitText(text);
-        else if (target && files.length && health?.configured.planner) await submitTurn(target, version, { content: '' });
+        else if (target && files.length && health?.configured.planner) await submitTurn(target, version, { content: '', ...attachmentPayload(attachmentIds, 'created') });
         if (selectedProjectRef.current === target && gateComposerKey.current.startsWith(`${gateId}:`)) { setDraft(''); setSelectedAsset(null); }
         if (!text && target) await refresh(target);
       } catch (caught) { if (selectedProjectRef.current === target) setError(errorText(caught)); }
@@ -266,15 +275,17 @@ export default function App() {
         const created = await api<Project>('/api/projects', json('POST', { brief, route: 'product', duration_seconds: durationSeconds, ...(selectedForm ? { ad_form: selectedForm } : {}) }));
         setTarget(created.id);
         if (navigationEpoch.current === startedNavigation) { chooseProject(created.id); setDetail({ project: created, assets: [], messages: [{id:'initial-local',role:'user',content:brief,created_at:created.created_at}], jobs: [], renders: [], gates: [], events: [] }); }
-        try { for (const file of files) await uploadFile(created.id, file); } finally { await refresh(created.id); await loadProjects(); }
-        if (health?.configured.planner) { const current = await refresh(created.id); await submitTurn(created.id, current.project.context_version); await refresh(created.id); }
+        const uploadedIds: string[] = [];
+        try { for (const file of files) uploadedIds.push((await uploadFile(created.id, file)).id); } finally { await refresh(created.id); await loadProjects(); }
+        if (health?.configured.planner) { const current = await refresh(created.id); await submitTurn(created.id, current.project.context_version, attachmentPayload(uploadedIds, 'latest')); await refresh(created.id); }
         else if (selectedProjectRef.current === created.id) setNotice('需求已保存，连接策划服务后即可开始对话。');
       } else {
         const content = brief;
         let version = detailRef.current?.project.id === target ? detailRef.current.project.context_version : project?.context_version ?? 0;
-        if (files.length) version = (await uploadStaged(target, files)).project.context_version;
+        let attachmentIds: string[] = [];
+        if (files.length) { const uploaded = await uploadStaged(target, files); version = uploaded.detail.project.context_version; attachmentIds = uploaded.assetIds; }
         if (health?.configured.planner) {
-          await submitTurn(target, version, { content, reference_asset_ids: selectedAsset ? [selectedAsset.id] : [] });
+          await submitTurn(target, version, { content, reference_asset_ids: selectedAsset ? [selectedAsset.id] : [], ...attachmentPayload(attachmentIds, 'created') });
         } else if (content) {
           await api(`/api/projects/${target}/messages`, json('POST', { content, ...(selectedAsset ? { asset_id: selectedAsset.id } : {}) }));
         }
@@ -449,9 +460,19 @@ export default function App() {
   const completedSteps = productionSteps.filter(step => step.done).length;
   const firstMessageId = detail?.messages.find(message => message.role === 'user')?.id;
   const conversationItems = buildConversationItems(detail);
+  const threadMessages = detail?.messages ?? [];
+  const looseImages = unplacedOriginalAssets(threadMessages, detail?.assets ?? []);
+  const pendingUploads = (detail?.assets ?? []).filter(asset => asset.metadata.pending_attachment === true && typeof asset.metadata.message_id !== 'string');
+  const videoAttempt = activeJob && activeJob.kind !== 'plan' ? activeJob : failedJob && failedJob.kind !== 'plan' ? failedJob : undefined;
+  const showVideoCanvas = canvasShowsVideoSection({ hasRender: !!shownRender, hasSegments: segments.length > 0, phase: videoAttempt?.phase ?? null, kind: videoAttempt?.kind ?? null, pendingGateKind: pendingGate?.kind ?? null });
+  function messageImages(assets: Asset[]) {
+    if (!assets.length) return null;
+    return <div className="message-images">{assets.map(asset => <button key={asset.id} type="button" aria-label={`预览${asset.name}`} onClick={() => openAsset(asset)}><img src={mediaUrl(asset)} alt={asset.name}/></button>)}</div>;
+  }
   function showMessage(message: Message) {
     const designs = messageDesignAssets(detail, message);
-    return <article key={message.id} className={`message message-${message.role}`}><div className="message-body">{message.id === firstMessageId && <span className="message-tag">@ 商品广告</span>}<p>{planningMessageText(detail, message)}</p></div>{message.id === firstMessageId && originalAssets.length > 0 && <div className="message-images">{originalAssets.map(asset => <button key={asset.id} aria-label={`预览${asset.name}`} onClick={() => openAsset(asset)}><img src={mediaUrl(asset)} alt={asset.name}/></button>)}</div>}{designs.length > 0 && <MessageDesignImages assets={designs} onPreview={openAsset}/>}</article>;
+    const attached = originalAssetsForMessage(threadMessages, detail?.assets ?? [], message);
+    return <article key={message.id} className={`message message-${message.role}`}><div className="message-body">{message.id === firstMessageId && <span className="message-tag">@ 商品广告</span>}<p>{planningMessageText(detail, message)}</p></div>{messageImages(attached)}{designs.length > 0 && <MessageDesignImages assets={designs} onPreview={openAsset}/>}</article>;
   }
   function showPlan() {
     if (!plan) return null;
@@ -492,10 +513,16 @@ export default function App() {
         <section className="conversation-panel" aria-label="广告制作对话">
           <div className="conversation-scroll" ref={conversationScroll} onScroll={e => { const el = e.currentTarget; nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 90; }}>
             {loading && !detail && <div className="conversation-loading"><Spinner/>正在打开对话…</div>}
-            {conversationItems.map(item => item.type === 'plan' ? <div key={item.id}>{showPlan()}</div> : item.type === 'message' ? showMessage(item.message) : item.type === 'gate' ? item.gate.status === 'pending' && item.gate.id === pendingGate?.id ? null :
-              <ConversationGate key={item.id} gate={item.gate.status === 'pending' ? { ...item.gate, status: 'superseded' } : item.gate} busy={!!busy || uploading || hasActive} error={undefined} onSubmit={answers => answerGate(item.gate, answers)} onCreativeSubmit={(optionId,note) => confirmCreative(item.gate,optionId,note)}/> :
-              <RunTimeline key={item.id} job={item.job} events={item.events} notes={planningNotes(detail, item.job)} hideError={!!jobRecovery && item.job.id === latestJob?.id}/>)}
-            {pendingText?.projectId === projectId && !detail?.messages.some(message => message.role === 'user' && message.content === pendingText.text && Date.now()/1000-message.created_at<10) && <article className="message message-user pending-message"><div className="message-body"><p>{pendingText.text}</p><small><Spinner/>正在发送</small></div></article>}
+            {conversationItems.map((item, index) => {
+              const previousTime = index === 0 ? Number.NEGATIVE_INFINITY : conversationItems[index - 1].time;
+              const ahead = looseImages.filter(asset => (asset.created_at ?? 0) > previousTime && (asset.created_at ?? 0) <= item.time);
+              const node = item.type === 'plan' ? <div key={item.id}>{showPlan()}</div> : item.type === 'message' ? showMessage(item.message) : item.type === 'gate' ? item.gate.status === 'pending' && item.gate.id === pendingGate?.id ? null :
+                <ConversationGate key={item.id} gate={item.gate.status === 'pending' ? { ...item.gate, status: 'superseded' } : item.gate} busy={!!busy || uploading || hasActive} error={undefined} onSubmit={answers => answerGate(item.gate, answers)} onCreativeSubmit={(optionId,note) => confirmCreative(item.gate,optionId,note)}/> :
+                <RunTimeline key={item.id} job={item.job} events={item.events} notes={planningNotes(detail, item.job)} hideError={!!jobRecovery && item.job.id === latestJob?.id}/>;
+              return <Fragment key={item.id}>{ahead.length > 0 && <article className="message message-user">{messageImages(ahead)}</article>}{node}</Fragment>;
+            })}
+            {looseImages.some(asset => (asset.created_at ?? 0) > (conversationItems.at(-1)?.time ?? Number.NEGATIVE_INFINITY)) && <article className="message message-user">{messageImages(looseImages.filter(asset => (asset.created_at ?? 0) > (conversationItems.at(-1)?.time ?? Number.NEGATIVE_INFINITY)))}</article>}
+            {pendingText?.projectId === projectId && !detail?.messages.some(message => message.role === 'user' && message.content === pendingText.text && Date.now()/1000-message.created_at<10) ? <article className="message message-user pending-message"><div className="message-body">{pendingText.text && <p>{pendingText.text}</p>}<small><Spinner/>正在发送</small></div>{messageImages(pendingUploads)}</article> : pendingUploads.length > 0 && <article className="message message-user">{messageImages(pendingUploads)}</article>}
             {!!busy && ['message','answer','creative','direction','plan','shorten'].includes(busy) && !hasActive && <div className="conversation-loading" role="status"><Spinner/>正在提交本轮请求…</div>}
 
             <SavedResultCard detail={detail} onPlay={() => { if (shownRender) openRender(shownRender); }}/>
@@ -513,9 +540,9 @@ export default function App() {
             {currentCharacters.length > 0 && <section className="design-zone design-zone-characters" aria-label="角色参考图"><h3><Images size={14}/>角色参考图</h3><div className="element-grid">{currentCharacters.map(designAsset)}</div></section>}
 </div>
           </section>
-          <section className={`canvas-card video-card ${hasActive && activeJob?.kind !== 'plan' ? 'is-processing' : ''}`} ref={playerRef}><header><h2>视频生成</h2>{shownRender && <span className="canvas-version">已完成 V{shownRender.revision}</span>}</header>{shownRender ? <div className="video-result"><div className="video-tile"><span className="video-label">Video {shownRender.revision}</span><CanvasVideoButton key={shownRender.id} label={`查看成片 V${shownRender.revision}`} src={shownRender.url || `/media/${shownRender.asset_id}`} onOpen={() => openRender(shownRender)}/></div><div className="video-result-actions"><a className="button subtle small" download href={downloadUrl(shownRender.asset_id)}><Download size={14}/>下载视频</a></div><p className="result-footnote">{durationText(renderDuration(shownRender))} · 9:16 · {soundLabel(shownRender.manifest.audio_strategy, shownRender.manifest.production)}{' · '}{resultWorkLabel(detail)}</p></div> : <div className="video-empty">{pendingGate?.kind === 'creative' ? <><div className="video-placeholder-icon"><Film size={25}/></div><p>参考图片已就绪，检查图片后开始制作视频。</p><button className="button primary small" onClick={() => selectView('chat')}>检查图片</button></> : hasActive && activeJob?.kind !== 'plan' ? <><div className="video-generating-frame"><span className="generation-orbit"/><span>{['queued','synthesizing_voice','creating_designs'].includes(activeJob.phase) ? '准备素材中' : '正在生成'}</span></div><p>{phaseNames[activeJob.phase] || '正在准备制作'}</p></> : failedJob ? <><div className="video-placeholder-icon"><TriangleAlert size={25}/></div><p>{voiceNeedsEdit ? '台词需要缩短，当前还没有成片' : '本次制作尚未完成，当前还没有成片'}</p><button className="button subtle small" onClick={() => selectView('chat')}>{voiceNeedsEdit ? '前往修改台词' : '查看需要处理的步骤'}</button></> : <><div className="video-placeholder-icon"><Film size={25}/></div><p>{plan ? '确认方案后准备参考图片，检查图片后制作视频' : '你的广告视频会出现在这里'}</p>{plan && <button className="button primary small" disabled={!canGenerate} onClick={() => void generate()}>{busy === 'generate' ? <Spinner/> : <Check size={14}/>}确认</button>}</>}</div>}
+          {showVideoCanvas && <section className={`canvas-card video-card ${hasActive && activeJob?.kind !== 'plan' ? 'is-processing' : ''}`} ref={playerRef}><header><h2>视频生成</h2>{shownRender && <span className="canvas-version">已完成 V{shownRender.revision}</span>}</header>{shownRender ? <div className="video-result"><div className="video-tile"><span className="video-label">Video {shownRender.revision}</span><CanvasVideoButton key={shownRender.id} label={`查看成片 V${shownRender.revision}`} src={shownRender.url || `/media/${shownRender.asset_id}`} onOpen={() => openRender(shownRender)}/></div><div className="video-result-actions"><a className="button subtle small" download href={downloadUrl(shownRender.asset_id)}><Download size={14}/>下载视频</a></div><p className="result-footnote">{durationText(renderDuration(shownRender))} · 9:16 · {soundLabel(shownRender.manifest.audio_strategy, shownRender.manifest.production)}{' · '}{resultWorkLabel(detail)}</p></div> : <div className="video-empty">{pendingGate?.kind === 'creative' ? <><div className="video-placeholder-icon"><Film size={25}/></div><p>参考图片已就绪，检查图片后开始制作视频。</p><button className="button primary small" onClick={() => selectView('chat')}>检查图片</button></> : hasActive && activeJob?.kind !== 'plan' ? <><div className="video-generating-frame"><span className="generation-orbit"/><span>{['queued','synthesizing_voice','creating_designs'].includes(activeJob.phase) ? '准备素材中' : '正在生成'}</span></div><p>{phaseNames[activeJob.phase] || '正在准备制作'}</p></> : failedJob ? <><div className="video-placeholder-icon"><TriangleAlert size={25}/></div><p>{voiceNeedsEdit ? '台词需要缩短，当前还没有成片' : '本次制作尚未完成，当前还没有成片'}</p><button className="button subtle small" onClick={() => selectView('chat')}>{voiceNeedsEdit ? '前往修改台词' : '查看需要处理的步骤'}</button></> : <><div className="video-placeholder-icon"><Film size={25}/></div><p>{plan ? '确认方案后准备参考图片，检查图片后制作视频' : '你的广告视频会出现在这里'}</p>{plan && <button className="button primary small" disabled={!canGenerate} onClick={() => void generate()}>{busy === 'generate' ? <Spinner/> : <Check size={14}/>}确认</button>}</>}</div>}
           {segments.length > 0 && <details className="canvas-disclosure" open={showSegments} onToggle={e => setShowSegments(e.currentTarget.open)}><summary><ChevronRight size={14}/>生成片段 <span>{segments.length}</span></summary><div className="segment-grid">{segments.map((asset,i) => { const timing = segmentTiming(asset); return <div className="segment-card" key={asset.id}><CanvasVideoButton label={`查看生成片段${i + 1}`} src={mediaUrl(asset)} onOpen={() => openAsset(asset)}/><div><span>片段 {i+1}<small>{timing.used == null ? "使用时长待核对" : `成片使用 ${durationText(timing.used)}`}</small></span><a href={downloadUrl(asset.id)} download aria-label={`下载片段${i+1}`}><Download size={14}/></a></div>{timing.source != null && (timing.used == null || Math.abs(timing.source - timing.used) > 0.05) && <p className="segment-duration-note">原片 {durationText(timing.source)}{timing.used == null ? "" : "，按方案截取"}</p>}<button className="text-action" onClick={() => referenceAsset(asset)}>针对这段提意见</button></div>; })}</div></details>}
-          {renders.length > 1 && <details className="canvas-disclosure" open={showHistory} onToggle={e => setShowHistory(e.currentTarget.open)}><summary><ChevronRight size={14}/>历史版本 <span>{renders.length}</span></summary>{renders.map(render => <div className="history-row" key={render.id}><Film size={15}/><span>视频 V{render.revision}<small>{dateText(render.created_at)} · {durationText(renderDuration(render))}{render.id === shownRender?.id ? ' · 当前显示' : ''}</small></span><button type="button" className="text-action" onClick={() => openRender(render)}>打开</button><a href={downloadUrl(render.asset_id)} download aria-label={`下载成片V${render.revision}`} className="icon-button"><Download size={15}/></a></div>)}</details>}</section>
+          {renders.length > 1 && <details className="canvas-disclosure" open={showHistory} onToggle={e => setShowHistory(e.currentTarget.open)}><summary><ChevronRight size={14}/>历史版本 <span>{renders.length}</span></summary>{renders.map(render => <div className="history-row" key={render.id}><Film size={15}/><span>视频 V{render.revision}<small>{dateText(render.created_at)} · {durationText(renderDuration(render))}{render.id === shownRender?.id ? ' · 当前显示' : ''}</small></span><button type="button" className="text-action" onClick={() => openRender(render)}>打开</button><a href={downloadUrl(render.asset_id)} download aria-label={`下载成片V${render.revision}`} className="icon-button"><Download size={15}/></a></div>)}</details>}</section>}
         </div></section>
       </main>
     </div>}

@@ -577,6 +577,8 @@ class TurnInput(ConversationModel):
     expected_context_version: int = Field(ge=0)
     content: str = Field(default="", max_length=6000)
     reference_asset_ids: list[str] = Field(default_factory=list, max_length=10)
+    attachment_asset_ids: list[str] = Field(default_factory=list, max_length=3)
+    attachment_target: Literal["created", "latest"] = "created"
     reply_to_gate_id: str | None = Field(default=None, max_length=100)
     answers: list[Answer] = Field(default_factory=list, max_length=4)
 
