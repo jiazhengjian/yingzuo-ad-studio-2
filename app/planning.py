@@ -640,6 +640,13 @@ _PRODUCT_SUPPLEMENT = re.compile(r"商品|图片|照片|包装|外观|颜色|口
 _DIRECTION_QUESTION = re.compile(r"(?:什么意思|讲讲|解释一下|解释|说说).{0,16}(?:方向|思路)|(?:方向|思路).{0,10}(?:什么意思|怎么理解|讲讲)")
 
 
+def _is_direction_selection(content, label):
+    """A click stores the short label and, when present, the direction sentence."""
+    prefix = "选择创意方向：" + str(label or "")
+    text = str(content or "")
+    return text == prefix or text.startswith(prefix + "。")
+
+
 def product_images_are_new(assets, *, brief=None, since=None):
     """True only for a product image outside the current brief, or one saved after the current choice.
 
@@ -797,7 +804,7 @@ def evidence_sources(project, messages, gates=()):
             key = f"message_{index + 1}"
         content = str(message.get("content", ""))
         if any(gate.get("kind") == "direction" and gate.get("status") == "answered"
-               and content == "选择创意方向：" + str(option.get("label", ""))
+               and _is_direction_selection(content, option.get("label", ""))
                for gate in gates for option in gate.get("options", [])
                if option.get("id") == gate.get("selected_option_id")):
             continue  # Selecting model-authored copy does not certify its claims.

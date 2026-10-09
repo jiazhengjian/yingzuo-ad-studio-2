@@ -286,23 +286,17 @@ def validate_production_plan(plan):
 
 
 def required_designs(plan):
-    """One environment, one sheet per person who does not change, plus start and result stills.
+    """One environment and one sheet per person.
 
-    A person who owns a start still uses that still as their identity. They do
-    not also get an ordinary four-view. With state references off, every person
-    gets one ordinary sheet and no stills are planned.
+    Declared state changes stay on that person's sheet. A separate start or
+    result still is not planned, and is not required before video.
     """
-    from .story_logic import plan_state_references
     production = _get(plan, "production")
     characters = _get(production, "characters", [])
-    states = plan_state_references(plan)
-    covered = {item.get("character_id") for item in states if item.get("phase") == "start" and item.get("character_id")}
-    sheets = [person for person in characters if _get(person, "id") not in covered]
     return [{"key": "scene", "kind": "scene", "name": "场景参考图"}, *[
         {"key": "character_" + _get(person, "id"), "kind": "character",
          "name": _get(person, "name") + " · 四视图", "character": person,
-         "character_id": _get(person, "id")} for person in sheets],
-        *states]
+         "character_id": _get(person, "id")} for person in characters]]
 
 
 def validate_design_assets(plan, assets):
@@ -316,12 +310,4 @@ def validate_design_assets(plan, assets):
         raise ValueError("请先准备并确认本方案的场景图及每位角色的四视图")
     if any(asset["metadata"].get("view_layout") != "four_view" for asset in characters):
         raise ValueError("角色参考必须是本方案已确认的四视图")
-    ordered = scenes + [next(asset for asset in characters if asset["metadata"]["character_id"] == cid) for cid in expected]
-    needed = [item for item in designs if item["kind"] == "start_frame"]
-    if not needed:
-        return ordered
-    states = [asset for asset in assets if asset["kind"] == "start_frame" and asset["metadata"].get("state_reference")]
-    by_id = {asset["metadata"].get("state_id"): asset for asset in states}
-    if any(item["state_id"] not in by_id for item in needed):
-        raise ValueError("请先准备并确认状态变化的起始与结果参考图")
-    return ordered + [by_id[item["state_id"]] for item in needed]
+    return scenes + [next(asset for asset in characters if asset["metadata"]["character_id"] == cid) for cid in expected]

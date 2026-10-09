@@ -15,7 +15,7 @@ from app.story_logic import (
     apply_background_rewrite, background_issues, cast_distinction_issues, film_scene_shots, line_is_punchline,
     align_declared_continuity, plan_state_references, proof_highlight_issues, repair_prop_handoff,
     rewrite_background_if_needed,
-    hands_only_shot, line_is_private_thought, scene_groups,
+    align_spoken_ordinals, hands_only_shot, line_is_private_thought, scene_groups,
     scrub_story_purposes, settle_inner_monologue, settle_speech_coverage, shot_awake_listener,
     snap_declared_speech,
     stamp_background_lines, state_change_warnings,
@@ -178,20 +178,14 @@ def test_state_change_splits_the_process_shot_from_a_later_result():
     assert state_pairing_issues(plan) == []
     assert all(item["kind"] == "start_frame" for item in refs)
     designs = required_designs(plan)
-    assert [item["kind"] for item in designs] == ["scene", "start_frame", "start_frame"]
+    assert [item["kind"] for item in designs] == ["scene"]
     scene = {"kind": "scene", "metadata": {"generated": True}}
-    try:
-        validate_design_assets(plan, [scene])
-    except ValueError as error:
-        assert "状态变化" in str(error)
-    else:
-        raise AssertionError("state stills are required")
+    assert validate_design_assets(plan, [scene]) == [scene]
     stills = [{"kind": "start_frame", "metadata": {
         "generated": True, "state_reference": True, "state_id": item["state_id"],
         "phase": item["phase"], "shot_id": item["shot_id"], "state_label": item["label"],
     }} for item in refs]
-    ordered = validate_design_assets(plan, [scene, *stills])
-    assert [asset["metadata"].get("phase") for asset in ordered[1:]] == ["start", "result"]
+    assert validate_design_assets(plan, [scene, *stills]) == [scene]
     static = {"production": {"characters": []}, "segments": [{"shots": [{"description": "瓶子停在桌角。"}]}]}
     extra = {"kind": "start_frame", "metadata": {"generated": True, "state_reference": True, "state_id": "other:start"}}
     assert validate_design_assets(static, [scene, extra]) == [scene]
@@ -265,10 +259,11 @@ def test_state_change_splits_the_process_shot_from_a_later_result():
     prompt = compile_grouped_video(segment)
     opening = _shot_block(prompt, "镜头1 |")
     ending = _shot_block(prompt, "镜头2 |")
-    assert "起始状态参考图4" in opening
+    assert "角色参考上的起始状态" in opening
     assert "停在过程里" in opening
     assert "硬切到结果" not in opening
-    assert "硬切到结果状态参考图5" in ending
+    assert "角色参考上的结果状态" in ending
+    assert "状态参考图" not in prompt
     assert "商品原图" in prompt
 
 
@@ -378,8 +373,8 @@ def test_r18b_wet_process_then_dry_result_pairs_start_and_result():
     assert refs[0]["label"] == "头发湿·起始" and refs[1]["label"] == "头发吹干·结果"
     assert refs[0]["character_id"] == "girl" and refs[1]["character_id"] == "girl"
     designs = required_designs(plan)
-    assert [item["kind"] for item in designs] == ["scene", "character", "start_frame", "start_frame"]
-    assert designs[1]["character_id"] == "room"
+    assert [item["kind"] for item in designs] == ["scene", "character", "character"]
+    assert [item["character_id"] for item in designs if item["kind"] == "character"] == ["girl", "room"]
     request = state_design_request({}, plan, refs[0])
     assert "披到肩膀" in request["prompt"] and "不要丸子头" in request["prompt"]
     assert "丸子" not in request["prompt"].split("不要丸子头", 1)[-1]
@@ -484,8 +479,9 @@ def test_r19_state_label_is_the_subject_and_later_shots_use_the_result_sheet():
     dry_shot = _shot_block(prompt, "镜头2 |")
     later = _shot_block(prompt, "镜头3 |")
     assert "女生（参考图4）" in wet and "参考图5" not in wet
-    assert "女生（参考图5）" in dry_shot and "结果状态参考图5" in dry_shot and "参考图4" not in dry_shot
-    assert "女生（参考图5）" in later and "结果状态参考图5" in later and "参考图4" not in later
+    assert "女生（参考图4）" in dry_shot and "角色参考上的结果状态" in dry_shot
+    assert "女生（参考图4）" in later and "角色参考上的结果状态" in later
+    assert "状态参考图" not in prompt
 
 
 def test_r20_dryer_and_clothes_are_not_state_refs_and_hair_is_one_pair():
@@ -689,8 +685,8 @@ def test_state_references_off_gives_every_character_one_ordinary_sheet(monkeypat
     assert Settings.from_env().state_references_enabled is True
     refs = plan_state_references(plan)
     assert [item["phase"] for item in refs] == ["start", "result"]
-    assert [item["kind"] for item in required_designs(plan)] == ["scene", "character", "start_frame", "start_frame"]
-    assert required_designs(plan)[1]["character_id"] == "room"
+    assert [item["kind"] for item in required_designs(plan)] == ["scene", "character", "character"]
+    assert [item["character_id"] for item in required_designs(plan) if item["kind"] == "character"] == ["girl", "room"]
 
 
 def test_background_pose_follows_the_latest_declared_turn():
@@ -954,6 +950,80 @@ def test_r21_short_silent_shot_retimes_the_line_into_the_speaking_shot():
     assert shots[1]["end"] == 7.8 and shots[2]["start"] == 7.8
 
 
+def test_storyboard_prompt_counts_spoken_lines_not_shots():
+    from app.progressive_planning import DIRECTOR_SYSTEM
+    assert "不按镜头号" in DIRECTOR_SYSTEM
+    assert "第一句、第二句、第三句" in DIRECTOR_SYSTEM
+    assert "她开口说第三句" in DIRECTOR_SYSTEM
+
+
+def test_picture_ordinal_follows_the_spoken_line_not_the_shot_number():
+    lines = ["玫瑰清香。", "约会前，心里就稳了。", "点下面链接，把它看清楚。"]
+    shots = [
+        {"id": "s1", "start": 0.0, "end": 2.0, "description": "瓶身静置，她没说话。", "purpose": "看瓶子"},
+        {"id": "s2", "start": 2.0, "end": 4.0, "description": "盖子打开，她没说话。", "purpose": "打开"},
+        {"id": "s3", "start": 4.0, "end": 7.0, "description": "画外女声旁白说第三句。", "purpose": "旁白说第三句",
+         "continuity": {"start_state": "旁白说第三句"}},
+        {"id": "s4", "start": 7.0, "end": 10.0, "description": "她把瓶子拿近，旁白说第四句。", "purpose": "旁白说第四句"},
+        {"id": "s5", "start": 10.0, "end": 14.0, "description": "瓶子停在桌面，旁白说第5句。", "purpose": "旁白说第五句"},
+    ]
+    spans = []
+    for index, (text, shot) in enumerate(zip(lines, shots[2:]), start=1):
+        spans.append({
+            "id": f"speech_{index}", "text": text,
+            "start": shot["start"] + 0.2, "end": shot["end"] - 0.2,
+            "shot_ids": [shot["id"]],
+            "anchors": [{"text": text, "shot_ids": [shot["id"]], "visual_evidence": shot["description"]}],
+        })
+    segment = {
+        "shots": shots, "speech_spans": spans,
+        "narration": "".join(lines),
+        "purpose": "旁白说第三句",
+        "prompt": "\n".join(f"{shot['start']:g}–{shot['end']:g}秒：{shot['description']}" for shot in shots),
+    }
+    assert align_spoken_ordinals([segment], only_shot_numbers=True) is True
+    assert shots[2]["description"] == "画外女声旁白说第一句。"
+    assert shots[3]["description"] == "她把瓶子拿近，旁白说第二句。"
+    assert shots[4]["description"] == "瓶子停在桌面，旁白说第三句。"
+    assert shots[2]["purpose"] == "旁白说第一句"
+    assert shots[2]["continuity"]["start_state"] == "旁白说第一句"
+    assert "第一句" in segment["prompt"] and "第5句" not in segment["prompt"]
+    assert "第五句" not in segment["prompt"] and "第四句" not in segment["prompt"]
+    assert spans[0]["anchors"][0]["visual_evidence"] == "画外女声旁白说第一句。"
+    assert [span["text"] for span in spans] == lines
+    assert segment["narration"] == "".join(lines)
+    assert "玫瑰清香" not in shots[2]["description"]
+    assert align_spoken_ordinals([segment]) is False
+
+
+def test_a_declared_third_line_is_not_renumbered_before_it_lands():
+    shots = [
+        {"id": "s1", "start": 0.0, "end": 2.5, "description": "她开口说第一句。"},
+        {"id": "s2", "start": 2.5, "end": 4.0, "description": "她开口说第二句。"},
+        {"id": "s4", "start": 4.0, "end": 7.8, "description": "她没说话，只看了室友一眼。"},
+        {"id": "s5", "start": 7.8, "end": 12.0, "description": "她开口说第三句。"},
+    ]
+    third = _speech("speech_3", "b3", "你接着睡", 6.1, 7.8, "s4")
+    spans = [
+        _speech("speech_1", "b1", "你醒着？", 0.4, 1.6, "s1"),
+        _speech("speech_2", "b2", "那我吹了。", 2.8, 3.8, "s2"),
+        third,
+    ]
+    groups = [
+        {"beat_id": "b1", "start": 0.0, "end": 2.5, "speech_start": 0.4, "speech_end": 1.6},
+        {"beat_id": "b2", "start": 2.5, "end": 4.0, "speech_start": 2.8, "speech_end": 3.8},
+        {"beat_id": "b3", "start": 4.0, "end": 7.8, "speech_start": 6.1, "speech_end": 7.8},
+        {"beat_id": "b4", "start": 7.8, "end": 12.0},
+    ]
+    segments = [{"shots": shots, "speech_spans": spans}]
+    assert align_spoken_ordinals(segments, only_shot_numbers=True) is False
+    assert shots[3]["description"] == "她开口说第三句。"
+    assert snap_declared_speech(segments, [{"groups": groups}]) is True
+    assert third["shot_ids"] == ["s5"]
+    assert align_spoken_ordinals(segments) is False
+    assert "第三句" in shots[3]["description"]
+
+
 def test_a_jacket_in_the_shot_warns_when_the_appearance_only_has_the_sweatshirt():
     plan = {"production": {"characters": [
         {"id": "girl", "description": "二十多岁，黑色长发，灰色卫衣，帆布鞋。"},
@@ -1020,29 +1090,26 @@ def test_rack_focus_onto_the_roommate_counts_as_the_quiet_highlight():
     assert proof_highlight_issues(glance, strategy) == ["剧情卖点没有高光证明镜"]
 
 
-def test_generated_state_stills_pass_the_creative_gate(tmp_path):
+def test_scene_opens_the_creative_gate_without_a_separate_state_still(tmp_path):
     from PIL import Image
     from app.db import Store
 
     store = Store(tmp_path / "gate.sqlite3", tmp_path / "media")
-    project = store.create_project("状态参考过确认", "product", duration_seconds=20)
+    project = store.create_project("状态画在角色参考上", "product", duration_seconds=20)
     story = {"production": {"characters": []}, "segments": [{"shots": [
         _hair_process("s3", "被吹开一半"), _hair_result(),
     ]}], "state_changes": [_declared("s3", "s6")]}
-    refs = plan_state_references(story)
-    assert [item["phase"] for item in refs] == ["start", "result"]
+    assert [item["phase"] for item in plan_state_references(story)] == ["start", "result"]
+    assert [item["kind"] for item in required_designs(story)] == ["scene"]
     saved = store.update_plan(project["id"], {"title": "先确认方案", "segments": [
         {"id": "seg_0", "duration_seconds": 10}, {"id": "seg_1", "duration_seconds": 10},
     ]})
     scene_path = store.media_root / "scene.png"
     Image.new("RGB", (8, 8), "gray").save(scene_path)
     scene = store.add_asset(saved["id"], "scene", "场景", scene_path, "image/png", metadata={"generated": True})
-    plain_path = store.media_root / "plain.png"
-    Image.new("RGB", (8, 8), "blue").save(plain_path)
-    plain = store.add_asset(saved["id"], "start_frame", "普通首帧", plain_path, "image/png", metadata={"generated": True})
     job = store.create_job(saved["id"], "generate", saved["revision"], {"pause_for_creative": True})
     assert store.claim_job(job["id"])
-    option = {"id": "current", "label": "保持当前图片", "description": "确认场景和状态参考", "segment": {
+    option = {"id": "current", "label": "保持当前图片", "description": "确认场景图", "segment": {
         "id": "seg_0", "duration_seconds": 10, "purpose": "呈现已知操作",
         "prompt": "商品操作计划", "narration": "三档风速自己选。", "reference_asset_ids": ["product"],
         "shots": [{"id": "shot_1", "start": 0, "end": 10, "description": "手按已确认的风速键。",
@@ -1053,26 +1120,13 @@ def test_generated_state_stills_pass_the_creative_gate(tmp_path):
                                "visual_evidence": "编排器提供的待审画面说明"}]}]}}
     payload = store.get_job(job["id"])["payload"]
     payload["plan"] = story
-    payload["design_asset_ids"] = [scene["id"], plain["id"]]
+    payload["design_asset_ids"] = [scene["id"]]
     store.update_job(job["id"], payload=payload)
-    with pytest.raises(ValueError, match="请先准备并确认状态变化的起始与结果参考图"):
-        store.create_creative_gate(job["id"], [option], "确认图片")
-    stills = []
-    for ref in refs:
-        path = store.media_root / f"{ref['state_id'].replace(':', '_')}.png"
-        Image.new("RGB", (8, 8), "green").save(path)
-        stills.append(store.add_asset(
-            project["id"], "start_frame", ref["label"], path, "image/png",
-            metadata={"generated": True, "state_reference": True, "state_id": ref["state_id"],
-                      "phase": ref["phase"], "shot_id": ref["shot_id"], "state_label": ref["label"]}))
-    original = path.read_bytes()
-    path.write_bytes(b"changed-bytes")
-    payload = store.get_job(job["id"])["payload"]
-    payload["design_asset_ids"] = [scene["id"], *[item["id"] for item in stills]]
-    store.update_job(job["id"], payload=payload)
+    original = scene_path.read_bytes()
+    scene_path.write_bytes(b"changed-bytes")
     with pytest.raises(ValueError, match="缺失或已经变化"):
         store.create_creative_gate(job["id"], [option], "确认图片")
-    path.write_bytes(original)
+    scene_path.write_bytes(original)
     gate = store.create_creative_gate(job["id"], [option], "确认图片")
     assert gate["kind"] == "creative" and gate["status"] == "pending"
 

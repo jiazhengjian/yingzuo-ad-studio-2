@@ -200,23 +200,16 @@ def _reference_lines(segment, spoken=""):
 
 
 def _identity_index(roles, character_id, shot_id, shot_ids):
-    """Ordinary sheet, otherwise the start sheet. From the result shot on, the result sheet."""
-    sheet = start = result = None
-    result_shot = None
+    """The character sheet holds every state. A separate result still is not the identity."""
+    del shot_id, shot_ids
+    sheet = start = None
     for role in roles or []:
         if role.get("character_id") != character_id or type(role.get("index")) is not int:
             continue
         if role.get("role") == "character":
             sheet = role["index"]
-        elif role.get("role") == "state" and role.get("phase") == "start":
+        elif role.get("role") == "state" and role.get("phase") == "start" and start is None:
             start = role["index"]
-        elif role.get("role") == "state" and role.get("phase") == "result":
-            result = role["index"]
-            result_shot = role.get("shot_id")
-    if (result is not None and isinstance(result_shot, str) and isinstance(shot_ids, list)
-            and result_shot in shot_ids and shot_id in shot_ids
-            and shot_ids.index(shot_id) >= shot_ids.index(result_shot)):
-        return result
     if sheet is not None:
         return sheet
     return start
