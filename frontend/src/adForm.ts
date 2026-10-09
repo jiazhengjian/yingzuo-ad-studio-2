@@ -20,6 +20,65 @@ export function homeAdChoice(value?: AdForm | null) {
   return homeAdChoices.find(item => item.id === value) ?? null;
 }
 
+const HOMEPAGE_AD_FORM_KEY = 'yingzuo.homepageAdForm';
+/** Homepage card chosen when the project was created. Clarification answers are not written here. */
+const rememberedHomepageAdForm = new Map<string, HomeAdForm | null>();
+
+function homepageAdFormStorage(): Storage | null {
+  try {
+    return typeof sessionStorage === 'undefined' ? null : sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+function readHomepageAdForms(): Record<string, string> {
+  try {
+    const raw = homepageAdFormStorage()?.getItem(HOMEPAGE_AD_FORM_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const stored: Record<string, string> = {};
+    for (const [projectId, value] of Object.entries(parsed)) {
+      const choice = homeAdChoice(value as AdForm);
+      if (choice) stored[projectId] = choice.id;
+    }
+    return stored;
+  } catch {
+    return {};
+  }
+}
+
+function writeHomepageAdForms(value: Record<string, string>) {
+  try {
+    homepageAdFormStorage()?.setItem(HOMEPAGE_AD_FORM_KEY, JSON.stringify(value));
+  } catch { /* Session storage is optional. */ }
+}
+
+/** Keep the homepage card for this project. A missing or non-card value means no chip. */
+export function rememberHomepageAdForm(projectId: string, value: AdForm | null | undefined) {
+  if (!projectId) return;
+  const choice = homeAdChoice(value);
+  rememberedHomepageAdForm.set(projectId, choice?.id ?? null);
+  const stored = readHomepageAdForms();
+  if (choice) stored[projectId] = choice.id;
+  else delete stored[projectId];
+  writeHomepageAdForms(stored);
+}
+
+export function homepageAdLabel(projectId?: string | null): string | null {
+  if (!projectId) return null;
+  if (rememberedHomepageAdForm.has(projectId)) return homeAdChoice(rememberedHomepageAdForm.get(projectId))?.name ?? null;
+  const choice = homeAdChoice(readHomepageAdForms()[projectId] as AdForm | undefined);
+  if (choice) rememberedHomepageAdForm.set(projectId, choice.id);
+  return choice?.name ?? null;
+}
+
+export function homepageMessageTag(projectId?: string | null): string | null {
+  const name = homepageAdLabel(projectId);
+  return name ? `@ ${name}` : null;
+}
+
 /** Clicking the selected card clears it, so an unselected start still asks. */
 export function nextHomeAdForm(current: AdForm | null | undefined, clicked: HomeAdForm): HomeAdForm | null {
   return current === clicked ? null : clicked;
