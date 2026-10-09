@@ -26,6 +26,8 @@ import { stageProductImages } from './composerDraft';
 import ComposerImageDraft from './ComposerImageDraft';
 import { canvasShowsVideoSection } from './canvasStage';
 import { originalAssetsForMessage, unplacedOriginalAssets } from './messageAttachments';
+import { rememberHomepageAdForm } from './adForm';
+import HomeTypeTag from './HomeTypeTag';
 import './conversation.css';
 import { api, json, activeStatus, mediaUrl, downloadUrl } from './api';
 import type { AdForm, Answer, Asset, Detail, Gate, Health, Job, Message, Plan, Project, Render, RunEvent } from './api';
@@ -273,6 +275,7 @@ export default function App() {
       if (!target) {
         const selectedForm = homeAdForm;
         const created = await api<Project>('/api/projects', json('POST', { brief, route: 'product', duration_seconds: durationSeconds, ...(selectedForm ? { ad_form: selectedForm } : {}) }));
+        rememberHomepageAdForm(created.id, selectedForm);
         setTarget(created.id);
         if (navigationEpoch.current === startedNavigation) { chooseProject(created.id); setDetail({ project: created, assets: [], messages: [{id:'initial-local',role:'user',content:brief,created_at:created.created_at}], jobs: [], renders: [], gates: [], events: [] }); }
         const uploadedIds: string[] = [];
@@ -472,7 +475,7 @@ export default function App() {
   function showMessage(message: Message) {
     const designs = messageDesignAssets(detail, message);
     const attached = originalAssetsForMessage(threadMessages, detail?.assets ?? [], message);
-    return <article key={message.id} className={`message message-${message.role}`}><div className="message-body">{message.id === firstMessageId && <span className="message-tag">@ 商品广告</span>}<p>{planningMessageText(detail, message)}</p></div>{messageImages(attached)}{designs.length > 0 && <MessageDesignImages assets={designs} onPreview={openAsset}/>}</article>;
+    return <article key={message.id} className={`message message-${message.role}`}><div className="message-body">{message.id === firstMessageId && <HomeTypeTag projectId={project?.id}/>}<p>{planningMessageText(detail, message)}</p></div>{messageImages(attached)}{designs.length > 0 && <MessageDesignImages assets={designs} onPreview={openAsset}/>}</article>;
   }
   function showPlan() {
     if (!plan) return null;
