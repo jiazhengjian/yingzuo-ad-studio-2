@@ -57,6 +57,72 @@ def test_states_stay_on_the_character_sheet():
     assert "一张角色参考可以有多个状态" in request["prompt"]
 
 
+def _png(tmp_path, project_id, name):
+    folder = tmp_path / "media" / project_id
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / name
+    Image.new("RGBA", (4, 4), (255, 200, 40, 255)).save(path, "PNG")
+    return path
+
+
+def test_product_image_follows_the_message_that_sent_it(tmp_path):
+    store = Store(tmp_path / "state.sqlite3", tmp_path / "media")
+    project = store.create_project("你好", "product")
+    pid = project["id"]
+    store.add_message(pid, "user", "你好")
+    asset = store.add_asset(pid, "product", "香水.png", _png(tmp_path, pid, "bottle.png"), "image/png", metadata={"generated": False})
+    store.create_turn(pid, {
+        "client_turn_id": "with-image",
+        "expected_context_version": store.get_project(pid)["context_version"],
+        "content": "我想做一个香水广告",
+        "attachment_asset_ids": [asset["id"]],
+        "attachment_target": "created",
+    })
+    detail = store.project_detail(pid)
+    first = next(item for item in detail["messages"] if item["content"] == "你好")
+    second = next(item for item in detail["messages"] if item["content"] == "我想做一个香水广告")
+    saved = next(item for item in detail["assets"] if item["id"] == asset["id"])
+    assert saved["metadata"]["message_id"] == second["id"]
+    assert saved["metadata"]["message_id"] != first["id"]
+    assert saved["metadata"]["generated"] is False
+
+
+def test_opening_image_stays_on_the_opening_message(tmp_path):
+    store = Store(tmp_path / "state.sqlite3", tmp_path / "media")
+    project = store.create_project("这是香水", "product")
+    pid = project["id"]
+    opening = store.add_message(pid, "user", "这是香水")
+    asset = store.add_asset(pid, "product", "香水.png", _png(tmp_path, pid, "bottle.png"), "image/png", metadata={"generated": False})
+    store.create_turn(pid, {
+        "client_turn_id": "opening-image",
+        "expected_context_version": store.get_project(pid)["context_version"],
+        "content": "",
+        "attachment_asset_ids": [asset["id"]],
+        "attachment_target": "latest",
+    })
+    saved = store.get_asset(asset["id"])
+    assert saved["metadata"]["message_id"] == opening["id"]
+    assert "sent_without_message" not in saved["metadata"]
+
+
+def test_image_only_followup_is_not_pinned_to_the_previous_message(tmp_path):
+    store = Store(tmp_path / "state.sqlite3", tmp_path / "media")
+    project = store.create_project("你好", "product")
+    pid = project["id"]
+    opening = store.add_message(pid, "user", "你好")
+    asset = store.add_asset(pid, "product", "香水.png", _png(tmp_path, pid, "bottle.png"), "image/png", metadata={"generated": False})
+    store.create_turn(pid, {
+        "client_turn_id": "image-only-followup",
+        "expected_context_version": store.get_project(pid)["context_version"],
+        "content": "",
+        "attachment_asset_ids": [asset["id"]],
+        "attachment_target": "created",
+    })
+    saved = store.get_asset(asset["id"])
+    assert saved["metadata"].get("message_id") != opening["id"]
+    assert saved["metadata"]["sent_without_message"] is True
+
+
 def test_attached_image_can_continue_without_text(tmp_path):
     store = Store(tmp_path / "state.sqlite3", tmp_path / "media")
     project = store.create_project("一瓶香水", "product", ad_form="brand_tvc")
