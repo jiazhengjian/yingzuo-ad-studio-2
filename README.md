@@ -19,13 +19,35 @@
 
 左边是对话和当时的执行进度，右边画布放商品、场景和视频。正在生成参考图时，画布先不展示视频区。
 
-## 示例成片
+## 🎬 示例成片
 
-仓库里目前只有这一条公开示例，点开即可播放。
+这三条都是用这个项目从头到尾做出来的。下面的动图没有声音。点图片或「看完整视频」，才能听到原声。
 
-| 示例 | 成片 |
-| --- | --- |
-| 产品展示 | [产品展示.mp4](docs/demo/产品展示.mp4) |
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="docs/demo/产品展示.mp4"><img src="docs/demo/产品展示.gif" alt="产品展示 · 吹风机" width="220"></a><br>
+      <b>产品展示 · 吹风机</b><br>
+      <sub>20 秒 · 竖屏 720×1280</sub><br>
+      <a href="docs/demo/产品展示.mp4">▶ 看带声音的完整视频</a>
+    </td>
+    <td align="center" width="33%">
+      <a href="docs/demo/story.mp4"><img src="docs/demo/story.gif" alt="剧情 · 蛋糕下午茶" width="220"></a><br>
+      <b>剧情 · 蛋糕下午茶</b><br>
+      <sub>20 秒 · 竖屏 720×1280</sub><br>
+      <a href="docs/demo/story.mp4">▶ 看带声音的完整视频</a>
+    </td>
+    <td align="center" width="33%">
+      <a href="docs/demo/talking.mp4"><img src="docs/demo/talking.gif" alt="人物讲解 · 吹风机" width="220"></a><br>
+      <b>人物讲解 · 吹风机</b><br>
+      <sub>旧称「口播」</sub><br>
+      <sub>20 秒 · 竖屏 720×1280</sub><br>
+      <a href="docs/demo/talking.mp4">▶ 看带声音的完整视频</a>
+    </td>
+  </tr>
+</table>
+
+静帧在 `docs/demo/产品展示_poster.jpg`、`docs/demo/story_poster.jpg`、`docs/demo/talking_poster.jpg`。
 
 ## 工作流程
 
@@ -89,7 +111,7 @@ flowchart LR
 ├── app/                  后端、供应商适配、Skill 与共用参考
 ├── frontend/             React 工作台
 ├── tests/                替身供应商下的测试
-├── docs/                 公开文档；docs/demo/产品展示.mp4 为示例成片
+├── docs/                 公开文档；docs/demo/ 为三条示例成片（mp4、gif、静帧）
 ├── scripts/              源码检查与导出
 ├── .github/workflows/    索引检查、测试与前端构建
 ├── .env.example          配置模板，不含密钥

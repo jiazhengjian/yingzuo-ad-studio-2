@@ -13,7 +13,7 @@ import zipfile
 sys.dont_write_bytecode = True
 from check_source import main as check_main
 from export_source import export
-from source_policy import content_rules, inspect_file, source_paths
+from source_policy import PUBLIC_DEMO_ASSETS, content_rules, inspect_file, source_paths
 
 
 class SourceToolsTests(unittest.TestCase):
@@ -90,31 +90,45 @@ class SourceToolsTests(unittest.TestCase):
             self.assertNotIn("private fixture", stream.getvalue())
 
     def test_readme_demo_is_tracked_and_other_videos_stay_private(self):
+        expected = {
+            Path("docs/demo") / name
+            for name in (
+                "产品展示.mp4", "产品展示.gif", "产品展示_poster.jpg",
+                "story.mp4", "story.gif", "story_poster.jpg",
+                "talking.mp4", "talking.gif", "talking_poster.jpg",
+            )
+        }
+        self.assertEqual(PUBLIC_DEMO_ASSETS, expected)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             (root / "README.md").write_text("Source\n")
-            demo = root / "docs" / "demo" / "产品展示.mp4"
-            demo.parent.mkdir(parents=True)
-            demo.write_bytes(b"\x00public-demo")
-            (root / "docs" / "demo" / "other.mp4").write_bytes(b"\x00other")
+            demo_dir = root / "docs" / "demo"
+            demo_dir.mkdir(parents=True)
+            for relative in expected:
+                (root / relative).write_bytes(b"\x00public-demo")
+                rules, data = inspect_file(root, relative)
+                self.assertEqual(rules, set(), relative.as_posix())
+                self.assertIsNone(data)
+            (demo_dir / "other.mp4").write_bytes(b"\x00other")
+            (demo_dir / "extra.gif").write_bytes(b"\x00extra")
             private = root / "demo" / "sample.mp4"
             private.parent.mkdir()
             private.write_bytes(b"\x00private")
             (root / "docs" / "clip.mp4").write_bytes(b"\x00clip")
-            rules, data = inspect_file(root, Path("docs/demo/产品展示.mp4"))
-            self.assertEqual(rules, set())
-            self.assertIsNone(data)
             self.assertEqual(inspect_file(root, Path("docs/demo/other.mp4"))[0], {"private-or-generated-path"})
+            self.assertEqual(inspect_file(root, Path("docs/demo/extra.gif"))[0], {"private-or-generated-path"})
             self.assertEqual(inspect_file(root, Path("demo/sample.mp4"))[0], {"private-or-generated-path"})
             self.assertEqual(inspect_file(root, Path("docs/clip.mp4"))[0], {"private-or-generated-file"})
             names = {path.as_posix() for path in source_paths(root)}
             self.assertIn("README.md", names)
-            self.assertNotIn("docs/demo/产品展示.mp4", names)
+            for relative in expected:
+                self.assertNotIn(relative.as_posix(), names)
             output = root / ".local" / "exports" / "demo.zip"
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(export(root, output), 0)
             with zipfile.ZipFile(output) as archive:
                 self.assertEqual(archive.namelist(), ["README.md"])
+            demo = demo_dir / "产品展示.mp4"
             demo.unlink()
             demo.symlink_to(private)
             self.assertEqual(inspect_file(root, Path("docs/demo/产品展示.mp4"))[0], {"symlink-not-allowed"})

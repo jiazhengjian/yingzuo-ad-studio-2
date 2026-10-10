@@ -30,7 +30,7 @@
 
 - 自有源码许可证及版权署名。当前没有 LICENSE 文件，不宣称已授予 MIT 或其他开源许可。
 - GitHub 仓库名、所有者与远端地址；本轮不创建远端、不推送。
-- `docs/demo/产品展示.mp4` 是 README 里的公开产品展示示例。历史真实样片仍留在本机，源码导出包不包含音视频。
+- `docs/demo/` 有三条 README 公开示例。产品展示用 `产品展示.mp4`、`产品展示.gif`、`产品展示_poster.jpg`；剧情用 `story.mp4`、`story.gif`、`story_poster.jpg`；人物讲解用 `talking.mp4`、`talking.gif`、`talking_poster.jpg`。历史真实样片仍留在本机。源码导出包不包含这些音视频、动图和静帧。
 
 ## 第三方依赖与参考
 

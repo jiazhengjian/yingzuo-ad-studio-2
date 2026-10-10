@@ -20,6 +20,8 @@
 
 始终排除 .env 及其备份、data、.local、demo、work、outputs、.git、虚拟环境、node_modules、dist/build、缓存、数据库、日志、密钥文件和图片/音视频/压缩包。源目录中的符号链接会被拒绝。新增源码类型应先审阅并修改白名单；不要为了省事改成复制整个目录。
 
+Git 可以追踪 `docs/demo/` 里 README 的三条公开示例，每条一份 mp4、gif 和静帧 jpg。`check_source.py --tracked` 只放行 `source_policy.PUBLIC_DEMO_ASSETS` 这份名单。导出 ZIP 仍不打包这些图片和音视频。其他 `*.mp4`、`media/` 和仓库根的 `demo/` 继续排除。
+
 默认检查只覆盖将要导出的源码，不会因为本地正常存在 .env、data 或安装依赖而失败。准备提交时，先把计划发布的文件加入 Git 索引，再运行：
 
     python3 scripts/check_source.py --tracked
