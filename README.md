@@ -40,7 +40,6 @@
     <td align="center" width="33%">
       <a href="docs/demo/talking.mp4"><img src="docs/demo/talking.gif" alt="人物讲解 · 吹风机" width="220"></a><br>
       <b>人物讲解 · 吹风机</b><br>
-      <sub>旧称「口播」</sub><br>
       <sub>20 秒 · 竖屏 720×1280</sub><br>
       <a href="docs/demo/talking.mp4">▶ 看带声音的完整视频</a>
     </td>
