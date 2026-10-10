@@ -30,6 +30,8 @@ PRIVATE_SUFFIXES = {
     ".zip", ".tar", ".gz", ".bak", ".swp",
 }
 MAX_SOURCE_BYTES = 8 * 1024 * 1024
+# One README sample may be tracked. Export still omits every audio and video file.
+PUBLIC_DEMO_ASSETS = frozenset({Path("docs/demo") / "产品展示.mp4"})
 
 
 def path_rule(relative: Path) -> str | None:
@@ -123,7 +125,25 @@ def content_rules(data: bytes) -> set[str]:
     return rules
 
 
+def _inspect_public_demo(root: Path, relative: Path) -> tuple[set[str], bytes | None]:
+    """Confirm the committed README sample without treating its bytes as source text."""
+    if any((root / Path(*relative.parts[:index])).is_symlink() for index in range(1, len(relative.parts) + 1)):
+        return {"symlink-not-allowed"}, None
+    path = root / relative
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return {"source-unreadable"}, None
+    if not path.is_file():
+        return {"source-unreadable"}, None
+    if size <= 0 or size > MAX_SOURCE_BYTES:
+        return {"oversized-source-file"}, None
+    return set(), None
+
+
 def inspect_file(root: Path, relative: Path) -> tuple[set[str], bytes | None]:
+    if relative in PUBLIC_DEMO_ASSETS:
+        return _inspect_public_demo(root, relative)
     rule = path_rule(relative)
     if rule:
         return {rule}, None

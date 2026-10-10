@@ -6,7 +6,7 @@
 .runtime/
 .local/
 data/
-demo/
+/demo/
 node_modules/
 frontend/dist/
 __pycache__/
@@ -32,6 +32,7 @@ coverage/
 venv/
 media/
 *.mp4
+!docs/demo/产品展示.mp4
 *.mov
 *.webm
 *.m4a
