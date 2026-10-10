@@ -26,8 +26,8 @@
 <table>
   <tr>
     <td align="center" width="33%">
-      <a href="docs/demo/产品展示.mp4"><img src="docs/demo/产品展示.gif" alt="产品展示 · 吹风机" width="220"></a><br>
-      <b>产品展示 · 吹风机</b><br>
+      <a href="docs/demo/产品展示.mp4"><img src="docs/demo/产品展示.gif" alt="产品展示 · 香水" width="220"></a><br>
+      <b>产品展示 · 香水</b><br>
       <sub>20 秒 · 竖屏 720×1280</sub><br>
       <a href="docs/demo/产品展示.mp4">▶ 看带声音的完整视频</a>
     </td>
