@@ -30,8 +30,22 @@ PRIVATE_SUFFIXES = {
     ".zip", ".tar", ".gz", ".bak", ".swp",
 }
 MAX_SOURCE_BYTES = 8 * 1024 * 1024
-# One README sample may be tracked. Export still omits every audio and video file.
-PUBLIC_DEMO_ASSETS = frozenset({Path("docs/demo") / "产品展示.mp4"})
+# README samples under docs/demo may be tracked in Git.
+# Export still omits every audio, video, and image file.
+PUBLIC_DEMO_ASSETS = frozenset(
+    Path("docs/demo") / name
+    for name in (
+        "产品展示.mp4",
+        "产品展示.gif",
+        "产品展示_poster.jpg",
+        "story.mp4",
+        "story.gif",
+        "story_poster.jpg",
+        "talking.mp4",
+        "talking.gif",
+        "talking_poster.jpg",
+    )
+)
 
 
 def path_rule(relative: Path) -> str | None:

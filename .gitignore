@@ -32,7 +32,8 @@ coverage/
 venv/
 media/
 *.mp4
-!docs/demo/产品展示.mp4
+# 三条 README 示例成片。其他目录的 mp4 仍忽略。
+!docs/demo/*.mp4
 *.mov
 *.webm
 *.m4a
